@@ -6,84 +6,167 @@
 <meta name="color-scheme" content="light dark">
 <title>TrainOps · 项目计划</title>
 <style>
-:root { color-scheme:light; --page:#f6f7f9; --surface:#ffffff; --ink:#141518; --secondary:#60646c; --line:#e4e6eb; --accent:#2563eb; --accent-soft:rgba(37,99,235,.12); --good:#16a34a; --good-soft:rgba(22,163,74,.14); --warning:#d97706; --warning-soft:rgba(217,119,6,.14); --critical:#dc2626; --critical-soft:rgba(220,38,38,.14); --soft:#f0f2f5; --cursor:#e11d48; }
-:root[data-theme="dark"] { color-scheme:dark; --page:#0f1115; --surface:#181b20; --ink:#f3f4f6; --secondary:#9ca3af; --line:#2b303b; --accent:#3b82f6; --accent-soft:rgba(59,130,246,.2); --good:#22c55e; --good-soft:rgba(34,197,94,.2); --warning:#f59e0b; --warning-soft:rgba(245,158,11,.2); --critical:#ef4444; --critical-soft:rgba(239,68,68,.2); --soft:#22262f; --cursor:#fb7185; }
+/* 视觉：科研仪器面板。全部为静态 CSS（渐变/细描边/圆角），不引入外部字体、图片、
+   图标库、JS 库或 canvas，也没有持续动画循环，因此不增加任何运行时负担。 */
+:root {
+  color-scheme:light;
+  --pad:16px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --page:#eef1f6; --surface:#ffffff; --surface-2:#f7f9fc;
+  --ink:#0e1726; --secondary:#5a6779;
+  --line:#e3e8f0; --line-strong:#ccd5e2;
+  --grid:rgba(23,42,73,.055); --glow:rgba(14,116,144,.10); --glow-fade:rgba(14,116,144,0); --hover:rgba(23,42,73,.03);
+  --accent:#0e7490; --accent-soft:rgba(14,116,144,.10); --accent-line:rgba(14,116,144,.38);
+  --good:#047857; --good-soft:rgba(4,120,87,.12);
+  --warning:#b45309; --warning-soft:rgba(180,83,9,.13);
+  --critical:#dc2626; --critical-soft:rgba(220,38,38,.12);
+  --soft:#edf1f6; --rail:rgba(14,116,144,.32); --hatch:rgba(23,42,73,.07); --bar-top:rgba(255,255,255,.6);
+  --cursor:#e11d48; --cursor-bg:#be123c; --cursor-ink:#ffffff;
+  --shadow:0 1px 2px rgba(15,30,60,.05),0 14px 30px -24px rgba(15,30,60,.45);
+}
+:root[data-theme="dark"] {
+  color-scheme:dark;
+  --page:#080d13; --surface:#0f1620; --surface-2:#141d29;
+  --ink:#e8eff9; --secondary:#8ea1b8;
+  --line:#1d2937; --line-strong:#2c3b4e;
+  --grid:rgba(125,211,252,.05); --glow:rgba(34,211,238,.09); --glow-fade:rgba(34,211,238,0); --hover:rgba(125,211,252,.035);
+  --accent:#22d3ee; --accent-soft:rgba(34,211,238,.13); --accent-line:rgba(34,211,238,.42);
+  --good:#34d399; --good-soft:rgba(52,211,153,.15);
+  --warning:#fbbf24; --warning-soft:rgba(251,191,36,.14);
+  --critical:#f87171; --critical-soft:rgba(248,113,113,.14);
+  --soft:#18222f; --rail:rgba(34,211,238,.28); --hatch:rgba(160,220,255,.07); --bar-top:rgba(255,255,255,.06);
+  --cursor:#ff5d76; --cursor-bg:#e11d48; --cursor-ink:#ffffff;
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 18px 36px -28px rgba(0,0,0,.95);
+}
 * { box-sizing:border-box; }
-body { margin:0; background:var(--page); color:var(--ink); font:16px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; -webkit-font-smoothing:antialiased; }
-main { max-width:1420px; margin:auto; padding:22px 26px 40px; }
-header { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:16px; }
-h1 { font-size:24px; font-weight:650; margin:0 0 3px; line-height:1.3; }
-h2 { font-size:17px; font-weight:600; margin:0; line-height:1.35; }
+body {
+  margin:0; min-height:100vh; color:var(--ink); font:16px/1.5 var(--sans);
+  background-color:var(--page);
+  background-image:
+    radial-gradient(115% 62% at 50% -18%, var(--glow), var(--glow-fade) 62%),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size:100% 100%,28px 28px,28px 28px;
+  background-repeat:no-repeat,repeat,repeat;
+  -webkit-font-smoothing:antialiased;
+}
+main { max-width:1420px; margin:0 auto; padding:24px 26px 44px; }
+header { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid var(--line); }
+.brand { min-width:0; }
+.eyebrow { display:flex; align-items:center; gap:8px; margin:0 0 5px; font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--secondary); }
+.eyebrow::before { content:''; width:6px; height:6px; flex-shrink:0; border-radius:1px; background:var(--accent); transform:rotate(45deg); box-shadow:0 0 7px var(--accent-line); }
+h1 { font-size:24px; font-weight:650; margin:0 0 4px; line-height:1.25; }
+h2 { font-size:16.5px; font-weight:600; margin:0; line-height:1.35; }
 p { margin:0; }
-.meta,.muted { color:var(--secondary); font-size:14px; }
+.meta,.muted { color:var(--secondary); font-size:13.5px; }
+.meta { font-family:var(--mono); letter-spacing:.01em; font-variant-numeric:tabular-nums; }
 .controls { display:flex; gap:8px; align-items:center; }
-button { border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:6px; font:inherit; font-size:14px; font-weight:500; padding:6px 14px; cursor:pointer; }
-button:hover { background:var(--soft); }
+button { border:1px solid var(--line-strong); background:var(--surface); color:var(--ink); border-radius:7px; font:inherit; font-size:13.5px; font-weight:550; padding:7px 14px; cursor:pointer; transition:border-color .15s,background-color .15s,color .15s,transform .15s; }
+button:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+button:active { transform:translateY(1px); }
+button:disabled { opacity:.5; cursor:progress; }
 button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.notice { border-left:3px solid var(--critical); background:var(--surface); padding:9px 14px; margin:10px 0; border-radius:0 6px 6px 0; font-size:14px; }
+.notice { display:flex; gap:9px; align-items:flex-start; border:1px solid var(--critical); border-left-width:3px; background:var(--surface); padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; box-shadow:var(--shadow); }
+.notice::before { content:'!'; flex-shrink:0; width:17px; height:17px; margin-top:1px; border-radius:50%; background:var(--critical); color:var(--surface); font:700 12px/17px var(--mono); text-align:center; }
 .hidden { display:none; }
-#summary { font-size:15px; font-weight:500; margin-bottom:12px; }
+#summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-bottom:14px; font-size:14px; }
+.summary-total { font-weight:600; letter-spacing:.01em; }
+.chip { display:inline-flex; align-items:center; gap:6px; padding:3px 11px 3px 9px; border:1px solid var(--line); border-radius:999px; background:var(--surface); font-size:13px; box-shadow:0 1px 1px rgba(15,30,60,.03); }
+.chip b { font-family:var(--mono); font-weight:650; font-variant-numeric:tabular-nums; }
 .instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin-bottom:16px; }
-.instance { padding:12px 16px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+.instance { position:relative; padding:12px 16px 12px 19px; border:1px solid var(--line); border-radius:11px; background:var(--surface); box-shadow:var(--shadow),inset 0 1px 0 var(--rail); overflow:hidden; transition:border-color .15s,transform .15s; }
+.instance::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--line-strong); }
+.instance.on::before { background:var(--good); }
+.instance.starting::before { background:var(--warning); }
+.instance.off::before,.instance.unreachable::before { background:var(--critical); }
+.instance:hover { transform:translateY(-1px); border-color:var(--line-strong); }
 .instance-title { display:flex; justify-content:space-between; gap:8px; font-size:15.5px; font-weight:600; align-items:center; }
-.instance p { margin-top:5px; font-size:14px; }
-.flow { margin:16px 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface); }
-.flow-header { padding:11px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; background:var(--soft); }
+.instance p { margin-top:6px; font-size:13.5px; }
+.flow { position:relative; margin:14px 0; border:1px solid var(--line); border-radius:13px; overflow:hidden; background:var(--surface); box-shadow:var(--shadow),inset 0 1px 0 var(--rail); }
+.flow-header { position:relative; padding:11px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:10px 14px; flex-wrap:wrap; background:var(--surface-2); }
+.flow-title { display:flex; align-items:center; gap:9px; min-width:0; }
+.flow-metrics { display:flex; align-items:center; gap:8px 12px; flex-wrap:wrap; font-size:13px; color:var(--secondary); font-variant-numeric:tabular-nums; }
+.metric { white-space:nowrap; }
+.metric.strong { color:var(--ink); font-weight:600; }
+.flow-meter { display:inline-block; width:76px; height:6px; flex-shrink:0; border:1px solid var(--line); border-radius:3px; background:var(--soft); overflow:hidden; }
+.flow-meter-fill { display:block; height:100%; background:var(--accent); }
 .gantt-wrap { overflow-x:auto; }
 .gantt { min-width:920px; }
 .gantt-head,.gantt-row { display:grid; grid-template-columns:310px minmax(580px,1fr); border-bottom:1px solid var(--line); align-items:stretch; }
 .gantt-row:last-child { border-bottom:0; }
-.gantt-head { background:var(--surface); font-size:14px; color:var(--secondary); font-weight:500; }
-.gantt-col-info { padding:9px 16px; border-right:1px solid var(--line); display:flex; align-items:center; }
+.gantt-row { transition:background-color .15s; }
+.gantt-row:hover { background:var(--hover); }
+.gantt-head { background:var(--surface-2); color:var(--secondary); }
+.gantt-col-info { padding:0 16px; height:38px; border-right:1px solid var(--line); display:flex; align-items:center; font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; }
 .gantt-info { padding:10px 16px; border-right:1px solid var(--line); display:flex; flex-direction:column; justify-content:center; gap:5px; overflow-wrap:anywhere; }
-.gantt-axis { position:relative; height:36px; padding:0 16px; display:flex; align-items:center; justify-content:space-between; font-variant-numeric:tabular-nums; }
-.gantt-tick { position:relative; z-index:1; background:var(--surface); padding:0 4px; border-radius:3px; font-size:13px; color:var(--secondary); }
-.gantt-track { position:relative; padding:9px 0 8px; display:flex; flex-direction:column; justify-content:center; background:repeating-linear-gradient(90deg,transparent 0,transparent calc(25% - 1px),var(--soft) calc(25% - 1px),var(--soft) 25%); }
+.gantt-axis { position:relative; height:38px; background-image:linear-gradient(90deg,var(--line-strong) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 6px; background-position:var(--pad) 100%; background-repeat:repeat-x; }
+.gantt-tick { position:absolute; top:50%; transform:translate(-50%,-50%); white-space:nowrap; font-family:var(--mono); font-size:12px; color:var(--secondary); font-variant-numeric:tabular-nums; }
+.gantt-tick.first { transform:translate(0,-50%); }
+.gantt-tick.last { transform:translate(-100%,-50%); }
+.gantt-track { position:relative; padding:9px 0 8px; display:flex; flex-direction:column; justify-content:center; background-image:linear-gradient(90deg,var(--line) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 100%; background-position:var(--pad) 0; background-repeat:repeat-x; }
 .flow-progress-line { position:absolute; top:0; bottom:0; width:0; border-left:2px solid var(--cursor); z-index:7; pointer-events:none; }
-.flow-progress-tag { position:absolute; top:6px; left:6px; background:var(--cursor); color:#fff; font-size:13px; font-weight:600; padding:1px 7px; border-radius:4px; white-space:nowrap; line-height:1.4; box-shadow:0 1px 3px rgba(0,0,0,.15); }
+.flow-progress-tag { position:absolute; top:7px; left:6px; background:var(--cursor-bg); color:var(--cursor-ink); font-family:var(--mono); font-size:11.5px; font-weight:600; padding:2px 7px; border-radius:5px; white-space:nowrap; line-height:1.35; box-shadow:0 1px 4px rgba(0,0,0,.28); }
 .flow-progress-line.align-left .flow-progress-tag { left:auto; right:6px; }
-.gantt-lane { position:relative; height:28px; margin:0 16px; }
-.gantt-bar { position:absolute; top:0; height:28px; min-width:16px; border-radius:5px; border:1px solid var(--line); background:var(--soft); display:flex; align-items:center; justify-content:space-between; padding:0 7px; gap:6px; overflow:hidden; }
-.gantt-bar.running { border-color:var(--accent); background:var(--accent-soft); }
-.gantt-bar.done { border-color:var(--good); background:var(--good-soft); }
-.gantt-bar.blocked { border-color:var(--warning); background:var(--warning-soft); }
-.gantt-bar.failed { border-color:var(--critical); background:var(--critical-soft); }
+.gantt-lane { position:relative; height:28px; margin:0 var(--pad); }
+/* overflow 保持可见：窄条形上的进度徽标宁可略微外溢，也不被裁掉数字 */
+.gantt-bar { position:absolute; top:0; height:28px; min-width:16px; border-radius:6px; border:1px solid var(--line-strong); background-color:var(--soft); background-image:repeating-linear-gradient(135deg,transparent 0 6px,var(--hatch) 6px 7px); display:flex; align-items:center; justify-content:space-between; padding:0 6px 0 7px; gap:6px; box-shadow:inset 0 1px 0 var(--bar-top); }
+.gantt-bar.running { border-color:var(--accent); background-color:var(--accent-soft); }
+.gantt-bar.done { border-color:var(--good); background-color:var(--good-soft); }
+.gantt-bar.blocked { border-color:var(--warning); background-color:var(--warning-soft); }
+.gantt-bar.failed { border-color:var(--critical); background-color:var(--critical-soft); }
 .gantt-bar.is-unknown { border-style:dashed; }
-.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; background:var(--accent); opacity:.28; pointer-events:none; }
-.gantt-bar.done .gantt-bar-fill { background:var(--good); opacity:.32; }
+.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; border-radius:5px 0 0 5px; background:var(--accent); opacity:.26; pointer-events:none; }
+.gantt-bar.done .gantt-bar-fill { background:var(--good); opacity:.3; }
 .gantt-bar.blocked .gantt-bar-fill { background:var(--warning); opacity:.3; }
 .gantt-bar.failed .gantt-bar-fill { background:var(--critical); opacity:.3; }
 .gantt-progress-line { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:var(--accent); z-index:3; pointer-events:none; }
 .gantt-bar.done .gantt-progress-line { background:var(--good); }
-.gantt-bar-label { position:relative; z-index:4; font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.gantt-progress-badge { position:relative; z-index:5; background:var(--surface); color:var(--ink); border:1px solid var(--line); font-size:13px; font-weight:600; padding:0 6px; border-radius:4px; line-height:1.4; white-space:nowrap; font-variant-numeric:tabular-nums; margin-left:auto; flex-shrink:0; }
-.gantt-eta { margin:5px 16px 0; font-size:13.5px; line-height:1.3; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; position:relative; z-index:2; }
-.id { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:13.5px; }
-.copy { border:1px solid var(--line); padding:1px 7px; background:var(--soft); border-radius:4px; font-size:13.5px; font-weight:600; flex-shrink:0; }
-.status { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; font-size:13.5px; font-weight:500; flex-shrink:0; }
+.gantt-bar-label { position:relative; z-index:4; font-family:var(--mono); font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gantt-progress-badge { position:relative; z-index:5; background:var(--surface); color:var(--ink); border:1px solid var(--line-strong); font-family:var(--mono); font-size:11.5px; font-weight:600; padding:0 6px; border-radius:5px; line-height:1.5; white-space:nowrap; font-variant-numeric:tabular-nums; margin-left:auto; flex-shrink:0; }
+.gantt-eta { margin:6px var(--pad) 0; font-size:13px; line-height:1.3; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; position:relative; z-index:2; }
+.eta-done { color:var(--good); }
+.eta-failed { color:var(--critical); }
+.id { font-family:var(--mono); font-size:13px; font-variant-numeric:tabular-nums; }
+.copy { border:1px solid var(--line-strong); padding:1px 7px; background:var(--surface); color:var(--ink); border-radius:5px; font-family:var(--mono); font-size:12.5px; font-weight:600; flex-shrink:0; }
+.copy:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+.flow-header .copy { border-color:transparent; background:var(--accent-soft); color:var(--accent); font-size:13px; padding:2px 9px; }
+.status { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-size:13px; font-weight:500; flex-shrink:0; }
 .dot { width:8px; height:8px; border-radius:50%; background:var(--secondary); flex-shrink:0; }
-.running .dot { background:var(--accent); }
-.done .dot,.on .dot { background:var(--good); }
-.blocked .dot,.starting .dot { background:var(--warning); }
-.failed .dot,.unreachable .dot { background:var(--critical); }
+.chip .dot { width:7px; height:7px; }
+.running .dot { background:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.done .dot,.on .dot { background:var(--good); box-shadow:0 0 0 3px var(--good-soft); }
+.blocked .dot,.starting .dot { background:var(--warning); box-shadow:0 0 0 3px var(--warning-soft); }
+.failed .dot,.unreachable .dot { background:var(--critical); box-shadow:0 0 0 3px var(--critical-soft); }
 .task-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.task-title { display:flex; align-items:center; gap:7px; min-width:0; }
+.task-title { display:flex; align-items:center; gap:8px; min-width:0; }
 .task-name { font-weight:600; font-size:15.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.tags { font-size:13.5px; color:var(--secondary); display:flex; gap:8px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
-.empty { padding:20px 16px; color:var(--secondary); font-size:14px; }
-@media(max-width:650px) { main { padding:14px 10px; } header { flex-direction:column; align-items:flex-start; gap:8px; } }
+.tags { font-size:13px; color:var(--secondary); display:flex; gap:8px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
+.empty { padding:22px 16px; color:var(--secondary); font-size:14px; font-family:var(--mono); }
+.page-foot { margin-top:22px; padding-top:13px; border-top:1px solid var(--line); font-family:var(--mono); font-size:12px; color:var(--secondary); letter-spacing:.02em; }
+.page-foot code { color:var(--ink); }
+@media (prefers-reduced-motion:no-preference) {
+  @keyframes trainops-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.35; transform:scale(.75); } }
+  .running .dot { animation:trainops-pulse 2.6s ease-in-out infinite; }
+}
+@media(max-width:650px) { main { padding:14px 10px 30px; } header { flex-direction:column; align-items:flex-start; gap:10px; } }
 </style>
 </head>
 <body>
 <main>
 <header>
-  <div><h1 id="title">项目计划</h1><p class="meta" id="updated">正在读取…</p></div>
+  <div class="brand">
+    <p class="eyebrow">TrainOps · 多实例训练计划</p>
+    <h1 id="title">项目计划</h1>
+    <p class="meta" id="updated">正在读取…</p>
+  </div>
   <div class="controls"><button id="refresh" type="button">刷新</button><button id="theme" type="button">深色模式</button></div>
 </header>
 <div class="notice hidden" id="error" role="alert"></div>
 <div class="instances" id="instances"></div>
 <div id="summary" aria-live="polite"></div>
 <div id="flows"></div>
+<p class="page-foot">只读快照 · 数据源 <code>.trainops/plan.json</code> · 修改计划请通过 agent / CLI</p>
 </main>
 <script>
 'use strict';
@@ -104,6 +187,10 @@ function css(node, styleText) {
 function when(value) {
   if (!value) return '待估';
   return new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+}
+/* 甘特图轨道左右各留 --pad 的内边距，红竖线与网格按同一坐标系定位，避免错位。 */
+function laneLeft(ratio) {
+  return 'left:calc(var(--pad) + (100% - var(--pad) * 2) * ' + (Math.round(ratio * 10000) / 10000) + ')';
 }
 function status(value) {
   const node = el('span',null,'status ' + value);
@@ -157,7 +244,7 @@ function render() {
   document.title = 'TrainOps · ' + plan.name;
   $('updated').textContent = '更新 ' + when(plan.updated_at) + ' · rev ' + plan.revision;
   const instanceNodes = plan.instances.map(item => {
-    const node = el('article',null,'instance');
+    const node = el('article',null,'instance ' + item.status);
     const heading = el('div',null,'instance-title');
     const label = el('span'); label.append(copy(item.id),document.createTextNode(' ' + item.name));
     heading.append(label,status(item.status));
@@ -170,14 +257,21 @@ function render() {
   $('instances').replaceChildren(...instanceNodes);
   const counts = Object.fromEntries(Object.keys(names).map(key => [key,0]));
   plan.tasks.forEach(task => counts[task.status]++);
-  $('summary').textContent = plan.flows.length + ' 条流程 / ' + plan.tasks.length + ' 个任务 · ' + ['running','pending','done','blocked','failed'].filter(k => counts[k] || k === 'running' || k === 'done').map(key => names[key] + ' ' + counts[key]).join(' · ');
+  const summary = [el('span',plan.flows.length + ' 条流程 / ' + plan.tasks.length + ' 个任务','summary-total')];
+  for (const key of ['running','pending','done','blocked','failed'].filter(k => counts[k] || k === 'running' || k === 'done')) {
+    const chip = el('span',null,'chip ' + key);
+    chip.append(el('span',null,'dot'),el('span',names[key] + ' '),el('b',counts[key]));
+    summary.push(chip);
+  }
+  $('summary').replaceChildren(...summary);
   const spans = computeSpans(plan.tasks, plan.generated_at || plan.updated_at);
   const flows = [];
   for (const flow of plan.flows) {
     const all = plan.tasks.filter(task => task.flow === flow.id);
     const section = el('section',null,'flow');
     const heading = el('div',null,'flow-header');
-    const title = el('h2'); title.append(copy(flow.id),document.createTextNode(' ' + flow.name));
+    const title = el('h2',null,'flow-title');
+    title.append(copy(flow.id),document.createTextNode(flow.name));
     if (!all.length) { heading.append(title); section.append(heading,el('div','暂无任务','empty')); flows.push(section); continue; }
     const minMs = spans[all[0].id].startMs;
     const maxMs = spans[all[all.length - 1].id].endMs;
@@ -194,8 +288,16 @@ function render() {
     const hasUnknown = all.some(task => !task.estimate.finish);
     const dates = all.map(task => task.estimate.finish).filter(Boolean).map(value => new Date(value).getTime());
     const end = dates.length ? new Date(Math.max(...dates)).toISOString() : null;
-    heading.append(title,el('span',all.filter(task => task.status === 'done').length + '/' + all.length + ' 完成 · 总进度 ' + flowProgress + '% · ' +
-      (hasUnknown || !end ? '完成待估' : (unfinished.length ? '预计 ' : '完成 ') + when(end)),'muted'));
+    const metrics = el('div',null,'flow-metrics');
+    const meter = el('span',null,'flow-meter');
+    meter.append(css(el('span',null,'flow-meter-fill'),'width:' + flowProgress + '%'));
+    metrics.append(
+      el('span',all.filter(task => task.status === 'done').length + '/' + all.length + ' 完成','metric'),
+      el('span','总进度 ' + flowProgress + '%','metric strong'),
+      meter,
+      el('span',(hasUnknown || !end ? '完成待估' : (unfinished.length ? '预计 ' : '完成 ') + when(end)),'metric')
+    );
+    heading.append(title,metrics);
     section.append(heading);
     const wrap = el('div',null,'gantt-wrap');
     const gantt = el('div',null,'gantt');
@@ -203,9 +305,10 @@ function render() {
     head.append(el('div','任务节点','gantt-col-info'));
     const axis = el('div',null,'gantt-axis');
     for (const ratio of [0, 0.25, 0.5, 0.75, 1]) {
-      axis.append(el('span',when(new Date(minMs + totalMs * ratio).toISOString()),'gantt-tick'));
+      const edge = ratio === 0 ? ' first' : (ratio === 1 ? ' last' : '');
+      axis.append(css(el('span',when(new Date(minMs + totalMs * ratio).toISOString()),'gantt-tick' + edge),laneLeft(ratio)));
     }
-    const axisCursor = css(el('div',null,'flow-progress-line' + (flowProgress > 80 ? ' align-left' : '')),'left:' + flowProgress + '%');
+    const axisCursor = css(el('div',null,'flow-progress-line' + (flowProgress > 80 ? ' align-left' : '')),laneLeft(flowProgress / 100));
     axisCursor.append(el('span','总进度 ' + flowProgress + '%','flow-progress-tag'));
     axis.append(axisCursor);
     head.append(axis);
@@ -225,14 +328,14 @@ function render() {
       if (task.note) meta.append(el('span',task.note));
       info.append(top,meta);
       const track = el('div',null,'gantt-track');
-      track.append(css(el('div',null,'flow-progress-line'),'left:' + flowProgress + '%'));
+      track.append(css(el('div',null,'flow-progress-line'),laneLeft(flowProgress / 100)));
       const lane = el('div',null,'gantt-lane');
       const bar = css(
         el('div',null,'gantt-bar ' + task.status + (g.exact ? '' : ' is-unknown')),
         'left:' + g.left.toFixed(1) + '%;width:' + g.width.toFixed(1) + '%'
       );
       bar.append(
-        css(el('div',null,'gantt-bar-fill'),'width:' + g.progress + '%'),
+        css(el('div',null,'gantt-bar-fill'),'width:' + g.progress + '%;border-radius:' + (g.progress >= 100 ? '5px' : '5px 0 0 5px')),
         css(el('div',null,'gantt-progress-line'),'left:' + g.progress + '%')
       );
       if (g.width >= 14) bar.append(el('span',task.id,'gantt-bar-label id'));
@@ -240,9 +343,9 @@ function render() {
       lane.append(bar);
       const eta = el('div',null,'gantt-eta');
       if (task.status === 'done') {
-        eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成'));
+        eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
       } else if (['failed','cancelled'].includes(task.status)) {
-        eta.append(el('span',when(task.finished_at) + ' 结束'));
+        eta.append(el('span',when(task.finished_at) + ' 结束','eta-failed'));
       } else {
         eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估') + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
       }
