@@ -6,26 +6,17 @@
 
 | 状态 | 含义 | 允许转换 |
 |---|---|---|
-| `pending` | 待执行 | `running` / `blocked` / `cancelled`（CLI `set --status done` 会自动完成启动与收尾记账） |
+| `pending` | 待执行 | `running` / `blocked` / `cancelled`（CLI `set --status done` 自动完成启动与收尾） |
 | `running` | 执行中，独占所属 GPU 实例 | `done` / `failed` / `blocked` / `cancelled` |
-| `blocked` | 人工确认阻塞（远端无运行中进程） | `pending` / `running` / `cancelled` |
-| `done` | 进程已退出且产物已核实 | 重跑需先回退 `pending`（若下游已在运行或完成，需先处理下游） |
+| `blocked` | 人工确认阻塞 | `pending` / `running` / `cancelled` |
+| `done` | 进程已退出且产物已核实 | 重跑需先回退 `pending` |
 | `failed` / `cancelled` | 失败或取消（不满足下游依赖） | 重新执行时改为 `pending` |
 
 - 同一 GPU 实例同一时刻只允许一个 `running` 任务；`local` 本地节点不占 GPU，可并行。
-- 单人日常使用无需手动传 `--owner`（CLI 默认使用 `agent`）；若多会话协作并显式指定了不同 `--owner`，运行中更新需保持同一 `--owner`。
+- 日常更新只需维护 `--status` 与 `--progress`，无需填写命令、commit、日志路径、owner 等非核心字段。
 
-## 2. 会话恢复与开机重试
+## 2. 会话恢复与安全关机
 
-- **恢复原则**：新会话接管时先执行 `show` 查看现有计划，再通过 SSH 检查远端 `tmux`/`screen` 会话、目标进程与日志更新时间，禁止未核实远端就直接重启训练或覆盖计划。
-- **开机无卡处理**：通过 MCP `autodl` 开机若遇无空闲机器，使用宿主支持的定时/间隔重试机制，在任务 `note` 中登记等待状态，不要死循环请求。
-- **远程环境**：每次远程 Bash 执行训练或准备脚本前先执行 `source /etc/network_turbo`。
-
-## 3. 巡检与安全关机检查清单
-
-1. **巡检核实项**：GPU 占用、训练进程存活、日志最新时间戳、当前进度百分比与关键指标（loss/acc）、磁盘空间。核实后通过 `set <ID> --progress <P> --note "..."` 或 `batch --set` 更新。
-2. **实例独立关机判断**：
-   - 确认当前任务进程已退出、checkpoint 与评估结果已保存；
-   - 检查计划表中**所有流程**是否还有后续任务分配在该实例上；
-   - 确认无后续任务且获用户授权后，再通过 MCP `autodl` 关机并执行 `instance set I01 --status off`。
-3. **停用能力**：用户要求停用 TrainOps 时，先保存计划并交代仍在运行的任务、实例与定时巡检状态，不自动杀进程或关机。
+1. **恢复原则**：新会话接管时先执行 `show` 查看现有计划，再通过 SSH 检查远端会话与训练进程状态，禁止未核实远端就直接重启训练或覆盖计划。
+2. **远程环境**：每次远程 Bash 执行训练或准备脚本前先执行 `source /etc/network_turbo`。
+3. **安全关机**：确认当前任务进程已退出、结果已保存，并检查计划表中**所有流程**无后续任务复用该实例且获用户授权后，再通过 MCP `autodl` 关机。

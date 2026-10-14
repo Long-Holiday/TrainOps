@@ -470,20 +470,15 @@ def demo_plan(now=None):
     set_task(plan, "F01-T01", {"status": "running"}, "demo-agent-a", now - timedelta(minutes=30))
     set_task(plan, "F01-T01", {"status": "done"}, "demo-agent-a", now - timedelta(minutes=20))
     add_task(plan, "F01", "基线训练", "I01", 120, ["F01-T01"])
-    set_task(plan, "F01-T02", {"status": "running", "session": "tmux: F01-T02",
-                             "log": "runs/F01-T02/train.log", "output": "runs/F01-T02/",
-                             "commit": "demo-only", "command": "python train.py --config baseline.yaml"},
-             "demo-agent-a", now - timedelta(minutes=20))
+    set_task(plan, "F01-T02", {"status": "running"}, "demo-agent-a", now - timedelta(minutes=20))
     set_task(plan, "F01-T02", {"progress": 18, "checked_at": stamp(now)}, "demo-agent-a", now)
     add_task(plan, "F01", "基线评估", "I01", 15, ["F01-T02"])
     add_task(plan, "F02", "消融训练", "I02", 90, ["F01-T01"])
-    set_task(plan, "F02-T01", {"status": "running", "log": "runs/F02-T01/train.log"},
-             "demo-agent-b", now - timedelta(minutes=20))
+    set_task(plan, "F02-T01", {"status": "running"}, "demo-agent-b", now - timedelta(minutes=20))
     set_task(plan, "F02-T01", {"progress": 15, "checked_at": stamp(now)}, "demo-agent-b", now)
     add_task(plan, "F02", "消融评估", "I02", 15, ["F02-T01"])
     add_task(plan, "F03", "比较指标并整理报告", "local", 20, ["F01-T03", "F02-T02"])
     add_task(plan, "F03", "根据结果设计下一轮", "local", None, ["F03-T01"])
-    plan["monitor"]["note"] = "仅演示数据；没有创建巡检任务或实际训练"
     return plan
 
 
@@ -757,9 +752,6 @@ def dispatch(args, store):
                 f"{i['id']} {i['name']}({i['ssh_alias']}/{i['autodl_id']})[{i['status']}]"
                 for i in view["instances"]
             ))
-        mon = view["monitor"]
-        if mon["schedule_id"] or mon["note"]:
-            print(f"巡检: {mon['schedule_id'] or '未登记'} · {mon['note']}")
         for flow in view["flows"]:
             print(f"\n{flow['id']} {flow['name']}")
             for task in view["tasks"]:

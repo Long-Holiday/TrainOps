@@ -13,7 +13,6 @@ class Element {
     this.dataset = {};
     this.style = {};
     this.classes = new Set();
-    this.open = false;
     this.classList = {add: x => this.classes.add(x), remove: x => this.classes.delete(x), contains: x => this.classes.has(x)};
   }
   set className(value) {
@@ -40,7 +39,7 @@ const html = fs.readFileSync(path.join(root, 'skills/trainops/web/index.html'), 
 const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const data = JSON.parse(execFileSync('python3', [path.join(root, 'skills/trainops/scripts/trainops.py'),
   '--project', path.join(root, 'examples/demo-project'), 'show', '--json'], {encoding:'utf8'}));
-const nodes = Object.fromEntries(['title','updated','instances','monitor','summary','flows','error','refresh','theme']
+const nodes = Object.fromEntries(['title','updated','instances','summary','flows','error','refresh','theme']
   .map(id => [id, new Element('div')]));
 let failed = false;
 const storage = {};
@@ -58,12 +57,13 @@ const context = vm.createContext({
 
 async function main() {
   assert.ok(!html.includes('id="search"'), 'Task search input should be removed');
-  assert.ok(!html.includes('id="status-filter"'), 'Status filter select should be removed');
+  assert.ok(!html.includes('<details'), 'Task details dropdown should be removed');
   new vm.Script(source, {filename:'index.html'}).runInContext(context);
   await new Promise(resolve => setImmediate(resolve));
   const gantts = byClass(nodes.flows, 'gantt');
   assert.equal(gantts.length, 3, 'Each of the 3 flows must render a Gantt chart');
   assert.equal(byClass(nodes.flows, 'gantt-row').length, 7, 'All 7 tasks must be rendered as Gantt rows');
+  assert.equal(descendants(nodes.flows, 'details').length, 0, 'No details element rendered in Gantt rows');
   for (const gantt of gantts) {
     const bars = byClass(gantt, 'gantt-bar').map(bar => {
       const m = bar.style.match(/left:([\d.]+)%;width:([\d.]+)%/);
@@ -76,25 +76,25 @@ async function main() {
     }
   }
   const progLines = byClass(nodes.flows, 'gantt-progress-line');
-  assert.equal(progLines.length, 7, 'Each task Gantt bar must have a vertical progress line');
-  assert.ok(progLines.some(line => line.style === 'left:18%'), 'F01-T02 progress line should be at 18%');
-  const flowLines = byClass(nodes.flows, 'flow-progress-line');
-  assert.ok(flowLines.length >= 3, 'Each flow must render a vertical progress cursor line');
+  assert.equal(progLines.length, 7, 'Each task Gantt bar must have a sub-progress line');
+  assert.ok(progLines.some(line => line.style === 'left:18%'), 'F01-T02 sub-progress line should be at 18%');
+  const badges = byClass(nodes.flows, 'gantt-progress-badge');
+  assert.equal(badges.length, 7, 'Each task Gantt bar must display an unobstructed progress badge');
+  assert.ok(badges.some(b => b.textContent === '18%'), 'F01-T02 badge shows 18%');
+  const flowTags = byClass(nodes.flows, 'flow-progress-tag');
+  assert.equal(flowTags.length, 3, 'Each flow must render a total flow progress red line tag');
+  assert.ok(flowTags.every(tag => /^总进度 \d+%$/.test(tag.textContent)), 'Red line tag shows total flow progress');
   assert.equal(nodes.instances.children.length, 2);
   assert.match(nodes.summary.textContent, /3 条流程 \/ 7 个任务/);
   assert.match(nodes.flows.textContent, /F03-T02/);
   assert.match(nodes.flows.textContent, /待估/);
-  console.log('PASS: Continuous Gantt charts per flow / vertical progress lines / no search bloat');
+  console.log('PASS: Continuous Gantt charts / no task details / unobstructed badges / total flow progress line');
 
-  const details = descendants(nodes.flows, 'details')[1];
-  details.open = true; details.fire('toggle');
-  await nodes.refresh.fire('click');
-  assert.equal(descendants(nodes.flows, 'details')[1].open, true);
   nodes.theme.fire('click');
   assert.equal(context.document.documentElement.dataset.theme, 'dark');
   nodes.theme.fire('click');
   assert.equal(context.document.documentElement.dataset.theme, 'light');
-  console.log('PASS: refresh keeps expanded record / theme toggle');
+  console.log('PASS: theme toggle');
 
   const malicious = '<img src=x onerror="alert(1)">';
   data.name = malicious; data.tasks[0].note = malicious;
