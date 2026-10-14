@@ -467,8 +467,8 @@ def demo_plan(now=None):
     add_flow(plan, "消融对照")
     add_flow(plan, "结果汇总")
     add_task(plan, "F01", "数据与代码就绪", "local", 10)
-    set_task(plan, "F01-T01", {"status": "running"}, "demo-agent-a", now - timedelta(minutes=40))
-    set_task(plan, "F01-T01", {"status": "done"}, "demo-agent-a", now - timedelta(minutes=30))
+    set_task(plan, "F01-T01", {"status": "running"}, "demo-agent-a", now - timedelta(minutes=30))
+    set_task(plan, "F01-T01", {"status": "done"}, "demo-agent-a", now - timedelta(minutes=20))
     add_task(plan, "F01", "基线训练", "I01", 120, ["F01-T01"])
     set_task(plan, "F01-T02", {"status": "running", "session": "tmux: F01-T02",
                              "log": "runs/F01-T02/train.log", "output": "runs/F01-T02/",
@@ -478,13 +478,40 @@ def demo_plan(now=None):
     add_task(plan, "F01", "基线评估", "I01", 15, ["F01-T02"])
     add_task(plan, "F02", "消融训练", "I02", 90, ["F01-T01"])
     set_task(plan, "F02-T01", {"status": "running", "log": "runs/F02-T01/train.log"},
-             "demo-agent-b", now - timedelta(minutes=15))
+             "demo-agent-b", now - timedelta(minutes=20))
     set_task(plan, "F02-T01", {"progress": 15, "checked_at": stamp(now)}, "demo-agent-b", now)
     add_task(plan, "F02", "消融评估", "I02", 15, ["F02-T01"])
     add_task(plan, "F03", "比较指标并整理报告", "local", 20, ["F01-T03", "F02-T02"])
     add_task(plan, "F03", "根据结果设计下一轮", "local", None, ["F03-T01"])
     plan["monitor"]["note"] = "仅演示数据；没有创建巡检任务或实际训练"
     return plan
+
+
+def check_structure(plan):
+    """Structural check for flow continuity, dependency links, and resource/duration readiness."""
+    validate(plan)
+    issues = []
+    tasks_by_id = {t["id"]: t for t in plan["tasks"]}
+    for flow in plan["flows"]:
+        flow_tasks = [t for t in plan["tasks"] if t["flow"] == flow["id"]]
+        if not flow_tasks:
+            issues.append(f"{flow['id']}({flow['name']}): 流程为空，无任务节点")
+            continue
+        for idx, task in enumerate(flow_tasks):
+            if idx > 0 and not task["deps"]:
+                issues.append(f"{task['id']}: 缺少前置依赖，会导致流程甘特图块断裂（建议依赖 {flow_tasks[idx - 1]['id']}）")
+            if task["status"] not in TERMINAL:
+                if task["instance"] is None:
+                    issues.append(f"{task['id']}: 未分配实例（I01.. 或 local）")
+                if task["duration_minutes"] is None:
+                    issues.append(f"{task['id']}: 未设置预计耗时（duration_minutes），完成时间待估")
+            if task["started_at"] and task["deps"]:
+                dep_finishes = [date(tasks_by_id[d]["finished_at"]) for d in task["deps"] if tasks_by_id[d]["finished_at"]]
+                if dep_finishes:
+                    gap_min = (date(task["started_at"]) - max(dep_finishes)).total_seconds() / 60
+                    if gap_min > 5:
+                        issues.append(f"{task['id']}: 实际开始时间晚于前置依赖完成时间 {int(gap_min)} 分钟，存在时间空隙")
+    return {"ok": not issues, "flows": len(plan["flows"]), "tasks": len(plan["tasks"]), "issues": issues}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -555,13 +582,87 @@ def dependencies(value):
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def parse_instance_spec(spec):
+    parts = [part.strip() for part in spec.split(":", 2)]
+    if len(parts) != 3 or not all(parts):
+        raise PlanError(f"实例简写格式应为 '名称:autodl_id:ssh_alias'，实际为 {spec!r}")
+    return parts[0], parts[1], parts[2]
+
+
+def parse_task_spec(spec):
+    parts = [part.strip() for part in spec.split(":", 4)]
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        raise PlanError(f"任务简写格式应为 '流程ID:名称[:实例[:分钟数[:依赖]]]'，实际为 {spec!r}")
+    flow_id, name = parts[0], parts[1]
+    instance = nullable(parts[2]) if len(parts) > 2 and parts[2] else None
+    mins = duration(parts[3]) if len(parts) > 3 and parts[3] else None
+    deps = dependencies(parts[4]) if len(parts) > 4 and parts[4] else []
+    return flow_id, name, instance, mins, deps
+
+
+def parse_set_spec(spec):
+    parts = [part.strip() for part in spec.split(":", 3)]
+    if len(parts) < 2 or not parts[0]:
+        raise PlanError(f"更新简写格式应为 '任务ID:状态[:进度[:备注]]'，实际为 {spec!r}")
+    task_id = parts[0]
+    changes = {}
+    if parts[1]:
+        if parts[1] not in STATUSES:
+            raise PlanError(f"状态无效: {parts[1]!r}")
+        changes["status"] = parts[1]
+    if len(parts) > 2 and parts[2] and parts[2] not in ("none", "?"):
+        try:
+            changes["progress"] = float(parts[2])
+        except ValueError as exc:
+            raise PlanError(f"无效进度: {parts[2]!r}") from exc
+    if len(parts) > 3 and parts[3]:
+        changes["note"] = parts[3]
+    if not changes:
+        raise PlanError(f"未在 {spec!r} 中提供有效更新字段")
+    return task_id, changes
+
+
+def compact(data):
+    if isinstance(data, dict):
+        return {k: compact(v) for k, v in data.items() if v not in ("", None, [])}
+    if isinstance(data, list):
+        return [compact(v) for v in data]
+    return data
+
+
+def add_task_args(target, is_set=False):
+    default = argparse.SUPPRESS if is_set else None
+    target.add_argument("--instance", type=nullable, default=default, help="I01 / local / none")
+    target.add_argument("--minutes", dest="duration_minutes", type=duration, default=default, help="预计耗时；? 表示待估")
+    target.add_argument("--deps", type=dependencies, default=default, help="逗号分隔；空字符串清空")
+    target.add_argument("--not-before", type=nullable, default=default, help="带时区时间；none 清空")
+    if is_set:
+        target.add_argument("--status", choices=STATUSES)
+        target.add_argument("--owner", help="认领/操作当前任务的 agent 名称（默认 agent）")
+        target.add_argument("--progress", type=float)
+        target.add_argument("--checked", action="store_true", help="记录实际巡检时间")
+        target.add_argument("--note")
+        for key in EVIDENCE:
+            target.add_argument("--" + key)
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
-    root.add_argument("--project", default=".", help="使用项目目录，不是能力包目录")
+    root.add_argument("-p", "--project", default=".", help="使用项目目录，不是能力包目录")
     commands = root.add_subparsers(dest="operation_name", required=True)
-    init = commands.add_parser("init", help="新建空计划，不覆盖现存文件")
+    init = commands.add_parser("init", help="新建计划（可同时批量传入实例、流程、任务）")
     init.add_argument("--name", required=True)
+    init.add_argument("--instance", action="append", default=[], help="名称:autodl_id:ssh_alias")
+    init.add_argument("--flow", action="append", default=[], help="流程名称")
+    init.add_argument("--task", action="append", default=[], help="F01:任务名[:实例[:分钟数[:依赖]]]")
+    batch = commands.add_parser("batch", help="单次命令批量新增实例/流程/任务或更新状态")
+    batch.add_argument("--instance", action="append", default=[], help="名称:autodl_id:ssh_alias")
+    batch.add_argument("--flow", action="append", default=[], help="流程名称")
+    batch.add_argument("--task", action="append", default=[], help="F01:任务名[:实例[:分钟数[:依赖]]]")
+    batch.add_argument("--set", dest="updates", action="append", default=[], help="F01-T01:状态[:进度[:备注]]")
+    batch.add_argument("--owner", help="批量更新使用的 owner（默认 agent）")
     commands.add_parser("demo", help="在空目录生成演示计划，无远程操作")
+    commands.add_parser("check", help="执行结构性检查（流程连续性、依赖链、实例与耗时完整性）")
     show = commands.add_parser("show", help="读取最新计划和时间估算")
     show.add_argument("--json", action="store_true")
     serve = commands.add_parser("serve", help="仅本机只读页面，Ctrl+C 停止")
@@ -589,22 +690,15 @@ def parser():
     task_add = task.add_parser("add")
     task_add.add_argument("--flow", required=True)
     task_add.add_argument("--name", required=True)
+    add_task_args(task_add, is_set=False)
     task_set = task.add_parser("set")
     task_set.add_argument("id")
     task_set.add_argument("--name")
-    for command in (task_add, task_set):
-        default = argparse.SUPPRESS if command is task_set else None
-        command.add_argument("--instance", type=nullable, default=default, help="I01 / local / none")
-        command.add_argument("--minutes", dest="duration_minutes", type=duration, default=default, help="预计耗时；? 表示待估")
-        command.add_argument("--deps", type=dependencies, default=default, help="逗号分隔；空字符串清空")
-        command.add_argument("--not-before", type=nullable, default=default, help="带时区时间；none 清空")
-    task_set.add_argument("--status", choices=STATUSES)
-    task_set.add_argument("--owner", help="认领/操作当前任务的 agent 唯一名称")
-    task_set.add_argument("--progress", type=float)
-    task_set.add_argument("--checked", action="store_true", help="记录刚完成的实际巡检")
-    task_set.add_argument("--note")
-    for key in EVIDENCE:
-        task_set.add_argument("--" + key)
+    add_task_args(task_set, is_set=True)
+    quick_set = commands.add_parser("set", help="task set 的简写命令")
+    quick_set.add_argument("id")
+    quick_set.add_argument("--name")
+    add_task_args(quick_set, is_set=True)
     monitor = commands.add_parser("monitor", help="登记已有调度器信息，不创建定时任务")
     monitor.add_argument("--schedule-id", default="")
     monitor.add_argument("--expires-at", type=nullable)
@@ -612,23 +706,72 @@ def parser():
     return root
 
 
+def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=(), owner=None):
+    added = {"instances": [], "flows": [], "tasks": [], "updated": []}
+    for spec in instances:
+        name, autodl_id, ssh_alias = parse_instance_spec(spec)
+        added["instances"].append(add_instance(plan, name, autodl_id, ssh_alias)["id"])
+    for flow_name in flows:
+        added["flows"].append(add_flow(plan, flow_name)["id"])
+    for spec in tasks:
+        flow_id, name, inst, mins, deps = parse_task_spec(spec)
+        if not deps:
+            prev = [t["id"] for t in plan["tasks"] if t["flow"] == flow_id]
+            if prev:
+                deps = [prev[-1]]
+        added["tasks"].append(add_task(plan, flow_id, name, inst, mins, deps)["id"])
+    for spec in updates:
+        task_id, changes = parse_set_spec(spec)
+        changes["checked_at"] = stamp()
+        target = find(plan, "tasks", task_id)
+        actor = owner or "agent"
+        if changes.get("status") == "done" and target["status"] in ("pending", "blocked"):
+            set_task(plan, task_id, {"status": "running", "checked_at": changes["checked_at"]}, actor)
+        set_task(plan, task_id, changes, actor)
+        added["updated"].append(task_id)
+    return added
+
+
 def dispatch(args, store):
     if args.operation_name == "init":
-        return store.create(new_plan(args.name))
+        plan = new_plan(args.name)
+        apply_batch_specs(plan, args.instance, args.flow, args.task)
+        created = store.create(plan)
+        return {"revision": created["revision"], "name": created["name"],
+                "instances": [i["id"] for i in created["instances"]],
+                "flows": [f["id"] for f in created["flows"]],
+                "tasks": [t["id"] for t in created["tasks"]]}
     if args.operation_name == "demo":
-        return store.create(demo_plan())
+        created = store.create(demo_plan())
+        return {"revision": created["revision"], "name": created["name"],
+                "tasks": [t["id"] for t in created["tasks"]]}
+    if args.operation_name == "check":
+        return check_structure(store.read())
     if args.operation_name == "show":
         view = snapshot(store.read())
         if args.json:
             return view
-        print(f"{view['name']} · revision {view['revision']} · {view['updated_at']}")
+        print(f"{view['name']} · rev {view['revision']} · {view['updated_at']}")
+        if view["instances"]:
+            print("实例: " + " | ".join(
+                f"{i['id']} {i['name']}({i['ssh_alias']}/{i['autodl_id']})[{i['status']}]"
+                for i in view["instances"]
+            ))
+        mon = view["monitor"]
+        if mon["schedule_id"] or mon["note"]:
+            print(f"巡检: {mon['schedule_id'] or '未登记'} · {mon['note']}")
         for flow in view["flows"]:
             print(f"\n{flow['id']} {flow['name']}")
             for task in view["tasks"]:
                 if task["flow"] == flow["id"]:
                     eta = task["estimate"]
-                    print(f"  {task['id']} [{task['status']}] {task['name']} | {task['instance'] or '未分配'} | "
-                          f"完成 {eta['finish'] or '待估'} {eta['reason']}")
+                    prog = f" {task['progress']:g}%" if task["progress"] is not None else ""
+                    deps = f" | 依赖:{','.join(task['deps'])}" if task["deps"] else ""
+                    mins = f" | {task['duration_minutes']:g}m" if task["duration_minutes"] is not None else " | ?m"
+                    note = f" | {task['note']}" if task["note"] else ""
+                    print(f"  {task['id']} [{task['status']}{prog}] {task['name']} | "
+                          f"{task['instance'] or '未分配'}{mins}{deps} | "
+                          f"完成 {eta['finish'] or '待估'} {eta['reason']}{note}".rstrip())
         return None
     if args.operation_name == "serve":
         store.read()
@@ -643,6 +786,10 @@ def dispatch(args, store):
         return None
 
     def operation(plan):
+        if args.operation_name == "batch":
+            if not (args.instance or args.flow or args.task or args.updates):
+                raise PlanError("batch 至少需要提供 --instance、--flow、--task 或 --set 之一")
+            return apply_batch_specs(plan, args.instance, args.flow, args.task, args.updates, args.owner)
         if args.operation_name == "instance":
             if args.action == "add":
                 return add_instance(plan, args.name, args.autodl_id, args.ssh_alias)
@@ -654,7 +801,7 @@ def dispatch(args, store):
             for key in ("name", "autodl_id", "ssh_alias", "status", "note"):
                 if getattr(args, key) is not None:
                     item[key] = getattr(args, key)
-            if args.observed:
+            if args.observed or args.status is not None:
                 item["observed_at"] = stamp()
             return item
         if args.operation_name == "flow":
@@ -666,18 +813,22 @@ def dispatch(args, store):
         if args.operation_name == "monitor":
             plan["monitor"] = {"schedule_id": args.schedule_id, "expires_at": args.expires_at, "note": args.note}
             return plan["monitor"]
-        if args.action == "add":
+        if getattr(args, "action", "set") == "add":
             return add_task(plan, args.flow, args.name, args.instance, args.duration_minutes, args.deps, args.not_before)
         changes = {key: value for key, value in vars(args).items()
                    if key in ("name", "status", "owner", "progress", "note", *EVIDENCE) and value is not None}
         for key in ("instance", "duration_minutes", "deps", "not_before"):
             if hasattr(args, key):
                 changes[key] = getattr(args, key)
-        if args.checked:
+        if args.checked or args.progress is not None or args.status in ("running", "done"):
             changes["checked_at"] = stamp()
         if not changes:
             raise PlanError("未提供要更新的字段")
-        return set_task(plan, args.id, changes, args.owner)
+        target = find(plan, "tasks", args.id)
+        actor = args.owner or "agent"
+        if changes.get("status") == "done" and target["status"] in ("pending", "blocked"):
+            set_task(plan, args.id, {"status": "running", "checked_at": changes.get("checked_at")}, actor)
+        return set_task(plan, args.id, changes, actor)
 
     return store.change(operation)
 
@@ -688,7 +839,10 @@ def main(argv=None):
     try:
         result = dispatch(args, Store(args.project))
         if result is not None:
-            print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+            if args.operation_name == "show" and args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+            else:
+                print(json.dumps(compact(result), ensure_ascii=False, allow_nan=False))
         return 0
     except (PlanError, OSError, OverflowError) as exc:
         print(f"TrainOps: {exc}", file=sys.stderr)

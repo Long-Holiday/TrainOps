@@ -6,76 +6,92 @@
 <meta name="color-scheme" content="light dark">
 <title>TrainOps · 项目计划</title>
 <style>
-:root { color-scheme: light; --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --secondary:#52514e; --line:#e1e0d9; --accent:#2a78d6; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b; --soft:#f0efec; }
-:root[data-theme="dark"] { color-scheme:dark; --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --secondary:#c3c2b7; --line:#383835; --accent:#3987e5; --soft:#272725; }
+:root { color-scheme:light; --page:#f8f8f6; --surface:#ffffff; --ink:#111110; --secondary:#575652; --line:#e2e1da; --accent:#2563eb; --accent-soft:rgba(37,99,235,.16); --good:#15803d; --good-soft:rgba(21,128,61,.18); --warning:#d97706; --warning-soft:rgba(217,119,6,.18); --critical:#dc2626; --critical-soft:rgba(220,38,38,.18); --soft:#f1f0ec; --cursor:#e11d48; }
+:root[data-theme="dark"] { color-scheme:dark; --page:#0e0e0d; --surface:#181817; --ink:#f5f5f3; --secondary:#b5b4aa; --line:#32322f; --accent:#3b82f6; --accent-soft:rgba(59,130,246,.22); --good:#22c55e; --good-soft:rgba(34,197,94,.22); --warning:#f59e0b; --warning-soft:rgba(245,158,11,.22); --critical:#ef4444; --critical-soft:rgba(239,68,68,.22); --soft:#242422; --cursor:#fb7185; }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--page); color:var(--ink); font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
-main { max-width:1440px; margin:auto; padding:32px 28px 48px; }
-header { display:flex; justify-content:space-between; gap:24px; align-items:flex-start; margin-bottom:20px; }
-.brand { font-size:12px; font-weight:700; letter-spacing:.14em; color:var(--secondary); }
-h1 { font-size:26px; margin:6px 0; line-height:1.3; }
-h2 { font-size:17px; margin:0; }
-p { margin:6px 0; }
+body { margin:0; background:var(--page); color:var(--ink); font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+main { max-width:1440px; margin:auto; padding:26px 24px 44px; }
+header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px; }
+.brand { font-size:12px; font-weight:700; letter-spacing:.12em; color:var(--secondary); }
+h1 { font-size:24px; margin:4px 0; line-height:1.3; }
+h2 { font-size:16px; margin:0; }
+p { margin:5px 0; }
 .meta,.muted,small { color:var(--secondary); }
-.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-button,input,select { border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:6px; font:inherit; padding:7px 10px; }
-button { cursor:pointer; }
+.controls { display:flex; gap:8px; align-items:center; }
+button { border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:6px; font:inherit; padding:6px 10px; cursor:pointer; }
 button:hover { background:var(--soft); }
-button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
-#search { min-width:260px; flex:1; }
-.notice { border-left:3px solid var(--accent); background:var(--surface); padding:10px 14px; margin:16px 0; }
+button:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.notice { border-left:3px solid var(--accent); background:var(--surface); padding:9px 14px; margin:12px 0; border-radius:0 6px 6px 0; }
 #error { border-left-color:var(--critical); }
 .hidden { display:none; }
-.instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin:12px 0 20px; }
-.instance { padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow-wrap:anywhere; }
-.instance-title { display:flex; justify-content:space-between; gap:12px; font-weight:600; }
-.instance p { margin:4px 0 0; }
-#summary { margin:20px 0 12px; }
-.flow { margin:18px 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface); }
-.flow-header { padding:14px 16px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
-.table-wrap { overflow-x:auto; }
-table { border-collapse:collapse; width:100%; min-width:1050px; }
-th,td { text-align:left; padding:12px 14px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:var(--secondary); font-size:12px; font-weight:500; white-space:nowrap; }
-tr:last-child td { border-bottom:0; }
-td.time { min-width:180px; font-variant-numeric:tabular-nums; }
-td.task { min-width:260px; max-width:390px; overflow-wrap:anywhere; }
+.instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:12px; margin:10px 0 16px; }
+.instance { padding:12px 14px; border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow-wrap:anywhere; }
+.instance-title { display:flex; justify-content:space-between; gap:10px; font-weight:600; }
+.instance p { margin:4px 0 0; font-size:13px; }
+#summary { margin:14px 0 10px; font-weight:500; }
+.flow { margin:16px 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface); }
+.flow-header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; background:var(--soft); }
+.gantt-wrap { overflow-x:auto; }
+.gantt { min-width:920px; }
+.gantt-head,.gantt-row { display:grid; grid-template-columns:330px minmax(560px,1fr); border-bottom:1px solid var(--line); }
+.gantt-row:last-child { border-bottom:0; }
+.gantt-head { background:var(--surface); font-size:12px; color:var(--secondary); font-weight:500; }
+.gantt-col-info,.gantt-info { padding:11px 14px; border-right:1px solid var(--line); overflow-wrap:anywhere; }
+.gantt-axis { position:relative; height:36px; padding:0 14px; display:flex; align-items:center; justify-content:space-between; font-variant-numeric:tabular-nums; overflow:hidden; }
+.gantt-tick { position:relative; z-index:1; background:var(--surface); padding:0 4px; border-radius:3px; font-size:11px; }
+.gantt-track { position:relative; min-height:74px; padding:14px 0; overflow:hidden; background:repeating-linear-gradient(90deg,transparent 0,transparent calc(25% - 1px),var(--soft) calc(25% - 1px),var(--soft) 25%); }
+.flow-progress-line { position:absolute; top:0; bottom:0; width:0; border-left:2px dashed var(--cursor); z-index:4; pointer-events:none; }
+.flow-progress-tag { position:absolute; top:3px; left:4px; background:var(--cursor); color:#fff; font-size:11px; font-weight:600; padding:1px 6px; border-radius:4px; white-space:nowrap; line-height:1.4; }
+.gantt-lane { position:relative; height:28px; margin:0 14px; }
+.gantt-bar { position:absolute; top:0; height:28px; min-width:8px; border-radius:5px; border:1px solid var(--line); background:var(--soft); overflow:visible; display:flex; align-items:center; }
+.gantt-bar.running { border-color:var(--accent); background:var(--accent-soft); }
+.gantt-bar.done { border-color:var(--good); background:var(--good-soft); }
+.gantt-bar.blocked { border-color:var(--warning); background:var(--warning-soft); }
+.gantt-bar.failed { border-color:var(--critical); background:var(--critical-soft); }
+.gantt-bar.is-unknown { border-style:dashed; }
+.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; border-radius:4px 0 0 4px; background:var(--accent); opacity:.35; pointer-events:none; }
+.gantt-bar.done .gantt-bar-fill { background:var(--good); opacity:.42; border-radius:4px; }
+.gantt-bar.blocked .gantt-bar-fill { background:var(--warning); opacity:.4; }
+.gantt-bar.failed .gantt-bar-fill { background:var(--critical); opacity:.4; }
+.gantt-progress-line { position:absolute; top:-6px; bottom:-6px; width:3px; margin-left:-1.5px; background:var(--cursor); border-radius:2px; z-index:5; box-shadow:0 0 0 1px var(--surface); }
+.gantt-progress-badge { position:absolute; top:-16px; left:50%; transform:translateX(-50%); background:var(--cursor); color:#fff; font-size:10px; font-weight:700; padding:0 4px; border-radius:3px; line-height:1.4; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.gantt-bar-label { position:relative; z-index:2; padding:0 8px; font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gantt-eta { margin:7px 14px 0; font-size:12px; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; position:relative; z-index:2; }
 .id { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; }
-.copy { border:0; padding:0 3px 0 0; background:none; text-decoration:underline; text-decoration-color:var(--line); text-underline-offset:3px; }
-.status { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.copy { border:1px solid var(--line); padding:1px 6px; background:var(--soft); border-radius:4px; font-weight:600; }
+.status { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; font-size:12px; }
 .dot { width:8px; height:8px; border-radius:50%; background:var(--secondary); flex-shrink:0; }
 .running .dot { background:var(--accent); }
 .done .dot,.on .dot { background:var(--good); }
 .blocked .dot,.starting .dot { background:var(--warning); }
 .failed .dot,.unreachable .dot { background:var(--critical); }
-.task-name { font-weight:600; margin:4px 0; }
-.tags { margin-top:5px; font-size:12px; color:var(--secondary); }
-details { margin-top:8px; }
+.task-top { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.task-name { font-weight:600; margin:4px 0 2px; }
+.tags { margin-top:4px; font-size:12px; color:var(--secondary); display:flex; gap:8px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
+details { margin-top:6px; }
 summary { cursor:pointer; color:var(--secondary); font-size:12px; width:fit-content; }
-dl { font-size:12px; margin:10px 0 0; }
-dt { color:var(--secondary); margin-top:7px; }
+dl { font-size:12px; margin:6px 0 0; }
+dt { color:var(--secondary); margin-top:4px; }
 dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
-.deps { max-width:175px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
-.empty { padding:28px 16px; color:var(--secondary); }
-footer { margin-top:26px; border-top:1px solid var(--line); padding-top:14px; font-size:12px; color:var(--secondary); }
-@media(max-width:650px) { main { padding:20px 14px; } header { flex-direction:column; gap:12px; } h1 { font-size:22px; } #search { min-width:160px; } .flow-header { gap:6px; } }
-@media(forced-colors:active) { .dot { border:2px solid CanvasText; } .notice { border:1px solid CanvasText; } }
+.empty { padding:22px 16px; color:var(--secondary); }
+footer { margin-top:22px; border-top:1px solid var(--line); padding-top:12px; font-size:12px; color:var(--secondary); }
+@media(max-width:650px) { main { padding:16px 12px; } header { flex-direction:column; gap:10px; } h1 { font-size:20px; } }
+@media(forced-colors:active) { .dot,.gantt-progress-line { border:2px solid CanvasText; } .notice,.gantt-bar { border:1px solid CanvasText; } }
 </style>
 </head>
 <body>
 <main>
 <header>
-  <div><div class="brand">TRAINOPS / LOCAL PLAN</div><h1 id="title">项目计划</h1><p class="meta" id="updated">正在读取本地计划…</p></div>
+  <div><div class="brand">TRAINOPS / GANTT PLAN</div><h1 id="title">项目计划</h1><p class="meta" id="updated">正在读取本地计划…</p></div>
   <div class="controls"><button id="refresh" type="button">立即刷新</button><button id="theme" type="button" aria-label="切换明暗主题">深色模式</button></div>
 </header>
-<div class="notice">只读计划 · 每 10 秒刷新。预计时间来自耗时、依赖与实例队列，不代表已启动训练；实际执行和巡检由 agent 负责。</div>
+<div class="notice">只读甘特图面板 · 每 10 秒自动刷新。每个流程以连续甘特图展示节点起止与大致完成时间，红色竖线标出任务进度。</div>
 <div class="notice hidden" id="error" role="alert"></div>
 <section aria-label="实例分配"><h2>实例分配</h2><div class="instances" id="instances"></div></section>
 <p class="meta" id="monitor"></p>
 <div id="summary" aria-live="polite"></div>
-<div class="controls"><input id="search" type="search" placeholder="搜索任务编号、名称、实例或 owner" aria-label="搜索任务"><label for="status-filter">状态</label><select id="status-filter"><option value="all">全部状态</option><option value="pending">待执行</option><option value="running">执行中</option><option value="blocked">阻塞</option><option value="done">完成</option><option value="failed">失败</option><option value="cancelled">取消</option></select></div>
 <div id="flows"></div>
-<footer>修改计划时，直接告诉 agent：“将 F02-T03 换到 I01，等 F01-T02 完成后再开始”。编号固定，改名或取消不会重排。<br>“观测过期”仅表示超过 1 小时没有登记巡检，不等于训练失败。所有时间按浏览器本地时区显示。</footer>
+<footer>修改计划可直接对 agent 说：“将 F02-T02 换到 I01，依赖改为 F01-T02，预计 25 分钟”。点击编号即可复制。</footer>
 </main>
 <script>
 'use strict';
@@ -88,6 +104,10 @@ function el(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined && text !== null) node.textContent = String(text);
   if (className) node.className = className;
+  return node;
+}
+function css(node, styleText) {
+  node.setAttribute('style', styleText);
   return node;
 }
 function when(value) {
@@ -122,11 +142,40 @@ function detail(task) {
   }
   if (task.started_at) list.append(el('dt','实际开始'),el('dd',when(task.started_at)));
   if (task.finished_at) list.append(el('dt','实际结束'),el('dd',when(task.finished_at)));
-  if (task.progress_at) list.append(el('dt','进度采样时间'),el('dd',when(task.progress_at)));
-  if (task.not_before) list.append(el('dt','最早允许开始'),el('dd',when(task.not_before)));
+  if (task.checked_at) list.append(el('dt','最近巡检'),el('dd',when(task.checked_at)));
   if (!list.children.length) list.append(el('dd','尚无运行记录'));
   node.append(list);
   return node;
+}
+function taskProgress(task) {
+  if (task.status === 'done') return 100;
+  if (task.progress !== null && task.progress !== undefined) return Math.max(0, Math.min(100, Math.round(Number(task.progress))));
+  return 0;
+}
+function computeSpans(tasks, refIso) {
+  const baseMs = Date.parse(refIso) || Date.now();
+  const spans = {};
+  const flowEnds = {};
+  for (const task of tasks) {
+    const startIso = task.started_at || (task.estimate && task.estimate.start);
+    const finishIso = task.finished_at || (task.estimate && task.estimate.finish);
+    const depEnds = task.deps.map(d => spans[d] ? spans[d].endMs : 0);
+    const prevFlowEnd = flowEnds[task.flow] || 0;
+    const startMs = prevFlowEnd || Math.max(...depEnds, 0) || (startIso ? Date.parse(startIso) : baseMs);
+    const prog = taskProgress(task);
+    let durMs = 0;
+    if (startIso && finishIso && Date.parse(finishIso) > Date.parse(startIso)) {
+      durMs = Date.parse(finishIso) - Date.parse(startIso);
+    } else if (task.status === 'running' && prog > 0 && prog < 100 && task.progress_at && task.started_at) {
+      const obsMs = Date.parse(task.progress_at), stMs = Date.parse(task.started_at);
+      if (obsMs > stMs) durMs = (obsMs - stMs) * (100 / prog);
+    }
+    if (!durMs) durMs = Math.max(10, Number(task.duration_minutes) || 30) * 60000;
+    const endMs = startMs + Math.max(5 * 60000, durMs);
+    flowEnds[task.flow] = endMs;
+    spans[task.id] = {startMs, endMs, exact: Boolean(finishIso), progress: prog};
+  }
+  return spans;
 }
 function render() {
   if (!plan) return;
@@ -141,7 +190,7 @@ function render() {
     node.append(heading,el('p',item.ssh_alias + ' · ' + item.autodl_id,'muted id'));
     const tasks = plan.tasks.filter(task => task.instance === item.id);
     const active = tasks.filter(task => task.status === 'running');
-    node.append(el('p',active.length ? '占用：' + active.map(task => task.id + ' / ' + task.owner).join('、') : '无已登记的执行中任务'));
+    node.append(el('p',active.length ? '占用：' + active.map(task => task.id + (task.owner ? ' / ' + task.owner : '')).join('、') : '无已登记的执行中任务'));
     const queued = tasks.filter(task => ['pending','blocked'].includes(task.status)).length;
     node.append(el('p','后续任务 ' + queued + ' · 最近观测 ' + (item.observed_at ? when(item.observed_at) : '未登记'),'muted'));
     if (item.note) node.append(el('small',item.note));
@@ -154,14 +203,10 @@ function render() {
   const counts = Object.fromEntries(Object.keys(names).map(key => [key,0]));
   plan.tasks.forEach(task => counts[task.status]++);
   $('summary').textContent = plan.flows.length + ' 条流程 / ' + plan.tasks.length + ' 个任务 · ' + ['running','pending','blocked','done','failed','cancelled'].map(key => names[key] + ' ' + counts[key]).join(' · ');
-  const query = $('search').value.trim().toLowerCase();
-  const filter = $('status-filter').value;
+  const spans = computeSpans(plan.tasks, plan.generated_at || plan.updated_at);
   const flows = [];
   for (const flow of plan.flows) {
     const all = plan.tasks.filter(task => task.flow === flow.id);
-    const visible = all.filter(task => (filter === 'all' || task.status === filter) &&
-      [task.id,task.name,task.instance || '',task.owner,task.note].join(' ').toLowerCase().includes(query));
-    if (!visible.length && (query || filter !== 'all')) continue;
     const section = el('section',null,'flow');
     const heading = el('div',null,'flow-header');
     const title = el('h2'); title.append(copy(flow.id),document.createTextNode(' ' + flow.name));
@@ -169,45 +214,92 @@ function render() {
     const hasUnknown = all.some(task => !task.estimate.finish);
     const dates = all.map(task => task.estimate.finish).filter(Boolean).map(value => new Date(value).getTime());
     const end = dates.length ? new Date(Math.max(...dates)).toISOString() : null;
-    heading.append(title,el('span',all.filter(task => task.status === 'done').length + '/' + all.length + ' 完成 · ' +
+    const avgProg = all.length ? Math.round(all.reduce((s, t) => s + spans[t.id].progress, 0) / all.length) : 0;
+    heading.append(title,el('span',all.filter(task => task.status === 'done').length + '/' + all.length + ' 完成 · 流程总进度 ' + avgProg + '% · ' +
       (hasUnknown || !end ? '流程完成待估' : (unfinished.length ? '预计完成 ' : '实际完成 ') + when(end)),'muted'));
     section.append(heading);
-    if (!visible.length) { section.append(el('div','暂无任务','empty')); flows.push(section); continue; }
-    const wrap = el('div',null,'table-wrap');
-    wrap.tabIndex = 0; wrap.setAttribute('aria-label',flow.name + '任务表，可横向滚动');
-    const table = el('table');
-    const head = el('thead'), header = el('tr');
-    for (const title of ['任务 / 运行记录','状态 / 进度','实例 / owner','依赖','预计起止 / 实际完成','最近巡检']) {
-      const cell = el('th',title); cell.scope = 'col'; header.append(cell);
+    if (!all.length) { section.append(el('div','暂无任务','empty')); flows.push(section); continue; }
+    const minMs = spans[all[0].id].startMs;
+    const maxMs = spans[all[all.length - 1].id].endMs;
+    const totalMs = Math.max(maxMs - minMs, 5 * 60000);
+    const geom = {};
+    for (const t of all) {
+      const s = spans[t.id];
+      const left = ((s.startMs - minMs) / totalMs) * 100;
+      const right = ((s.endMs - minMs) / totalMs) * 100;
+      geom[t.id] = {left, width: right - left, progress: s.progress, exact: s.exact};
     }
-    head.append(header); table.append(head);
-    const body = el('tbody');
-    for (const task of visible) {
-      const row = el('tr');
-      const taskCell = el('td',null,'task');
-      taskCell.append(copy(task.id),el('div',task.name,'task-name'),detail(task));
-      const state = el('td'); state.append(status(task.status));
-      if (task.progress !== null) state.append(el('div',task.progress + '%','tags'));
-      if (task.estimate.ready) state.append(el('div','◇ 依赖与实例已就绪','tags'));
-      const resource = el('td'); resource.append(el('div',task.instance || '未分配','id'),el('small',task.owner || '未认领'));
-      const deps = el('td',task.deps.length ? task.deps.join('、') : '—','deps id');
-      const times = el('td',null,'time');
-      if (task.status === 'done') times.append(el('div','✓ 实际完成 ' + when(task.finished_at)));
-      else if (['failed','cancelled'].includes(task.status)) times.append(el('div','实际结束 ' + when(task.finished_at)));
-      else {
-        times.append(el('div',(task.status === 'running' ? '开始 ' : '预计开始 ') + when(task.estimate.start)));
-        times.append(el('div','预计完成 ' + when(task.estimate.finish)));
+    const activeTask = [...all].reverse().find(t => t.status === 'running') ||
+      [...all].reverse().find(t => t.status === 'done' || spans[t.id].progress > 0) || all[0];
+    const ag = geom[activeTask.id];
+    const flowCursorPct = Math.max(0, Math.min(100, ag.left + ag.width * (ag.progress / 100)));
+    const flowCursorText = activeTask.id + ' 进度 ' + ag.progress + '%';
+    const wrap = el('div',null,'gantt-wrap');
+    wrap.tabIndex = 0; wrap.setAttribute('aria-label',flow.name + '甘特图');
+    const gantt = el('div',null,'gantt');
+    const head = el('div',null,'gantt-head');
+    head.append(el('div','任务节点 / 实例 / 依赖','gantt-col-info'));
+    const axis = el('div',null,'gantt-axis');
+    for (const ratio of [0, 0.25, 0.5, 0.75, 1]) {
+      axis.append(el('span',when(new Date(minMs + totalMs * ratio).toISOString()),'gantt-tick'));
+    }
+    const axisCursor = css(el('div',null,'flow-progress-line'),'left:' + flowCursorPct.toFixed(1) + '%');
+    axisCursor.append(el('span','竖线: ' + flowCursorText,'flow-progress-tag'));
+    axis.append(axisCursor);
+    head.append(axis);
+    gantt.append(head);
+    const body = el('div',null,'gantt-body');
+    for (const task of all) {
+      const g = geom[task.id];
+      const row = el('div',null,'gantt-row');
+      const info = el('div',null,'gantt-info');
+      const top = el('div',null,'task-top');
+      top.append(copy(task.id),status(task.status));
+      const meta = el('div',null,'tags');
+      meta.append(
+        el('span','实例: ' + (task.instance || '未分配'),'id'),
+        el('span','进度: ' + g.progress + '%'),
+        el('span','依赖: ' + (task.deps.length ? task.deps.join('、') : '无'),'id')
+      );
+      if (task.estimate.ready) meta.append(el('span','◇ 已就绪'));
+      if (task.status === 'running' && task.estimate.stale) meta.append(el('span','⚠ 观测过期'));
+      info.append(top,el('div',task.name,'task-name'),meta,detail(task));
+      const track = el('div',null,'gantt-track');
+      track.append(css(el('div',null,'flow-progress-line'),'left:' + flowCursorPct.toFixed(1) + '%'));
+      const lane = el('div',null,'gantt-lane');
+      const bar = css(
+        el('div',null,'gantt-bar ' + task.status + (g.exact ? '' : ' is-unknown')),
+        'left:' + g.left.toFixed(1) + '%;width:' + g.width.toFixed(1) + '%'
+      );
+      bar.append(css(el('div',null,'gantt-bar-fill'),'width:' + g.progress + '%'));
+      const progLine = css(el('div',null,'gantt-progress-line'),'left:' + g.progress + '%');
+      progLine.title = task.id + ' 任务进度 ' + g.progress + '%';
+      progLine.append(el('span',g.progress + '%','gantt-progress-badge'));
+      bar.append(progLine,el('span',task.id + ' · ' + (task.instance || '未分配'),'gantt-bar-label id'));
+      lane.append(bar);
+      const eta = el('div',null,'gantt-eta');
+      if (task.status === 'done') {
+        eta.append(el('span','✓ 实际完成 ' + when(task.finished_at)));
+      } else if (['failed','cancelled'].includes(task.status)) {
+        eta.append(el('span','实际结束 ' + when(task.finished_at)));
+      } else {
+        eta.append(
+          el('span',(task.status === 'running' ? '开始 ' : '预计开始 ') + when(task.estimate.start)),
+          el('span','预计完成 ' + when(task.estimate.finish))
+        );
       }
-      if (task.duration_minutes !== null) times.append(el('small','预计总耗时 ' + task.duration_minutes + ' 分钟'));
-      if (task.estimate.reason) times.append(el('div',task.estimate.reason,'tags'));
-      const checked = el('td',null,'time');
-      checked.append(el('div',task.checked_at ? when(task.checked_at) : '未登记'));
-      if (task.status === 'running' && task.estimate.stale) checked.append(el('small','⚠ 观测过期，请巡检'));
-      row.append(taskCell,state,resource,deps,times,checked); body.append(row);
+      if (task.duration_minutes !== null) eta.append(el('span','预计耗时 ' + task.duration_minutes + 'm'));
+      if (task.estimate.reason) eta.append(el('span',task.estimate.reason));
+      track.append(lane,eta);
+      row.append(info,track);
+      body.append(row);
     }
-    table.append(body); wrap.append(table); section.append(wrap); flows.push(section);
+    gantt.append(body);
+    wrap.append(gantt);
+    section.append(wrap);
+    flows.push(section);
   }
-  $('flows').replaceChildren(...(flows.length ? flows : [el('div',plan.tasks.length ? '没有匹配的任务。' : '计划为空，请让 agent 添加流程和任务。','empty')]));
+  $('flows').replaceChildren(...(flows.length ? flows : [el('div','计划为空，请让 agent 添加流程和任务。','empty')]));
 }
 async function refresh() {
   if (loading) return;
@@ -234,8 +326,6 @@ try { initial = localStorage.getItem('trainops-theme') || initial; } catch {}
 theme(initial === 'dark' ? 'dark' : 'light');
 $('theme').addEventListener('click',() => theme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $('refresh').addEventListener('click',refresh);
-$('search').addEventListener('input',render);
-$('status-filter').addEventListener('change',render);
 refresh(); setInterval(refresh,10000);
 </script>
 </body>

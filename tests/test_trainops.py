@@ -9,7 +9,9 @@ import tempfile
 import threading
 import unittest
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
+
+OPEN = build_opener(ProxyHandler({})).open
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills/trainops/scripts/trainops.py"
@@ -348,6 +350,36 @@ class CLITests(unittest.TestCase):
         self.assertEqual(sum(p.returncode == 0 for p in processes), 1)
         self.assertEqual(self.store.read()["tasks"][0]["status"], "running")
 
+    def test_streamlined_init_batch_and_quick_set(self):
+        out = self.command(
+            "init", "--name", "极简实验",
+            "--instance", "GPU-A:id-a:gpu-a",
+            "--instance", "GPU-B:id-b:gpu-b",
+            "--flow", "基线", "--flow", "对照",
+            "--task", "F01:基线训练:I01:60",
+            "--task", "F01:基线评估:I01:15:F01-T01",
+            "--task", "F02:对照训练:I02:45:F01-T01",
+        )
+        self.assertEqual(out["instances"], ["I01", "I02"])
+        self.assertEqual(out["flows"], ["F01", "F02"])
+        self.assertEqual(len(out["tasks"]), 3)
+        # Single-agent set without --owner or --checked
+        self.command("set", "F01-T01", "--status", "running", "--progress", "40", "--note", "epoch 4")
+        t1 = self.store.read()["tasks"][0]
+        self.assertEqual(t1["owner"], "agent")
+        self.assertEqual(t1["progress"], 40)
+        self.assertIsNotNone(t1["checked_at"])
+        check_res = self.command("check")
+        self.assertTrue(check_res["ok"])
+        # Batch update & direct pending->done transition
+        self.command("batch", "--set", "F01-T01:done", "--set", "F02-T01:running:25:ok")
+        plan = self.store.read()
+        self.assertEqual(plan["tasks"][0]["status"], "done")
+        self.assertEqual(plan["tasks"][2]["status"], "running")
+        self.assertEqual(plan["tasks"][2]["progress"], 25)
+        self.command("set", "F01-T02", "--status", "done")
+        self.assertEqual(self.store.read()["tasks"][1]["status"], "done")
+
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):
@@ -367,13 +399,15 @@ class HTTPTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_page_and_snapshot(self):
-        with urlopen(self.url) as response:
+        with OPEN(self.url) as response:
             page = response.read().decode()
             self.assertIn("TrainOps", page)
+            self.assertIn("gantt", page)
+            self.assertIn("progress-line", page)
             self.assertIn("textContent", page)
             self.assertNotIn("innerHTML", page)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
-        with urlopen(self.url + "/api/plan") as response:
+        with OPEN(self.url + "/api/plan") as response:
             plan = json.load(response)
             self.assertEqual(len(plan["tasks"]), 7)
             self.assertIn("estimate", plan["tasks"][0])
@@ -381,23 +415,23 @@ class HTTPTests(unittest.TestCase):
     def test_arbitrary_paths_and_writes_rejected(self):
         for path in ("/.trainops/plan.json", "/../training-monitor.md", "/favicon.ico"):
             with self.subTest(path=path), self.assertRaises(HTTPError) as error:
-                urlopen(self.url + path)
+                OPEN(self.url + path)
             self.assertEqual(error.exception.code, 404)
         for method in ("POST", "PUT", "DELETE", "PATCH"):
             with self.subTest(method=method), self.assertRaises(HTTPError) as error:
-                urlopen(Request(self.url + "/api/plan", data=b"{}", method=method))
+                OPEN(Request(self.url + "/api/plan", data=b"{}", method=method))
             self.assertEqual(error.exception.code, 405)
 
     def test_external_host_is_rejected(self):
         request = Request(self.url + "/api/plan", headers={"Host": "external.example"})
         with self.assertRaises(HTTPError) as error:
-            urlopen(request)
+            OPEN(request)
         self.assertEqual(error.exception.code, 403)
 
     def test_corruption_is_reported_not_hidden(self):
         self.store.path.write_text("oops")
         with self.assertRaises(HTTPError) as error:
-            urlopen(self.url + "/api/plan")
+            OPEN(self.url + "/api/plan")
         self.assertEqual(error.exception.code, 500)
         self.assertIn("损坏", json.load(error.exception)["error"])
 

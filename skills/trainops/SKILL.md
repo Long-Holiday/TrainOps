@@ -1,91 +1,57 @@
 ---
 name: trainops
-description: 按需附加远程 GPU 训练管理能力：管理用户指定的多个 AutoDL 实例，维护并行实验流程、任务依赖和稳定编号的本地计划，展示预计完成时间，执行 SSH 训练、巡检、汇报与安全收尾。适用于安排实验、修改训练计划、查看进度、恢复或结束训练；不替换 agent 原有角色。
+description: 按需附加的多实例 GPU 训练管理能力：维护本地训练计划（并行流程、任务节点、依赖、预计完成时间与甘特图看板），执行结构性检查、AutoDL/SSH 训练、定时巡检汇报与安全关机。保留 agent 原有角色。
 ---
 
-# TrainOps：可插拔训练管理能力
+# TrainOps：可热插拔多实例训练管理
 
-这是一项附加能力，不是新的主 agent 身份，不限制你的原有工具，也不是开始训练或操作实例的即时授权。只有用户明确启用或交办相关任务时才使用。具体实验协议、范围和授权以当次任务及项目配置为准。
+本能力附加于当前 agent，不替换原有角色。仅在用户明确交办训练或计划任务时执行操作。
 
-## 加载与恢复
+## 1. 核心规则
 
-1. 首次使用先读本能力包的 [操作协议](references/protocol.md)。对本轮任务不需要的操作不要执行。
-2. 确定两个绝对路径：`SKILL_DIR` 是本文件所在目录；`PROJECT` 是本次实验的本地项目目录。不要把能力包目录误当成实验项目。下文的变量需由当前 shell 显式赋值；不能假设跨命令保留。
-3. 用本地工具查看计划（Python 3.10+，Linux/macOS/WSL）：
+- **本地计划账本**：计划保存在 `$PROJECT/.trainops/plan.json`，**仅用 CLI 修改，禁止直接 Edit/Write JSON**。
+- **固定编号**：实例 `I01`、流程 `F01`、任务 `F01-T01` 编号固定，对话汇报与改计划均使用编号。
+- **多实例与依赖**：用户明确提供实例 ID 与 SSH 别名映射，禁止猜测；同实例串行独占、不同实例并行，本地任务用 `local`；同流程批量建任务默认自动串联，跨流程依赖用 `--deps` 显式声明。
+- **结构性检查流程**：每次新建或调整计划后，必须执行 `$CLI check` 进行结构性检查（校验各流程连续性、依赖链闭合、实例分配与预计耗时完整性），确保甘特图块连续无断裂。
+- **远程执行规范**：SSH 远程命令前置 `source /etc/network_turbo`；代码在本地修改验证并推送指定 commit 后在服务器拉取；用 `tmux`/`screen` 后台会话运行训练并记录会话与日志路径。
+- **定时巡检与安全收尾**：用宿主真实调度工具建立每 30 分钟（或整点/半点）巡检，并通过 MCP `trainpilot`（不可用则在当前会话）汇报；重大节点即时汇报。关机前须确认进程退出、产物已保存且**跨流程无其他待跑任务复用该实例**。
 
+## 2. 精简 CLI 用法（防上下文膨胀）
+
+设 `CLI="python3 <本目录>/scripts/trainops.py -p <实验项目目录>"`。**日常查看一律用文本 `show`，避免输出全量 JSON 占用上下文。**
+
+### 1) 单次命令初始化完整计划（同流程未填依赖时自动串联前一节点）
 ```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" show --json
+$CLI init --name "双实例对照实验" \
+  --instance "基线GPU:autodl-id-a:gpu-a" --instance "对照GPU:autodl-id-b:gpu-b" \
+  --flow "基线流程" --flow "对照流程" --flow "结果汇总" \
+  --task "F01:基线训练:I01:120" \
+  --task "F01:基线评估:I01:15" \
+  --task "F02:对照训练:I02:90" \
+  --task "F02:对照评估:I02:15" \
+  --task "F03:对比报告:local:20:F01-T02,F02-T02"
 ```
 
-4. 首次无计划时用 `init --name "项目名称"` 创建；已有计划时不重建。先核对实例映射、任务 owner、远程进程、会话、代码版本、日志、检查点和已有巡检调度，不能仅凭计划里的 running 再次启动训练。
-5. 若 MCP/SSH/调度工具不可用，只处理不依赖它们的本地工作，并明确记录阻塞。不要声称创建了训练、通知、巡检或完成了关机。
-
-## 计划是共享工作账本
-
-- 数据在 `$PROJECT/.trainops/plan.json`。**通过 CLI 增量修改，不用 Write/Edit 覆盖 JSON**；CLI 会在文件锁内重新读取、校验和原子保存。多个 agent 必须使用同一个本地项目目录，不能各维护一份副本。
-- 实例 `I01`、流程 `F01`、任务 `F01-T01`。编号永不重排；引用与汇报必须带编号。先建流程和节点再执行，跨流程依赖使用完整任务编号。
-- 用户明确提供每个 AutoDL ID 与 SSH 别名的映射，禁止猜测。每个任务指定 `I01` 等实例；本地任务显式指定 `local`；未分配的任务不能开始。
-- 每条实例同一时刻只容许一个执行中任务；不同实例可以并行。需要前后顺序就写依赖，不靠列表位置暗示；汇总节点可以依赖多个流程的评估节点。
-- 耗时有依据才填 `--minutes`，未知用 `?`；用户给定最早开始时间时用带时区的 `--not-before`。预计时间是动态估算，不是已建立的自动调度。
-- 运行前以本次会话唯一名称认领：`task set F01-T01 --status running --owner agent-a-session-01`。这是本地执行锁，涵盖本节点的准备/启动/运行阶段，**并不意味着远程训练已启动**。收到占用错误就停止派发，不换个 owner 规避冲突。
-- 认领成功后再操作远程；操作前仍需核实远程有无未登记进程。实际启动后登记 command、commit、session、log、output；只有观察到事实后才用 `--checked` 或填进度。
-- 运行中的更新必须附相同 `--owner`。owner 是协作标记，不是安全认证；其他 agent 不应冒用。owner 失联时先核实远程，协调原 owner 停止工作，再明确接管。
-- 节点变化、真实巡检和故障均及时落盘。完成必须先确认进程退出、产物可用，再标 done；不要将失败/取消依赖视作完成。修改计划时不悄悄删除依赖或减少实验范围。
-
-## 常用操作
-
-下列示例中的编号、耗时、owner 必须替换为当前计划的真实值。
-
-登记实例、建立流程：
-
+### 2) 结构性检查流程与查看计划
 ```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" instance add --name "基线 GPU" --autodl-id "用户提供的实例ID" --ssh-alias "用户提供的SSH别名"
+$CLI check   # 检查各流程连续性、依赖链、实例分配与耗时是否完整
+$CLI show    # 紧凑文本查看全局进度与预计完成时间
 ```
 
+### 3) 更新状态、进度与修改计划
 ```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" flow add --name "基线实验"
+$CLI set F01-T01 --status running --session "tmux:F01-T01" --log "runs/F01-T01/train.log" --command "python train.py"
+$CLI set F01-T01 --progress 40 --note "epoch 8, loss=0.32"
+$CLI set F01-T01 --status done --output "runs/F01-T01"
+$CLI set F02-T02 --instance I01 --deps F01-T02,F02-T01 --minutes 25
+$CLI batch --task "F03:补充实验:I02:45" --set "F01-T01:done" --set "F02-T01:running:55:训练正常"
 ```
 
-建立训练节点、指定跨流程依赖：
-
+### 4) 实例状态、巡检登记与甘特图面板
 ```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" task add --flow F02 --name "对照评估" --instance I02 --minutes 20 --deps F02-T01,F01-T02
+$CLI instance set I01 --status on --note "GPU 正常"
+$CLI monitor --schedule-id "真实调度ID" --note "每30分钟巡检"
+$CLI serve --port 8765   # 后台启动并记录 PID，访问 http://127.0.0.1:8765 查看各流程连续甘特图与进度竖线
 ```
 
-修改未运行节点（依赖列表整体替换；`--deps ""` 清空，`--instance none` 取消分配，`--minutes '?'` 改为待估）：
-
-```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" task set F02-T02 --instance I01 --deps F01-T03 --minutes 25
-```
-
-登记实际观测及运行证据（不要照抄示例制造观测）：
-
-```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" task set F01-T01 --owner agent-a-session-01 --progress 35 --checked --session "tmux:F01-T01" --log "runs/F01-T01/train.log" --note "已核实进程存活，日志持续更新"
-```
-
-运行记录的其他字段：`--command "实际命令" --commit "实际提交SHA" --output "实际产物目录"`。所有记录仅作数据保存，CLI 不执行这些命令。
-
-确认完成后：
-
-```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" task set F01-T01 --owner agent-a-session-01 --status done --output "已核实的产物目录" --checked
-```
-
-展示页面（在可持续运行的本地进程/会话中启动，避免阻塞当前 agent；记录服务 PID，结束时只清理自己启动的服务）：
-
-```bash
-python3 "$SKILL_DIR/scripts/trainops.py" --project "$PROJECT" serve --port 8765
-```
-
-地址 `http://127.0.0.1:8765`。页面没有写操作，不执行 SSH、不自动启动依赖任务。只有开启该服务才会实时刷新，不把页面刷新当作巡检。
-
-## 巡检和收尾
-
-- 原生调度工具优先：默认每 30 分钟巡检，有重大节点立即额外汇报；用户明确指定整点/半点时按其要求执行。必须实际创建可执行任务，记录调度 ID、过期时间、是否依赖当前会话。若缺少调度能力，说明限制并确定替代方案，不忙循环、不虚构后台监控。
-- 创建真实调度后用 `monitor --schedule-id "真实ID" --expires-at "带时区时间" --note "生命周期及巡检范围"` 登记。此命令**只是记账，不创建定时器**；无过期时间时省略该参数，在 note 解释。
-- 汇报优先用已配置且目的地明确的 MCP trainpilot；无法使用时在当前会话报告。内容包含编号、实例、进度、指标来源、异常、预计时间及下一步，不编造缺失数据。
-- 每台实例独立收尾：不能因一条流程结束就关闭仍服务其他流程的实例；先检查本项目所有相关节点和远程实际进程，确认检查点/结果保存以及用户的关机授权。
-- 用户停用能力时，先交代仍运行的节点、实例和调度的负责人/接管方式，再停止新操作。**停用不等于取消训练、删除计划、停止远程进程或关机。** 未明确授权时保留资源并说明费用与无人监控风险。
-
-更详细的多实例调度、恢复与安全边界见 [操作协议](references/protocol.md)。
+异常处理与恢复细节见 [references/protocol.md](references/protocol.md)（平时无需预读）。
