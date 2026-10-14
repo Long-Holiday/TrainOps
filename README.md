@@ -57,20 +57,35 @@ $CLI set F02-T02 --instance I01 --deps F01-T02,F02-T01 --minutes 25
 $CLI batch --task "F03:消融补充:I02:40" --set "F01-T02:done" --set "F02-T01:running:60"
 ```
 
+**任务写法**：`流程ID:任务名[:实例[:耗时[:依赖]]]`。中间字段不确定时用 `-` 占位跳过，例如只想登记“F01 上耗时 30 分钟的评估、依赖 F01-T01”：
+
+```bash
+$CLI batch --task "F01:评估:-:30:F01-T01"
+```
+
+耗时写 `?` 表示待估（文本摘要显示“待估”，面板按默认 30 分钟占位绘制）。依赖用逗号分隔，空字符串表示清空；`--instance -` 等价于 `none`（不占实例，可并行）。
+
 ## 4. 命令速查
+
+设 `CLI="python3 skills/trainops/scripts/trainops.py -p /你的路径/my-experiment"`；加 `--version` 可查看当前 schema 版本。
 
 | 命令 | 说明 |
 |---|---|
-| `init --name ... [--instance ...] [--flow ...] [--task ...]` | 新建计划，支持一次传入全部实例、流程和任务（同流程自动串联） |
-| `check` | 结构性检查（校验流程连续性、依赖链闭合、实例与预计耗时完整性） |
-| `batch [--instance ...] [--flow ...] [--task ...] [--set ...]` | 单次命令批量追加实例/流程/任务或批量更新任务进度与状态 |
+| `init --name ... [--instance ...] [--flow ...] [--task ...]` | 新建计划，支持一次传入全部实例、流程和任务（同流程自动串联）；已有计划时拒绝覆盖 |
+| `demo [--force]` | 在空目录生成演示计划，不涉及任何远程操作；`--force` 用于重置演示目录或已被改动的计划 |
+| `check [--strict]` | 结构性检查：返回问题（阻断性）与提醒（如相邻任务时间空隙过大）两组结果；`--strict` 在存在问题时不返回 0 退出码，便于脚本或 CI 拦截 |
+| `show` / `show --json` | 紧凑文本摘要（推荐 agent 使用）或完整 JSON 快照；文本模式下标出 `可开工`（依赖已就绪）、`未巡检`（running 超过 1 小时未更新进度）与 `已超期` |
 | `set <任务ID> [--status ...] [--progress ...] [--instance ...] [--deps ...] [--minutes ...]` | 更新单个任务（`task set` 的简写） |
-| `show` / `show --json` | 紧凑文本摘要（推荐 agent 使用）或完整 JSON 快照 |
-| `serve --port 8765` | 启动本地只读甘特图 Web 面板（仅监听 `127.0.0.1`） |
+| `task add --flow F01 --name 名称 [--instance I01] [--minutes 30] [--deps ...] [--not-before ...]` | 新增单个任务；`flow add --name ...`、`instance add` / `instance set I01 --status on --observed` 同理 |
+| `batch [--instance ...] [--flow ...] [--task ...] [--set ...]` | 单次命令批量追加实例/流程/任务或批量更新任务进度与状态（`--set "F01-T01:done:100:备注"`） |
+| `monitor --note ... [--schedule-id ...] [--expires-at ...]` | 登记外部调度器/巡检安排（仅记录，不创建定时任务） |
+| `serve --port 8765` | 启动本地只读甘特图 Web 面板（仅监听 `127.0.0.1`，写入一律拒绝） |
+
+几个容易被忽略的约束：同一实例同时只允许一个 `running` 任务（`local` 不占 GPU，可并行）；依赖未完成的任务不能被标记为 `running`；实例上仍有任务运行时不能把该实例标为 `off` / `unreachable`。
 
 ## 5. 测试
 
 ```bash
-python3 -m unittest discover -s tests -v
-node tests/test_web.cjs
+python3 -m unittest discover -s tests -v   # CLI / 计划账本 / 并发写 / 演示快照一致性
+node tests/test_web.cjs                    # 面板渲染：甘特几何、滚动保持、逾期提示、XSS 转义
 ```

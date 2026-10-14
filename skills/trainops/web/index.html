@@ -127,6 +127,8 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .gantt-eta { margin:6px var(--pad) 0; font-size:13px; line-height:1.3; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; position:relative; z-index:2; }
 .eta-done { color:var(--good); }
 .eta-failed { color:var(--critical); }
+.eta-overdue { color:var(--warning); font-weight:600; }
+.eta-stale { color:var(--warning); }
 .id { font-family:var(--mono); font-size:13px; font-variant-numeric:tabular-nums; }
 .copy { border:1px solid var(--line-strong); padding:1px 7px; background:var(--surface); color:var(--ink); border-radius:5px; font-family:var(--mono); font-size:12.5px; font-weight:600; flex-shrink:0; }
 .copy:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
@@ -174,6 +176,7 @@ const $ = id => document.getElementById(id);
 const names = {pending:'待执行',running:'执行中',blocked:'阻塞',done:'已完成',failed:'失败',cancelled:'已取消',unknown:'未观测',off:'已关机',starting:'开机中',on:'开机',unreachable:'不可达'};
 let plan = null;
 let loading = false;
+const flowWraps = new Map();  // 流程 ID → 当前 .gantt-wrap 元素，用来保留横向滚动位置
 function el(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined && text !== null) node.textContent = String(text);
@@ -213,6 +216,9 @@ function taskProgress(task) {
   if (task.progress !== null && task.progress !== undefined) return Math.max(0, Math.min(100, Math.round(Number(task.progress))));
   return 0;
 }
+/* 条形几何以服务端 estimate 为准：后端排程（依赖、实例车道、not_before）是唯一事实来源，
+   前端只负责打点。仅当服务端还没给出开始时间时，才用同流程前序与依赖结束时间兜底，
+   否则时间轴、ETA 文案与红色总进度线会互相矛盾。 */
 function computeSpans(tasks, refIso) {
   const baseMs = Date.parse(refIso) || Date.now();
   const spans = {};
@@ -221,8 +227,8 @@ function computeSpans(tasks, refIso) {
     const startIso = task.started_at || (task.estimate && task.estimate.start);
     const finishIso = task.finished_at || (task.estimate && task.estimate.finish);
     const depEnds = task.deps.map(d => spans[d] ? spans[d].endMs : 0);
-    const prevFlowEnd = flowEnds[task.flow] || 0;
-    const startMs = prevFlowEnd || Math.max(...depEnds, 0) || (startIso ? Date.parse(startIso) : baseMs);
+    const scheduled = startIso ? Date.parse(startIso) : 0;
+    const startMs = scheduled || Math.max(flowEnds[task.flow] || 0, ...depEnds, 0) || baseMs;
     const prog = taskProgress(task);
     let durMs = 0;
     if (startIso && finishIso && Date.parse(finishIso) > Date.parse(startIso)) {
@@ -240,6 +246,10 @@ function computeSpans(tasks, refIso) {
 }
 function render() {
   if (!plan) return;
+  /* 重绘会替换掉整个 DOM，先记下各流程当前的横向滚动位置，画完再还原，
+     否则每 10 秒轮询一次就把用户正在看的位置弹回最左边。 */
+  const scrolled = new Map([...flowWraps].map(([id, wrap]) => [id, wrap.scrollLeft || 0]));
+  flowWraps.clear();
   $('title').textContent = plan.name;
   document.title = 'TrainOps · ' + plan.name;
   $('updated').textContent = '更新 ' + when(plan.updated_at) + ' · rev ' + plan.revision;
@@ -346,9 +356,12 @@ function render() {
         eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
       } else if (['failed','cancelled'].includes(task.status)) {
         eta.append(el('span',when(task.finished_at) + ' 结束','eta-failed'));
+      } else if (task.estimate.overdue) {
+        eta.append(el('span','已超过预计完成时间，需重新估计','eta-overdue'));
       } else {
         eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估') + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
       }
+      if (task.estimate.stale) eta.append(el('span','超过 1 小时未巡检','eta-stale'));
       track.append(lane,eta);
       row.append(info,track);
       body.append(row);
@@ -356,9 +369,14 @@ function render() {
     gantt.append(body);
     wrap.append(gantt);
     section.append(wrap);
+    flowWraps.set(flow.id,wrap);
     flows.push(section);
   }
   $('flows').replaceChildren(...(flows.length ? flows : [el('div','暂无计划','empty')]));
+  for (const [id, wrap] of flowWraps) {
+    const left = scrolled.get(id);
+    if (left) wrap.scrollLeft = left;
+  }
 }
 async function refresh() {
   if (loading) return;
@@ -385,7 +403,8 @@ try { initial = localStorage.getItem('trainops-theme') || initial; } catch {}
 theme(initial === 'dark' ? 'dark' : 'light');
 $('theme').addEventListener('click',() => theme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $('refresh').addEventListener('click',refresh);
-refresh(); setInterval(refresh,10000);
+/* 页面在后台时不做无谓轮询；回到前台后最多 10 秒内自动刷新一次。 */
+refresh(); setInterval(() => { if (!document.hidden) refresh(); },10000);
 </script>
 </body>
 </html>

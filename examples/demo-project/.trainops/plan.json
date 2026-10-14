@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "双实例实验 · 演示（不会连接服务器）",
   "revision": 1,
-  "updated_at": "2026-10-14T08:56:58+00:00",
+  "updated_at": "2026-10-14T15:16:17+00:00",
   "next_instance": 3,
   "next_flow": 4,
   "instances": [
@@ -12,7 +12,7 @@
       "autodl_id": "DEMO-NOT-REAL-A",
       "ssh_alias": "demo-gpu-a",
       "status": "on",
-      "observed_at": "2026-10-14T08:56:58+00:00",
+      "observed_at": "2026-10-14T15:16:17+00:00",
       "note": "演示占位，非真实实例"
     },
     {
@@ -21,7 +21,7 @@
       "autodl_id": "DEMO-NOT-REAL-B",
       "ssh_alias": "demo-gpu-b",
       "status": "on",
-      "observed_at": "2026-10-14T08:56:58+00:00",
+      "observed_at": "2026-10-14T15:16:17+00:00",
       "note": "演示占位，非真实实例"
     }
   ],
@@ -52,18 +52,12 @@
       "duration_minutes": 10,
       "not_before": null,
       "status": "done",
-      "owner": "demo-agent-a",
       "progress": 100,
-      "started_at": "2026-10-14T08:26:58+00:00",
-      "finished_at": "2026-10-14T08:36:58+00:00",
-      "checked_at": "2026-10-14T08:26:58+00:00",
-      "progress_at": "2026-10-14T08:36:58+00:00",
-      "note": "",
-      "command": "",
-      "commit": "",
-      "session": "",
-      "log": "",
-      "output": ""
+      "started_at": "2026-10-14T14:46:17+00:00",
+      "finished_at": "2026-10-14T14:56:17+00:00",
+      "checked_at": null,
+      "progress_at": "2026-10-14T14:56:17+00:00",
+      "note": ""
     },
     {
       "id": "F01-T02",
@@ -76,18 +70,12 @@
       "duration_minutes": 120,
       "not_before": null,
       "status": "running",
-      "owner": "demo-agent-a",
       "progress": 18,
-      "started_at": "2026-10-14T08:36:58+00:00",
+      "started_at": "2026-10-14T14:56:17+00:00",
       "finished_at": null,
-      "checked_at": "2026-10-14T08:56:58+00:00",
-      "progress_at": "2026-10-14T08:56:58+00:00",
-      "note": "",
-      "command": "python train.py --config baseline.yaml",
-      "commit": "demo-only",
-      "session": "tmux: F01-T02",
-      "log": "runs/F01-T02/train.log",
-      "output": "runs/F01-T02/"
+      "checked_at": "2026-10-14T15:16:17+00:00",
+      "progress_at": "2026-10-14T15:16:17+00:00",
+      "note": ""
     },
     {
       "id": "F01-T03",
@@ -100,18 +88,12 @@
       "duration_minutes": 15,
       "not_before": null,
       "status": "pending",
-      "owner": "",
       "progress": null,
       "started_at": null,
       "finished_at": null,
       "checked_at": null,
       "progress_at": null,
-      "note": "",
-      "command": "",
-      "commit": "",
-      "session": "",
-      "log": "",
-      "output": ""
+      "note": ""
     },
     {
       "id": "F02-T01",
@@ -124,18 +106,12 @@
       "duration_minutes": 90,
       "not_before": null,
       "status": "running",
-      "owner": "demo-agent-b",
       "progress": 15,
-      "started_at": "2026-10-14T08:36:58+00:00",
+      "started_at": "2026-10-14T14:56:17+00:00",
       "finished_at": null,
-      "checked_at": "2026-10-14T08:56:58+00:00",
-      "progress_at": "2026-10-14T08:56:58+00:00",
-      "note": "",
-      "command": "",
-      "commit": "",
-      "session": "",
-      "log": "runs/F02-T01/train.log",
-      "output": ""
+      "checked_at": "2026-10-14T15:16:17+00:00",
+      "progress_at": "2026-10-14T15:16:17+00:00",
+      "note": ""
     },
     {
       "id": "F02-T02",
@@ -148,18 +124,12 @@
       "duration_minutes": 15,
       "not_before": null,
       "status": "pending",
-      "owner": "",
       "progress": null,
       "started_at": null,
       "finished_at": null,
       "checked_at": null,
       "progress_at": null,
-      "note": "",
-      "command": "",
-      "commit": "",
-      "session": "",
-      "log": "",
-      "output": ""
+      "note": ""
     },
     {
       "id": "F03-T01",
@@ -173,18 +143,12 @@
       "duration_minutes": 20,
       "not_before": null,
       "status": "pending",
-      "owner": "",
       "progress": null,
       "started_at": null,
       "finished_at": null,
       "checked_at": null,
       "progress_at": null,
-      "note": "",
-      "command": "",
-      "commit": "",
-      "session": "",
-      "log": "",
-      "output": ""
+      "note": ""
     },
     {
       "id": "F03-T02",
@@ -197,23 +161,17 @@
       "duration_minutes": null,
       "not_before": null,
       "status": "pending",
-      "owner": "",
       "progress": null,
       "started_at": null,
       "finished_at": null,
       "checked_at": null,
       "progress_at": null,
-      "note": "",
-      "command": "",
-      "commit": "",
-      "session": "",
-      "log": "",
-      "output": ""
+      "note": ""
     }
   ],
   "monitor": {
     "schedule_id": "",
     "expires_at": null,
-    "note": "仅演示数据；没有创建巡检任务或实际训练"
+    "note": "未配置自动巡检"
   }
 }

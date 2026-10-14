@@ -96,6 +96,42 @@ async function main() {
   assert.equal(context.document.documentElement.dataset.theme, 'light');
   console.log('PASS: theme toggle');
 
+  const barBox = gantt => byClass(gantt, 'gantt-bar').map(bar => {
+    const m = bar.style.match(/left:([\d.]+)%;width:([\d.]+)%/);
+    return {left: Number(m[1]), width: Number(m[2])};
+  });
+
+  // 排程以后端 estimate 为准：后端把节点排到更晚时，条形必须让出空隙，而不是被强行首尾相接
+  const later = new Date(Date.parse(data.tasks[2].estimate.start) + 3 * 3600e3).toISOString();
+  data.tasks[2].estimate.start = later;
+  data.tasks[2].estimate.finish = new Date(Date.parse(later) + 15 * 60000).toISOString();
+  await nodes.refresh.fire('click');
+  const shifted = barBox(byClass(nodes.flows, 'gantt')[0]);
+  // 阈值取 1%：连续条形因 left/width 各自保留一位小数，最多出现约 0.1% 的舍入缝隙，
+  // 而本用例制造的空隙占整图一半以上，两者不会混淆。
+  const scheduledGap = shifted[2].left - (shifted[1].left + shifted[1].width);
+  assert.ok(scheduledGap > 1,
+    `Server-scheduled start must win over same-flow contiguity (gap=${scheduledGap.toFixed(1)}%)`);
+  console.log('PASS: bar geometry follows the server-side schedule');
+
+  // 每 10 秒重绘一次，但不能把用户正在看的横向滚动位置弹回去
+  byClass(nodes.flows, 'gantt-wrap')[0].scrollLeft = 137;
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.flows, 'gantt-wrap')[0].scrollLeft, 137,
+    'Horizontal scroll must survive the periodic refresh');
+  console.log('PASS: gantt horizontal scroll is preserved across refresh');
+
+  // 逾期与巡检超时提示（先清干净，避免演示快照本身随时间变旧影响断言）
+  data.tasks.forEach(task => { task.estimate.overdue = false; task.estimate.stale = false; });
+  data.tasks[1].estimate.overdue = true;
+  data.tasks[1].estimate.stale = true;
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.flows, 'eta-overdue').length, 1);
+  assert.equal(byClass(nodes.flows, 'eta-stale').length, 1);
+  assert.match(nodes.flows.textContent, /已超过预计完成时间，需重新估计/);
+  assert.match(nodes.flows.textContent, /超过 1 小时未巡检/);
+  console.log('PASS: overdue and never-inspected running tasks are flagged');
+
   const malicious = '<img src=x onerror="alert(1)">';
   data.name = malicious; data.tasks[0].note = malicious;
   await nodes.refresh.fire('click');
