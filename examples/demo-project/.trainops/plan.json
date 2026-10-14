@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "name": "双实例实验 · 演示（不会连接服务器）",
+  "revision": 1,
+  "updated_at": "2026-10-14T08:56:58+00:00",
+  "next_instance": 3,
+  "next_flow": 4,
+  "instances": [
+    {
+      "id": "I01",
+      "name": "基线 / GPU A",
+      "autodl_id": "DEMO-NOT-REAL-A",
+      "ssh_alias": "demo-gpu-a",
+      "status": "on",
+      "observed_at": "2026-10-14T08:56:58+00:00",
+      "note": "演示占位，非真实实例"
+    },
+    {
+      "id": "I02",
+      "name": "消融 / GPU B",
+      "autodl_id": "DEMO-NOT-REAL-B",
+      "ssh_alias": "demo-gpu-b",
+      "status": "on",
+      "observed_at": "2026-10-14T08:56:58+00:00",
+      "note": "演示占位，非真实实例"
+    }
+  ],
+  "flows": [
+    {
+      "id": "F01",
+      "name": "基线模型",
+      "next_task": 4
+    },
+    {
+      "id": "F02",
+      "name": "消融对照",
+      "next_task": 3
+    },
+    {
+      "id": "F03",
+      "name": "结果汇总",
+      "next_task": 3
+    }
+  ],
+  "tasks": [
+    {
+      "id": "F01-T01",
+      "flow": "F01",
+      "name": "数据与代码就绪",
+      "instance": "local",
+      "deps": [],
+      "duration_minutes": 10,
+      "not_before": null,
+      "status": "done",
+      "owner": "demo-agent-a",
+      "progress": 100,
+      "started_at": "2026-10-14T08:16:58+00:00",
+      "finished_at": "2026-10-14T08:26:58+00:00",
+      "checked_at": "2026-10-14T08:16:58+00:00",
+      "progress_at": "2026-10-14T08:26:58+00:00",
+      "note": "",
+      "command": "",
+      "commit": "",
+      "session": "",
+      "log": "",
+      "output": ""
+    },
+    {
+      "id": "F01-T02",
+      "flow": "F01",
+      "name": "基线训练",
+      "instance": "I01",
+      "deps": [
+        "F01-T01"
+      ],
+      "duration_minutes": 120,
+      "not_before": null,
+      "status": "running",
+      "owner": "demo-agent-a",
+      "progress": 18,
+      "started_at": "2026-10-14T08:36:58+00:00",
+      "finished_at": null,
+      "checked_at": "2026-10-14T08:56:58+00:00",
+      "progress_at": "2026-10-14T08:56:58+00:00",
+      "note": "",
+      "command": "python train.py --config baseline.yaml",
+      "commit": "demo-only",
+      "session": "tmux: F01-T02",
+      "log": "runs/F01-T02/train.log",
+      "output": "runs/F01-T02/"
+    },
+    {
+      "id": "F01-T03",
+      "flow": "F01",
+      "name": "基线评估",
+      "instance": "I01",
+      "deps": [
+        "F01-T02"
+      ],
+      "duration_minutes": 15,
+      "not_before": null,
+      "status": "pending",
+      "owner": "",
+      "progress": null,
+      "started_at": null,
+      "finished_at": null,
+      "checked_at": null,
+      "progress_at": null,
+      "note": "",
+      "command": "",
+      "commit": "",
+      "session": "",
+      "log": "",
+      "output": ""
+    },
+    {
+      "id": "F02-T01",
+      "flow": "F02",
+      "name": "消融训练",
+      "instance": "I02",
+      "deps": [
+        "F01-T01"
+      ],
+      "duration_minutes": 90,
+      "not_before": null,
+      "status": "running",
+      "owner": "demo-agent-b",
+      "progress": 15,
+      "started_at": "2026-10-14T08:41:58+00:00",
+      "finished_at": null,
+      "checked_at": "2026-10-14T08:56:58+00:00",
+      "progress_at": "2026-10-14T08:56:58+00:00",
+      "note": "",
+      "command": "",
+      "commit": "",
+      "session": "",
+      "log": "runs/F02-T01/train.log",
+      "output": ""
+    },
+    {
+      "id": "F02-T02",
+      "flow": "F02",
+      "name": "消融评估",
+      "instance": "I02",
+      "deps": [
+        "F02-T01"
+      ],
+      "duration_minutes": 15,
+      "not_before": null,
+      "status": "pending",
+      "owner": "",
+      "progress": null,
+      "started_at": null,
+      "finished_at": null,
+      "checked_at": null,
+      "progress_at": null,
+      "note": "",
+      "command": "",
+      "commit": "",
+      "session": "",
+      "log": "",
+      "output": ""
+    },
+    {
+      "id": "F03-T01",
+      "flow": "F03",
+      "name": "比较指标并整理报告",
+      "instance": "local",
+      "deps": [
+        "F01-T03",
+        "F02-T02"
+      ],
+      "duration_minutes": 20,
+      "not_before": null,
+      "status": "pending",
+      "owner": "",
+      "progress": null,
+      "started_at": null,
+      "finished_at": null,
+      "checked_at": null,
+      "progress_at": null,
+      "note": "",
+      "command": "",
+      "commit": "",
+      "session": "",
+      "log": "",
+      "output": ""
+    },
+    {
+      "id": "F03-T02",
+      "flow": "F03",
+      "name": "根据结果设计下一轮",
+      "instance": "local",
+      "deps": [
+        "F03-T01"
+      ],
+      "duration_minutes": null,
+      "not_before": null,
+      "status": "pending",
+      "owner": "",
+      "progress": null,
+      "started_at": null,
+      "finished_at": null,
+      "checked_at": null,
+      "progress_at": null,
+      "note": "",
+      "command": "",
+      "commit": "",
+      "session": "",
+      "log": "",
+      "output": ""
+    }
+  ],
+  "monitor": {
+    "schedule_id": "",
+    "expires_at": null,
+    "note": "仅演示数据；没有创建巡检任务或实际训练"
+  }
+}

@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.trainops/
+!examples/demo-project/.trainops/
+examples/demo-project/.trainops/*
+!examples/demo-project/.trainops/plan.json

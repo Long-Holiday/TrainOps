@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>TrainOps · 项目计划</title>
+<style>
+:root { color-scheme: light; --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --secondary:#52514e; --line:#e1e0d9; --accent:#2a78d6; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b; --soft:#f0efec; }
+:root[data-theme="dark"] { color-scheme:dark; --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --secondary:#c3c2b7; --line:#383835; --accent:#3987e5; --soft:#272725; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--ink); font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+main { max-width:1440px; margin:auto; padding:32px 28px 48px; }
+header { display:flex; justify-content:space-between; gap:24px; align-items:flex-start; margin-bottom:20px; }
+.brand { font-size:12px; font-weight:700; letter-spacing:.14em; color:var(--secondary); }
+h1 { font-size:26px; margin:6px 0; line-height:1.3; }
+h2 { font-size:17px; margin:0; }
+p { margin:6px 0; }
+.meta,.muted,small { color:var(--secondary); }
+.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+button,input,select { border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:6px; font:inherit; padding:7px 10px; }
+button { cursor:pointer; }
+button:hover { background:var(--soft); }
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+#search { min-width:260px; flex:1; }
+.notice { border-left:3px solid var(--accent); background:var(--surface); padding:10px 14px; margin:16px 0; }
+#error { border-left-color:var(--critical); }
+.hidden { display:none; }
+.instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin:12px 0 20px; }
+.instance { padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow-wrap:anywhere; }
+.instance-title { display:flex; justify-content:space-between; gap:12px; font-weight:600; }
+.instance p { margin:4px 0 0; }
+#summary { margin:20px 0 12px; }
+.flow { margin:18px 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface); }
+.flow-header { padding:14px 16px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+.table-wrap { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; min-width:1050px; }
+th,td { text-align:left; padding:12px 14px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--secondary); font-size:12px; font-weight:500; white-space:nowrap; }
+tr:last-child td { border-bottom:0; }
+td.time { min-width:180px; font-variant-numeric:tabular-nums; }
+td.task { min-width:260px; max-width:390px; overflow-wrap:anywhere; }
+.id { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; }
+.copy { border:0; padding:0 3px 0 0; background:none; text-decoration:underline; text-decoration-color:var(--line); text-underline-offset:3px; }
+.status { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--secondary); flex-shrink:0; }
+.running .dot { background:var(--accent); }
+.done .dot,.on .dot { background:var(--good); }
+.blocked .dot,.starting .dot { background:var(--warning); }
+.failed .dot,.unreachable .dot { background:var(--critical); }
+.task-name { font-weight:600; margin:4px 0; }
+.tags { margin-top:5px; font-size:12px; color:var(--secondary); }
+details { margin-top:8px; }
+summary { cursor:pointer; color:var(--secondary); font-size:12px; width:fit-content; }
+dl { font-size:12px; margin:10px 0 0; }
+dt { color:var(--secondary); margin-top:7px; }
+dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.deps { max-width:175px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.empty { padding:28px 16px; color:var(--secondary); }
+footer { margin-top:26px; border-top:1px solid var(--line); padding-top:14px; font-size:12px; color:var(--secondary); }
+@media(max-width:650px) { main { padding:20px 14px; } header { flex-direction:column; gap:12px; } h1 { font-size:22px; } #search { min-width:160px; } .flow-header { gap:6px; } }
+@media(forced-colors:active) { .dot { border:2px solid CanvasText; } .notice { border:1px solid CanvasText; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div><div class="brand">TRAINOPS / LOCAL PLAN</div><h1 id="title">项目计划</h1><p class="meta" id="updated">正在读取本地计划…</p></div>
+  <div class="controls"><button id="refresh" type="button">立即刷新</button><button id="theme" type="button" aria-label="切换明暗主题">深色模式</button></div>
+</header>
+<div class="notice">只读计划 · 每 10 秒刷新。预计时间来自耗时、依赖与实例队列，不代表已启动训练；实际执行和巡检由 agent 负责。</div>
+<div class="notice hidden" id="error" role="alert"></div>
+<section aria-label="实例分配"><h2>实例分配</h2><div class="instances" id="instances"></div></section>
+<p class="meta" id="monitor"></p>
+<div id="summary" aria-live="polite"></div>
+<div class="controls"><input id="search" type="search" placeholder="搜索任务编号、名称、实例或 owner" aria-label="搜索任务"><label for="status-filter">状态</label><select id="status-filter"><option value="all">全部状态</option><option value="pending">待执行</option><option value="running">执行中</option><option value="blocked">阻塞</option><option value="done">完成</option><option value="failed">失败</option><option value="cancelled">取消</option></select></div>
+<div id="flows"></div>
+<footer>修改计划时，直接告诉 agent：“将 F02-T03 换到 I01，等 F01-T02 完成后再开始”。编号固定，改名或取消不会重排。<br>“观测过期”仅表示超过 1 小时没有登记巡检，不等于训练失败。所有时间按浏览器本地时区显示。</footer>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const names = {pending:'待执行',running:'执行中',blocked:'阻塞',done:'已完成',failed:'失败',cancelled:'已取消',unknown:'未观测',off:'已关机',starting:'开机中',on:'开机',unreachable:'不可达'};
+let plan = null;
+let loading = false;
+const opened = new Set();
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  if (className) node.className = className;
+  return node;
+}
+function when(value) {
+  if (!value) return '待估';
+  return new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+}
+function status(value) {
+  const node = el('span',null,'status ' + value);
+  node.append(el('span',null,'dot'),el('span',names[value] || value));
+  return node;
+}
+function copy(value) {
+  const button = el('button',value,'copy id');
+  button.type = 'button';
+  button.title = '复制编号 ' + value;
+  button.addEventListener('click',async () => {
+    try { await navigator.clipboard.writeText(value); button.textContent = '已复制'; }
+    catch { button.textContent = value + '（请选中复制）'; }
+    setTimeout(() => { button.textContent = value; },1600);
+  });
+  return button;
+}
+function detail(task) {
+  const node = el('details');
+  node.open = opened.has(task.id);
+  node.addEventListener('toggle',() => { if(node.open) opened.add(task.id); else opened.delete(task.id); });
+  node.append(el('summary','运行记录 / 备注'));
+  const list = el('dl');
+  const fields = {owner:'负责人',command:'实际命令',commit:'代码版本',session:'进程 / 会话',log:'日志路径',output:'产物位置',note:'备注'};
+  for (const [key,label] of Object.entries(fields)) {
+    if (task[key]) list.append(el('dt',label),el('dd',task[key]));
+  }
+  if (task.started_at) list.append(el('dt','实际开始'),el('dd',when(task.started_at)));
+  if (task.finished_at) list.append(el('dt','实际结束'),el('dd',when(task.finished_at)));
+  if (task.progress_at) list.append(el('dt','进度采样时间'),el('dd',when(task.progress_at)));
+  if (task.not_before) list.append(el('dt','最早允许开始'),el('dd',when(task.not_before)));
+  if (!list.children.length) list.append(el('dd','尚无运行记录'));
+  node.append(list);
+  return node;
+}
+function render() {
+  if (!plan) return;
+  $('title').textContent = plan.name;
+  document.title = 'TrainOps · ' + plan.name;
+  $('updated').textContent = '计划更新 ' + when(plan.updated_at) + ' · revision ' + plan.revision + ' · 页面读取 ' + when(plan.generated_at);
+  const instanceNodes = plan.instances.map(item => {
+    const node = el('article',null,'instance');
+    const heading = el('div',null,'instance-title');
+    const label = el('span'); label.append(copy(item.id),document.createTextNode(' ' + item.name));
+    heading.append(label,status(item.status));
+    node.append(heading,el('p',item.ssh_alias + ' · ' + item.autodl_id,'muted id'));
+    const tasks = plan.tasks.filter(task => task.instance === item.id);
+    const active = tasks.filter(task => task.status === 'running');
+    node.append(el('p',active.length ? '占用：' + active.map(task => task.id + ' / ' + task.owner).join('、') : '无已登记的执行中任务'));
+    const queued = tasks.filter(task => ['pending','blocked'].includes(task.status)).length;
+    node.append(el('p','后续任务 ' + queued + ' · 最近观测 ' + (item.observed_at ? when(item.observed_at) : '未登记'),'muted'));
+    if (item.note) node.append(el('small',item.note));
+    return node;
+  });
+  $('instances').replaceChildren(...(instanceNodes.length ? instanceNodes : [el('p','尚未登记实例，本地任务可使用 local。','muted')]));
+  const monitor = plan.monitor;
+  const expired = monitor.expires_at && new Date(monitor.expires_at) <= new Date(plan.generated_at);
+  $('monitor').textContent = '巡检：' + (monitor.schedule_id || '未登记调度器') + (monitor.expires_at ? ' · ' + (expired ? '已过期 ' : '有效至 ') + when(monitor.expires_at) : '') + ' · ' + monitor.note;
+  const counts = Object.fromEntries(Object.keys(names).map(key => [key,0]));
+  plan.tasks.forEach(task => counts[task.status]++);
+  $('summary').textContent = plan.flows.length + ' 条流程 / ' + plan.tasks.length + ' 个任务 · ' + ['running','pending','blocked','done','failed','cancelled'].map(key => names[key] + ' ' + counts[key]).join(' · ');
+  const query = $('search').value.trim().toLowerCase();
+  const filter = $('status-filter').value;
+  const flows = [];
+  for (const flow of plan.flows) {
+    const all = plan.tasks.filter(task => task.flow === flow.id);
+    const visible = all.filter(task => (filter === 'all' || task.status === filter) &&
+      [task.id,task.name,task.instance || '',task.owner,task.note].join(' ').toLowerCase().includes(query));
+    if (!visible.length && (query || filter !== 'all')) continue;
+    const section = el('section',null,'flow');
+    const heading = el('div',null,'flow-header');
+    const title = el('h2'); title.append(copy(flow.id),document.createTextNode(' ' + flow.name));
+    const unfinished = all.filter(task => task.status !== 'done');
+    const hasUnknown = all.some(task => !task.estimate.finish);
+    const dates = all.map(task => task.estimate.finish).filter(Boolean).map(value => new Date(value).getTime());
+    const end = dates.length ? new Date(Math.max(...dates)).toISOString() : null;
+    heading.append(title,el('span',all.filter(task => task.status === 'done').length + '/' + all.length + ' 完成 · ' +
+      (hasUnknown || !end ? '流程完成待估' : (unfinished.length ? '预计完成 ' : '实际完成 ') + when(end)),'muted'));
+    section.append(heading);
+    if (!visible.length) { section.append(el('div','暂无任务','empty')); flows.push(section); continue; }
+    const wrap = el('div',null,'table-wrap');
+    wrap.tabIndex = 0; wrap.setAttribute('aria-label',flow.name + '任务表，可横向滚动');
+    const table = el('table');
+    const head = el('thead'), header = el('tr');
+    for (const title of ['任务 / 运行记录','状态 / 进度','实例 / owner','依赖','预计起止 / 实际完成','最近巡检']) {
+      const cell = el('th',title); cell.scope = 'col'; header.append(cell);
+    }
+    head.append(header); table.append(head);
+    const body = el('tbody');
+    for (const task of visible) {
+      const row = el('tr');
+      const taskCell = el('td',null,'task');
+      taskCell.append(copy(task.id),el('div',task.name,'task-name'),detail(task));
+      const state = el('td'); state.append(status(task.status));
+      if (task.progress !== null) state.append(el('div',task.progress + '%','tags'));
+      if (task.estimate.ready) state.append(el('div','◇ 依赖与实例已就绪','tags'));
+      const resource = el('td'); resource.append(el('div',task.instance || '未分配','id'),el('small',task.owner || '未认领'));
+      const deps = el('td',task.deps.length ? task.deps.join('、') : '—','deps id');
+      const times = el('td',null,'time');
+      if (task.status === 'done') times.append(el('div','✓ 实际完成 ' + when(task.finished_at)));
+      else if (['failed','cancelled'].includes(task.status)) times.append(el('div','实际结束 ' + when(task.finished_at)));
+      else {
+        times.append(el('div',(task.status === 'running' ? '开始 ' : '预计开始 ') + when(task.estimate.start)));
+        times.append(el('div','预计完成 ' + when(task.estimate.finish)));
+      }
+      if (task.duration_minutes !== null) times.append(el('small','预计总耗时 ' + task.duration_minutes + ' 分钟'));
+      if (task.estimate.reason) times.append(el('div',task.estimate.reason,'tags'));
+      const checked = el('td',null,'time');
+      checked.append(el('div',task.checked_at ? when(task.checked_at) : '未登记'));
+      if (task.status === 'running' && task.estimate.stale) checked.append(el('small','⚠ 观测过期，请巡检'));
+      row.append(taskCell,state,resource,deps,times,checked); body.append(row);
+    }
+    table.append(body); wrap.append(table); section.append(wrap); flows.push(section);
+  }
+  $('flows').replaceChildren(...(flows.length ? flows : [el('div',plan.tasks.length ? '没有匹配的任务。' : '计划为空，请让 agent 添加流程和任务。','empty')]));
+}
+async function refresh() {
+  if (loading) return;
+  loading = true; $('refresh').disabled = true;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(),8000);
+  try {
+    const response = await fetch('/api/plan',{cache:'no-store',signal:controller.signal});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '读取失败');
+    plan = data; $('error').classList.add('hidden'); render();
+  } catch (error) {
+    $('error').textContent = '无法读取最新计划：' + error.message + (plan ? '。下方保留的是上次读取的数据，可能已过期。' : '。请检查服务及 plan.json。');
+    $('error').classList.remove('hidden');
+  } finally { clearTimeout(timer); loading = false; $('refresh').disabled = false; }
+}
+function theme(value) {
+  document.documentElement.dataset.theme = value;
+  $('theme').textContent = value === 'dark' ? '浅色模式' : '深色模式';
+  try { localStorage.setItem('trainops-theme',value); } catch {}
+}
+let initial = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+try { initial = localStorage.getItem('trainops-theme') || initial; } catch {}
+theme(initial === 'dark' ? 'dark' : 'light');
+$('theme').addEventListener('click',() => theme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+$('refresh').addEventListener('click',refresh);
+$('search').addEventListener('input',render);
+$('status-filter').addEventListener('change',render);
+refresh(); setInterval(refresh,10000);
+</script>
+</body>
+</html>
