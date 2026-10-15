@@ -7,15 +7,50 @@
 - **甘特图 Web 面板**：每个流程以紧凑连续甘特图展示各节点子进度与大致完成时间，并用**红色竖线标出当前甘特图的总流程进度**。
 - **自主优化调度**：agent 以目标、验收和硬约束为准，可按依赖、资源、成本与实验结果自主重排、拆并任务和调整实例分配，不机械照搬任务顺序；改变目标、放弃必需实验或增加未授权费用时先确认。
 - **极简 Agent 操作**：单次命令完成建表/批量更新，只填核心字段（状态、进度、耗时、依赖），免填冗余记录，避免上下文过长产生幻觉。
+- **一份技能，多家 agent 插件**：仓库本身就是插件目录（Agent Plugins 1.0.0 + Agent Skills），Claude Code、Codex、Antigravity、Gemini CLI 用原生命令装，其余 agent 一条软链即可；各家清单只是指针，没有第二份会漂移的规则。
 - **无卡准备再训练**：通过外部 `autodl_mcp` 先无卡开机，完成项目/环境了解、配置与代码调整；准备就绪后关机，再按需正常开机或持续请求 GPU，验证就绪后正式训练，减少 GPU 空等。
 - **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；`monitor` 定时结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」。
 - **零第三方依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）。
 
-## 1. 快速启用（任意 Agent 热插拔）
+## 1. 安装到各 Agent
 
-把下面的提示词复制给任意能读文件、能执行命令的 agent（把两处路径换成你自己的）：
+本仓库本身就是插件目录，同时满足两套公开标准：**Agent Plugins 1.0.0**（根目录 `plugin.json` + `skills/`）与 **Agent Skills**（`skills/trainops/SKILL.md`）。技能只有一份，各家清单和下面的入口文件都只是**指向它**——不存在第二份会漂移的规则。按你的 agent 选一种装法。
 
-> 启用 TrainOps：读取 `/你的路径/TrainOps/skills/trainops/SKILL.md`，保留原有角色。实验项目目录为 `/你的路径/my-experiment`。当前仅加载能力，不创建计划、不启动进程；收到任务后，以目标、验收标准和明确硬约束为准，自主优化调度，不必机械照搬我列出的步骤或顺序；常规优化直接同步计划并简述理由，改变目标、放弃必需实验或增加未授权费用时先确认。其他参考按需读取。
+### 1.1 有插件机制的：用原生命令装
+
+| Agent | 安装命令 | 说明 |
+|---|---|---|
+| **Claude Code** | `/plugin marketplace add <仓库路径>` 然后 `/plugin install trainops@trainops`；已发布到 GitHub 时可一条命令：`/plugin install trainops --marketplace Long-Holiday/TrainOps` | 装的是仓库副本（`~/.claude/plugins/cache/trainops/trainops/<版本>/`），改完仓库要 `claude plugin update trainops` 重新同步 |
+| **Codex CLI** | `codex plugin marketplace add <仓库路径>` 然后 `codex plugin add trainops@trainops` | 复制到 `$CODEX_HOME/plugins/cache/trainops/`；装完要新开一个会话才生效 |
+| **Antigravity CLI** | `agy plugin install <仓库路径>/antigravity` | 复制到 `~/.gemini/config/plugins/trainops/`；技能经 `antigravity/skills` 软链一并复制 |
+| **Gemini CLI** | `gemini extensions link <仓库路径>` | 读仓库根的 `gemini-extension.json` 与 `GEMINI.md`（薄入口，指向技能） |
+
+Claude Code、Codex、Antigravity 三者已用官方校验器实测（`claude plugin validate` / `codex plugin list` / `agy plugin validate`）；Gemini CLI 本机未安装，扩展清单按官方格式写但**未实测**。Codex 与 Antigravity 都能直接读本仓库的 `.claude-plugin/marketplace.json`，不需要第二份市场清单。
+
+### 1.2 只有技能目录的：软链一次，覆盖多家
+
+`.agents/skills/` 是跨 agent 的共享技能目录，Windsurf/Cascade、Cursor、Copilot、Gemini CLI、Cline、opencode、Amp 等都会扫（各家的目录以各自官方文档为准）；它们也有自己的目录，按需选一行：
+
+```bash
+ln -s <仓库路径>/skills/trainops ~/.agents/skills/trainops            # 用户级，所有工作区生效
+ln -s <仓库路径>/skills/trainops <实验项目>/.devin/skills/trainops     # Windsurf/Cascade 项目级（.windsurf/skills/ 同样读）
+ln -s <仓库路径>/skills/trainops <实验项目>/.github/skills/trainops    # Copilot 项目级
+ln -s <仓库路径>/skills/trainops ~/.claude/skills/trainops            # Claude Code 不用插件时
+```
+
+**用软链，别复制**：脚本靠自身路径回推仓库根来读 `.env` 与 `references/`，软链能保住这条路；复制出来的副本会丢掉凭据（见 1.4）。Windows 上 `git` 若没开符号链接，链会落成普通文件，改用 `mklink /D` 或干脆走 1.3。
+
+### 1.3 通用兜底：任何能读文件、能执行命令的 agent
+
+把下面的提示词复制给 agent（把两处路径换成你自己的）：
+
+> 启用 TrainOps：读取 `<仓库路径>/skills/trainops/SKILL.md`，保留原有角色。实验项目目录为 `<实验项目路径>`。当前仅加载能力，不创建计划、不启动进程；收到任务后，以目标、验收标准和明确硬约束为准，自主优化调度，不必机械照搬我列出的步骤或顺序；常规优化直接同步计划并简述理由，改变目标、放弃必需实验或增加未授权费用时先确认。其他参考按需读取。
+
+### 1.4 两个容易踩的坑
+
+- **凭据在哪**：Token 从**仓库根的 `.env`** 读。有插件机制的 agent 基本都是**复制**插件（Claude Code 到 `~/.claude/plugins/cache/`、Codex 到 `$CODEX_HOME/plugins/cache/`、Antigravity 到 `~/.gemini/config/plugins/`，Gemini CLI 的 `extensions link` 是软链不受影响）：从本地目录安装会连 `.env` 一起复制（介意多留一份凭据，就用 `TRAINOPS_ENV=<仓库路径>/.env` 或环境变量 `AUTODL_TOKEN` 指回仓库），从 GitHub 等远程源安装则没有 `.env`，必须用这两种方式之一。没配 token 时本地命令照常可用，只有联网的 `wallet fetch` / `monitor` 会提示怎么配。
+- **两个版本号**：各清单里的 `version` 是**插件版本**（0.1.0），`trainops.py --version` 打的是**计划文件 schema 版本**（3）。前者变了不影响账本，后者变了要先备份并核对文件。
+
 
 ## 2. 预览甘特图演示面板
 
@@ -164,8 +199,9 @@ monitor --brief 仅与 --once 同用；--strict 保留原退出码语义。monit
 ## 6. 测试
 
 ```bash
-python3 -m unittest discover -s tests -v   # 计划账本 / CLI / 并发写 / 自动结算 / 余额接口 / 演示快照一致性
+python3 -m unittest discover -s tests -v   # 计划账本 / CLI / 并发写 / 自动结算 / 余额接口 / 演示快照一致性与插件清单
 node tests/test_web.cjs                    # 面板渲染：甘特几何、滚动保持、余额与结算块、逾期提示、XSS 转义
 ```
 
-测试进程一律把 `.env` 指向不存在的路径，绝不会读到开发机上的真 token。
+测试进程一律把 `.env` 指向不存在的路径，绝不会读到开发机上的真 token。清单测试会在各 agent CLI（`claude` / `codex` / `agy`）存在时调用它们的官方校验器复验一遍，未安装则跳过（`codex` 用临时 `CODEX_HOME`，不碰你本机的配置）。
+

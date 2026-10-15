@@ -64,6 +64,8 @@ tensorboard --logdir "$TB"  # 确需独立服务时，由调用方管理后台�
 
 Token 放 TrainOps 仓库根 `.env`（模板 `.env.example`，建议 chmod 600）。优先级 `--token` > 环境变量 `AUTODL_TOKEN` > `.env`；`TRAINOPS_ENV` 可指定其他文件。Token 只进请求头，不写进计划、输出或异常文本。
 
+插件被复制到别处时（远程 marketplace、Codex 的 `$CODEX_HOME/plugins/cache`、Antigravity 的 `~/.gemini/config/plugins`），那份副本里没有 `.env`：用 `TRAINOPS_ENV` 指向原仓库的 `.env`，或直接给环境变量 `AUTODL_TOKEN`；软链安装（`.agents/skills/`、`~/.claude/skills/` 等）没有这个问题。
+
 ```bash
 $CLI instance set I01 --price 1.88 --brief     # 元/小时；登记标价不等于真实观测
 $CLI monitor --once --brief                   # 一轮余额刷新与结算

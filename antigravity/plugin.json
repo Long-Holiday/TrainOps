@@ -1,0 +1,5 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "trainops",
+  "description": "给任意 agent 热插拔的 AutoDL 多实例训练计划账本：用 CLI 维护实例、流程、任务依赖、真实进度与余额结算，按需起一个只读甘特图面板。本身不跑训练、不是常驻服务，计划文件只过 CLI。"
+}

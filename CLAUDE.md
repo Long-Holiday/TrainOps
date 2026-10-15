@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 TrainOps 是给任意 agent 热插拔的**多实例 GPU 训练管理能力包**（面向 AutoDL）：本地计划账本 + 只读甘特图面板 + 技能文档。它本身不跑训练、也不是服务，只负责记录与展示实验计划。
 
+**仓库本身就是插件包**：同一份 `skills/trainops/` 同时满足 Agent Plugins 1.0.0（根 `plugin.json`）与 Agent Skills 两个公开标准，各 agent 的清单（`.claude-plugin/`、`.codex-plugin/`、`gemini-extension.json`、`antigravity/`）只声明打包方式，不复制能力。
+
 三条硬约束贯穿全仓：
 
 - **零第三方依赖**：只用 Python 标准库；测试用 Node 内置模块（没有 package.json，不装 npm 包）。
@@ -21,6 +23,7 @@ node tests/test_web.cjs                       # 面板渲染测试（无 npm 依
 # 跑单个用例 / 单个类
 python3 -m unittest discover -s tests -k wallet
 python3 -m unittest tests.test_trainops.BudgetTests.test_hours_use_cash_only_and_skip_unknown_pieces -v
+python3 -m unittest tests.test_plugin -v      # 插件清单（装了 claude/codex/agy 时顺带跑官方校验器）
 
 # 演示面板（自带演示计划与结算记录，不连服务器）
 python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --port 8765
@@ -59,6 +62,27 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 ### 文档也是产品
 
 `SKILL.md` 是热插拔入口（外部 agent 读的那份）、`references/protocol.md` 是异常与恢复的按需参考、`README.md` 面向用户。CLI 行为变了，这几处要同步。
+
+### 插件包（多 agent 适配）
+
+一份技能、多份清单，各清单**只声明打包方式**：
+
+| 位置 | 服务对象 | 要点 |
+|---|---|---|
+| `plugin.json` | Agent Plugins 1.0.0（VS Code、Cursor、Copilot、ChatGPT、Codex、Kiro…） | schema 封闭，`$schema` 是常量，多一个键要报错 |
+| `.claude-plugin/plugin.json` + `marketplace.json` | Claude Code | 本仓库既是插件也是自己的市场，本地路径注册时原地加载 |
+| `.codex-plugin/plugin.json` | Codex CLI | 它同时能读 `.claude-plugin/marketplace.json`，别再加第二份市场 |
+| `gemini-extension.json` + `GEMINI.md` | Gemini CLI 扩展 | 扩展只提供上下文入口，技能仍靠目录 |
+| `antigravity/plugin.json` | Antigravity CLI | `$schema` 与 Agent Plugins 冲突，只能单独一个目录；`antigravity/skills` 是指向 `../skills` 的软链 |
+| `AGENTS.md` | AGENTS.md 标准（Codex、Copilot、Cursor、Zed、Windsurf…） | 通用入口，和 `GEMINI.md`、Antigravity 规则同口径 |
+
+三条不能破的规矩：
+
+- **不要移动 `skills/trainops/`**：`env_path()` 靠 `parents[3]` 找仓库根 `.env`，测试、文档、cron 示例也都绑这个路径。入口文件里不写绝对路径，脚本靠自身位置回推仓库根。
+- **入口文件只做指针**（各 ≤40 行）：细则一律留在 `SKILL.md` 与 `references/`，同一份约束写两处必然漂移。
+- **清单版本同源**：各清单 `version` 必须逐字相同（`tests/test_plugin.py` 盯着），它是插件版本，与 `--version` 的计划 schema 版本是两件事。
+
+改了清单或入口文件跑 `python3 -m unittest tests.test_plugin -v`；装了 `claude` / `codex` / `agy` 时它会顺带调用各自的官方校验器复验。
 
 ## 约定
 
