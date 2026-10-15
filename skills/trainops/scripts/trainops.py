@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Local training plans. No remote commands, model API, or background scheduler."""
+"""Local training plan ledger. The only outbound call is the read-only AutoDL wallet lookup
+used by `wallet fetch` and by the scheduled `monitor` settlement; no instance commands,
+no model API."""
 
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import math
 import os
@@ -13,6 +16,10 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
 
 try:
@@ -20,9 +27,26 @@ try:
 except ImportError:
     fcntl = None
 
-SCHEMA_VERSION = 1
+# 版本号只用来拒绝看不懂的文件：开发阶段不提供迁移，旧版一律明确报错而不是猜着读。
+SCHEMA_VERSION = 3
 STATUSES = ("pending", "running", "blocked", "done", "failed", "cancelled")
 INSTANCE_STATUSES = ("unknown", "off", "starting", "on", "unreachable")
+AWAKE = ("on", "starting")
+DEFAULT_INTERVAL_MINUTES = 30
+INTERVAL_LIMITS = (1, 1440)
+# 结算快照只装"算得出的结论"：缺数据的键不落盘，也不拿 0 顶替（与 budget() 同一约定）。
+ESTIMATE_KEYS = ("burn_rate", "hours_awake", "plan_gpu_hours", "plan_cost", "covers_plan")
+ERROR_LIMIT = 200
+KEEP = object()  # 区分"没传这个参数"与"显式清空"
+# 磁盘容量一律以 GB 存进字段名，避免"这个数字是字节还是 G"的歧义（同 duration_minutes 的做法）。
+DISK_FIELDS = ("system_used_gb", "system_total_gb", "data_used_gb", "data_total_gb",
+               "fs_used_gb", "fs_total_gb")
+DISK_MOUNTS = (("sys", "system", "系统盘"), ("data", "data", "数据盘"), ("fs", "fs", "文件存储"))
+# --disk 里用短盘名（sys 而不是 system），映射到字段前缀与中文名。
+DISK_PREFIXES = {prefix: (field, label) for prefix, field, label in DISK_MOUNTS}
+DISK_SHORT = {"系统盘": "系统", "数据盘": "数据", "文件存储": "存储"}
+FULL_RATIO = 0.9
+API_BALANCE_PATH = "/api/v1/dev/wallet/balance"
 TERMINAL = ("done", "failed", "cancelled")
 TRANSITIONS = {
     "pending": {"running", "blocked", "cancelled"},
@@ -97,14 +121,54 @@ def new_plan(name):
         "instances": [],
         "flows": [],
         "tasks": [],
-        "monitor": {"schedule_id": "", "expires_at": None, "note": "未配置自动巡检"},
+        "monitor": {"interval_minutes": DEFAULT_INTERVAL_MINUTES, "last_run": None, "last_ok": None,
+                    "last_error": "", "token_ready": False, "expires_at": None, "estimate": None},
+        "wallet": {"assets": None, "voucher": None, "observed_at": None},
     }
+
+
+def validate_estimate(estimate):
+    """结算快照是机器写的派生数据：键可缺（缺数据就没有结论），但存在的值必须可信。"""
+    if not isinstance(estimate, dict):
+        raise PlanError("结算快照必须是对象")
+    date(estimate["computed_at"])
+    integer(estimate["revision"], "结算 revision", 0)
+    text(estimate.get("plan_hash") or "", "结算指纹")
+    for key, label, high in (("burn_rate", "烧钱速度", 10000), ("hours_awake", "可跑小时", 1_000_000),
+                             ("plan_gpu_hours", "剩余 GPU 小时", 1_000_000), ("plan_cost", "预估花费", 1_000_000)):
+        if estimate.get(key) is not None:
+            number(estimate[key], label, high=high)
+    if estimate.get("covers_plan") is not None and not isinstance(estimate["covers_plan"], bool):
+        raise PlanError("结算快照的 covers_plan 必须是布尔值")
+
+
+def validate_monitor(monitor):
+    if monitor is None:
+        return
+    if not isinstance(monitor, dict):
+        raise PlanError("monitor 段必须是对象")
+    interval = monitor.get("interval_minutes")
+    if interval is not None:
+        integer(interval, "结算周期", INTERVAL_LIMITS[0])
+        if interval > INTERVAL_LIMITS[1]:
+            raise PlanError(f"结算周期必须在 {INTERVAL_LIMITS[0]} 到 {INTERVAL_LIMITS[1]} 分钟之间")
+    for key, label in (("last_run", "上次结算时间"), ("last_ok", "上次成功时间"), ("expires_at", "结算到期时间")):
+        if monitor.get(key) is not None:
+            date(monitor[key])
+    text(monitor.get("last_error") or "", "结算错误")
+    if monitor.get("token_ready") is not None and not isinstance(monitor["token_ready"], bool):
+        raise PlanError("token_ready 必须是布尔值")
+    if monitor.get("estimate") is not None:
+        validate_estimate(monitor["estimate"])
 
 
 def validate(plan):
     """Validate both incoming edits and files loaded from disk; never repair silently."""
-    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] != SCHEMA_VERSION:
+    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int:
         raise PlanError("计划格式/版本不支持；请备份并核对文件，不会自动覆盖")
+    if plan["schema_version"] != SCHEMA_VERSION:
+        raise PlanError(f"计划 schema {plan['schema_version']} 与当前 {SCHEMA_VERSION} 不符"
+                        "（开发阶段不提供迁移）；请备份并核对文件，不会自动覆盖")
     try:
         text(plan["name"], "项目名称", True)
         integer(plan["revision"], "revision", 0)
@@ -114,11 +178,13 @@ def validate(plan):
         for collection in ("instances", "flows", "tasks"):
             if not isinstance(plan[collection], list):
                 raise PlanError(f"{collection} 必须是列表")
-        monitor = plan["monitor"]
-        text(monitor["schedule_id"], "巡检编号")
-        text(monitor["note"], "巡检说明")
-        if monitor["expires_at"] is not None:
-            date(monitor["expires_at"])
+        validate_monitor(plan["monitor"])
+        wallet = plan["wallet"]
+        for key, label in (("assets", "余额"), ("voucher", "代金券")):
+            if wallet[key] is not None:
+                number(wallet[key], label, high=1_000_000)
+        if wallet["observed_at"] is not None:
+            date(wallet["observed_at"])
         ids, autodl_ids, aliases = set(), set(), set()
         for item in plan["instances"]:
             item_id = item["id"]
@@ -138,6 +204,16 @@ def validate(plan):
             if item["status"] not in INSTANCE_STATUSES:
                 raise PlanError("实例状态无效")
             text(item["note"], "实例备注")
+            if item["price"] is not None:
+                number(item["price"], "时价", low=0.001, high=10000)
+            disk = item["disk"]
+            for key in DISK_FIELDS:
+                if disk[key] is not None:
+                    number(disk[key], key, high=1_000_000)
+            for _, field, label in DISK_MOUNTS:
+                used, total = disk[f"{field}_used_gb"], disk[f"{field}_total_gb"]
+                if used is not None and total is not None and used > total:
+                    raise PlanError(f"{label}的已用容量大于总容量，请核对 df 输出")
             if item["observed_at"] is not None:
                 date(item["observed_at"])
         instances = ids
@@ -300,8 +376,10 @@ class Store:
     def change(self, operation):
         with self.lock():
             plan = self.read()
-            result = operation(plan)
+            # 先自增再执行：操作里读 plan["revision"] 得到的必须是这次落盘后的编号
+            # （结算快照要记 revision，用来判断"结算之后计划有没有变过"）。
             plan["revision"] += 1
+            result = operation(plan)
             plan["updated_at"] = stamp()
             self.write(plan)
             return {"revision": plan["revision"], "item": result}
@@ -310,7 +388,8 @@ class Store:
 def add_instance(plan, name, autodl_id, ssh_alias):
     item = {"id": f"I{plan['next_instance']:02d}", "name": name,
             "autodl_id": autodl_id, "ssh_alias": ssh_alias, "status": "unknown",
-            "observed_at": None, "note": ""}
+            "observed_at": None, "note": "", "price": None,
+            "disk": dict.fromkeys(DISK_FIELDS)}
     plan["next_instance"] += 1
     plan["instances"].append(item)
     return item
@@ -457,10 +536,129 @@ def forecast(plan, now=None):
     return results
 
 
+def budget(plan, now=None, estimates=None):
+    """余额 × 时价 × 剩余计划能推出的全部结论：缺数据就缺结论，绝不用 0 顶替。
+
+    金额一律只按现金余额 assets 计算，代金券单独展示——否则「2 元现金 + 500 元代金券」
+    会得出「还能跑 1 小时」这种吓人的错误结论。
+    """
+    now = now or utcnow()
+    estimates = forecast(plan, now) if estimates is None else estimates
+    wallet = plan["wallet"]
+    assets = wallet["assets"]
+    result = {}
+    if assets is not None:
+        result["assets"] = round(assets, 2)
+        if wallet["voucher"]:
+            result["voucher"] = round(wallet["voucher"], 2)
+        if wallet["observed_at"]:
+            result["observed_at"] = wallet["observed_at"]
+        awake = [item for item in plan["instances"] if item["status"] in AWAKE]
+        # 任一开机实例缺时价，烧钱速度就是残缺的；低估会让人以为还能跑很久，所以宁可不下结论。
+        if awake and all(item["price"] is not None for item in awake):
+            result["burn_rate"] = round(sum(item["price"] for item in awake), 4)
+            result["hours_awake"] = round(assets / result["burn_rate"], 1)
+    # 剩余计划按"实例最后完成时间"衡量：AutoDL 按开机时长计费，这比累加任务耗时更贴近真实花销。
+    lanes, unknown = {}, False
+    for task in plan["tasks"]:
+        resource = task["instance"]
+        if resource in (None, "local") or task["status"] in TERMINAL:
+            continue
+        finish = estimates[task["id"]]["finish"]
+        if finish is None:
+            unknown = True
+            continue
+        moment = date(finish)
+        if resource not in lanes or moment > lanes[resource]:
+            lanes[resource] = moment
+    if lanes and not unknown:
+        hours = {key: max(0.0, (moment - now).total_seconds() / 3600) for key, moment in lanes.items()}
+        result["plan_gpu_hours"] = round(sum(hours.values()), 1)
+        prices = {item["id"]: item["price"] for item in plan["instances"]}
+        if all(prices.get(key) is not None for key in hours):
+            result["plan_cost"] = round(sum(hours[key] * prices[key] for key in hours), 2)
+            if assets is not None:
+                result["covers_plan"] = assets >= result["plan_cost"]
+    return result
+
+
+def estimate_view(plan, now=None):
+    """结算快照 = 实时预算里"算得出的那几个结论"；缺数据就缺键，不拿 0 顶替。"""
+    view = budget(plan, now)
+    return {key: view[key] for key in ESTIMATE_KEYS if key in view}
+
+
+def plan_fingerprint(plan):
+    """结算结论只由这些字段推出，用它们的指纹判断"结算之后计划有没有变过"。
+
+    不能拿 revision 当判据：monitor 自己每轮都要更新 last_run，用完 revision 会永远显示"有变更"。
+    """
+    payload = [[item[key] for key in ("id", "status", "price")] for item in plan["instances"]]
+    payload += [[task[key] for key in ("id", "status", "deps", "instance", "duration_minutes",
+                                       "not_before", "started_at", "finished_at", "progress",
+                                       "progress_at")] for task in plan["tasks"]]
+    payload.append([plan["wallet"][key] for key in ("assets", "voucher", "observed_at")])
+    blob = json.dumps(sorted(payload, key=str), sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def settlement_summary(view):
+    """把一份预算结论压成一句话：结算记录、show 与面板共用同一份文案，不各写一套。"""
+    parts = []
+    if view.get("plan_gpu_hours") is not None:
+        owed = f"跑完剩余计划 {view['plan_gpu_hours']:g} GPU 小时"
+        if view.get("plan_cost") is not None:
+            owed += f"、约 ¥{view['plan_cost']:.2f}"
+        parts.append(owed)
+    if view.get("covers_plan") is not None:
+        parts.append("余额够" if view["covers_plan"] else "余额不足")
+    return " · ".join(parts) or "数据不足，暂无结论"
+
+
+def settlement(plan, now=None):
+    """show 与面板共用的结算视图：文案与"是否醒目"都在服务端定死，展示方不做判断。
+
+    有新鲜结算（≤ 2 个周期）就用结算结论并注明结算时间；过期或从未结算则回退实时预算
+    并说明原因——绝不同时给出两个互相矛盾的数字。
+    """
+    now = now or utcnow()
+    monitor = plan["monitor"]
+    estimate = monitor.get("estimate")
+    interval = monitor.get("interval_minutes") or DEFAULT_INTERVAL_MINUTES
+    view = {"live": True, "over": False, "text": "", "values": {}, "computed_at": None, "age": None,
+            "changed": False, "error": monitor.get("last_error") or "",
+            "token_ready": bool(monitor.get("token_ready"))}
+    if estimate:
+        computed = date(estimate["computed_at"])  # age_text 收 ISO 字符串，这里要的是时刻本身
+        view["computed_at"], view["age"] = estimate["computed_at"], age_text(estimate["computed_at"], now)
+        if (now - computed).total_seconds() <= 2 * interval * 60:
+            view["live"] = False
+            view["values"] = {key: estimate[key] for key in ESTIMATE_KEYS if key in estimate}
+            # 结算之后再改过计划，这份结论就不再代表当前计划——必须标出来，别让人当真。
+            view["changed"] = estimate.get("plan_hash") != plan_fingerprint(plan)
+            view["text"] = f"自动结算于 {view['age']} · {settlement_summary(estimate)}"
+            view["over"] = estimate.get("covers_plan") is False
+        else:
+            view["text"] = f"自动结算已过期（{view['age']}，超过 2 个周期）· 当前为实时值"
+    else:
+        view["text"] = "尚未自动结算 · 运行 trainops monitor 开启定时结算"
+    if view["live"]:
+        view["values"] = estimate_view(plan, now)
+    if view["error"]:
+        view["text"] += " · 上次结算失败"
+        view["over"] = True
+    if not view["token_ready"]:
+        view["text"] += " · 未配置 Token"
+    if view["changed"]:
+        view["text"] += " · 结算后计划有变更"
+    return view
+
+
 def snapshot(plan, now=None):
     now = now or utcnow()
     estimates = forecast(plan, now)
-    return {**plan, "generated_at": stamp(now),
+    return {**plan, "generated_at": stamp(now), "budget": budget(plan, now, estimates),
+            "settlement": settlement(plan, now),
             "tasks": [{**task, "estimate": estimates[task["id"]]} for task in plan["tasks"]]}
 
 
@@ -469,8 +667,15 @@ def demo_plan(now=None):
     plan = new_plan("双实例实验 · 演示（不会连接服务器）")
     add_instance(plan, "基线 / GPU A", "DEMO-NOT-REAL-A", "demo-gpu-a")
     add_instance(plan, "消融 / GPU B", "DEMO-NOT-REAL-B", "demo-gpu-b")
-    for instance in plan["instances"]:
-        instance.update(status="on", observed_at=stamp(now), note="演示占位，非真实实例")
+    # 演示数据一律是编造的固定值：不连服务器、不假装是真实观测。
+    disks = ({"system_used_gb": 12.4, "system_total_gb": 30, "data_used_gb": 40.2, "data_total_gb": 50,
+              "fs_used_gb": 5, "fs_total_gb": 200},
+             {"system_used_gb": 9.1, "system_total_gb": 30, "data_used_gb": 22.5, "data_total_gb": 50,
+              "fs_used_gb": 5, "fs_total_gb": 200})
+    for instance, price, disk in zip(plan["instances"], (1.88, 1.58), disks):
+        instance.update(status="on", observed_at=stamp(now), note="演示占位，非真实实例",
+                        price=price, disk=disk)
+    plan["wallet"] = {"assets": 128.5, "voucher": 20.0, "observed_at": stamp(now)}
     add_flow(plan, "基线模型")
     add_flow(plan, "消融对照")
     add_flow(plan, "结果汇总")
@@ -487,10 +692,16 @@ def demo_plan(now=None):
     add_task(plan, "F02", "消融评估", "I02", 15, ["F02-T01"])
     add_task(plan, "F03", "比较指标并整理报告", "local", 20, ["F01-T03", "F02-T02"])
     add_task(plan, "F03", "根据结果设计下一轮", "local", None, ["F03-T01"])
+    # 演示里也放一份自动结算记录（生成演示的这一刻算出来的），面板因此能直接看到结算徽标。
+    # token_ready 与余额一样是编造的演示值：fresh clone 里没有 .env，不该在演示面板上催配置。
+    plan["revision"] = 1
+    plan["monitor"].update(last_run=stamp(now), last_ok=stamp(now), token_ready=True)
+    plan["monitor"]["estimate"] = {"computed_at": stamp(now), "revision": 1,
+                                   "plan_hash": plan_fingerprint(plan), **estimate_view(plan, now)}
     return plan
 
 
-def check_structure(plan):
+def check_structure(plan, now=None):
     """Structural check for flow continuity, dependency links, and resource/duration readiness.
 
     issues 是需要修正的结构缺陷（ok 为假），warnings 只是观察到的现象，不影响 ok。
@@ -517,8 +728,267 @@ def check_structure(plan):
                     gap_min = (date(task["started_at"]) - max(dep_finishes)).total_seconds() / 60
                     if gap_min > 5:
                         warnings.append(f"{task['id']}: 实际开始时间晚于前置依赖完成时间 {int(gap_min)} 分钟，存在时间空隙")
+    # 以下三条都只在"数据已记录且有问题"时才出现：没有观测就不该凭空冒出提醒。
+    for item in plan["instances"]:
+        for _, field, label in DISK_MOUNTS:
+            used, total = item["disk"][f"{field}_used_gb"], item["disk"][f"{field}_total_gb"]
+            if used is None or not total or used / total < FULL_RATIO:
+                continue
+            warnings.append(f"{item['id']}: {label}已用 {used:g}/{total:g}G"
+                            f"（{used / total * 100:.0f}%），请先清理或扩容再开新任务")
+    view = budget(plan, now)
+    if view.get("assets") is not None:
+        missing = [item["id"] for item in plan["instances"]
+                   if item["status"] in AWAKE and item["price"] is None]
+        if missing:
+            warnings.append("未登记时价（" + ", ".join(f"instance set {key} --price 单价" for key in missing) +
+                            "），无法把余额换算成可用时长")
+        if view.get("covers_plan") is False:
+            warnings.append(f"余额 ¥{view['assets']:.2f} 不足以覆盖剩余计划（预估 ¥{view['plan_cost']:.2f}），"
+                            "请充值或缩减计划")
+    # 自动结算相关提醒：只报"正在计费却没人算账"和"算了但失败了"这两种要处置的情况。
+    if plan["monitor"].get("last_error"):
+        warnings.append("自动结算失败：" + plan["monitor"]["last_error"]
+                        + "；处理后运行 monitor --once 立即重算")
+    if any(item["status"] in AWAKE for item in plan["instances"]) and settlement(plan, now)["live"]:
+        warnings.append("有实例开机计费，但自动结算未在运行；用 trainops monitor（或 serve --interval）"
+                        "定时重算余额与剩余计划的 GPU 小时")
     return {"ok": not issues, "flows": len(plan["flows"]), "tasks": len(plan["tasks"]),
             "issues": issues, "warnings": warnings}
+
+
+def api_base():
+    return os.environ.get("TRAINOPS_API_BASE", "https://api.autodl.com").rstrip("/")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """带 token 的请求不接受重定向：urllib 会把 Authorization 一起转发到新地址。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise PlanError("AutoDL 接口返回了重定向；为避免 token 被转发到其他地址已中止")
+
+
+def opener():
+    return urllib.request.build_opener(NoRedirect())
+
+
+def api_post(path, token, timeout=20.0):
+    """唯一的外部调用：只读接口，无请求体。token 只进请求头，绝不写进计划、输出或异常文本。"""
+    request = urllib.request.Request(api_base() + path, data=b"", method="POST")
+    request.add_header("Authorization", token)
+    try:
+        with opener().open(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raise PlanError(f"AutoDL 接口返回 HTTP {exc.code}；请检查 token 是否正确、是否已完成实名认证") from None
+    except PlanError:
+        raise
+    except (urllib.error.URLError, OSError) as exc:
+        raise PlanError(f"无法连接 AutoDL 接口（{getattr(exc, 'reason', exc)}）；本地计划未受影响") from None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PlanError(f"AutoDL 接口返回的不是合法 JSON: {exc}") from None
+    if not isinstance(payload, dict):
+        raise PlanError("AutoDL 接口返回格式异常")
+    if payload.get("code") != "Success":
+        message = str(payload.get("msg") or "").strip() or "未知错误"
+        request_id = str(payload.get("request_id") or "").strip()
+        raise PlanError(f"AutoDL 接口返回失败: {message}" + (f"（request_id={request_id}）" if request_id else ""))
+    return payload
+
+
+def milli_to_yuan(value, label):
+    """官方约定：余额/代金券都是"千分之一元"的整数；不是整数就说明单位变了，宁可报错也不写错 1000 倍。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PlanError(f"AutoDL 返回的{label}不是数字")
+    if not math.isfinite(value) or value < 0:
+        raise PlanError(f"AutoDL 返回的{label}异常: {value!r}")
+    if isinstance(value, float) and not value.is_integer():
+        raise PlanError(f"AutoDL 返回的{label} {value!r} 不是整数；官方约定为千分之一元的整数，"
+                        "单位可能已变化，请先核对文档")
+    return round(value / 1000, 2)
+
+
+def balance_amounts(payload):
+    data = payload.get("data")
+    if not isinstance(data, dict) or data.get("assets") is None:
+        raise PlanError("AutoDL 余额接口未返回 assets 字段")
+    amounts = {"assets": milli_to_yuan(data["assets"], "余额")}
+    voucher = data.get("voucher_balance")
+    amounts["voucher"] = None if voucher is None else milli_to_yuan(voucher, "代金券")
+    return amounts
+
+
+def env_path():
+    """Token 从仓库根目录的 .env 读；TRAINOPS_ENV 可指向别处（测试或另一套凭据）。"""
+    override = os.environ.get("TRAINOPS_ENV", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[3] / ".env"
+
+
+def load_env(path):
+    """只认 KEY=VALUE 与整行 # 注释，只取 AUTODL_TOKEN 一个键；文件不存在不算错误。
+
+    值里的 # 可能是 token 的一部分，因此不做行内注释剥离；只剥成对的引号。
+    """
+    try:
+        content = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PlanError(f"无法读取 {path}: {exc}") from None
+    values = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def resolve_token(explicit=None):
+    """--token > 环境变量 AUTODL_TOKEN > 仓库根 .env；只在内存中使用，绝不回显。"""
+    if explicit and explicit.strip():
+        return explicit.strip()
+    token = os.environ.get("AUTODL_TOKEN", "").strip()
+    if token:
+        return token
+    path = env_path()
+    token = (load_env(path).get("AUTODL_TOKEN") or "").strip()
+    if token:
+        try:
+            if path.stat().st_mode & 0o077:
+                print(f"TrainOps: 提醒 {path} 权限过松，建议 chmod 600", file=sys.stderr)
+        except OSError:
+            pass
+        return token
+    raise PlanError(f"未配置开发者 Token：请设置环境变量 AUTODL_TOKEN，或在 {path} 里写入一行 "
+                    "AUTODL_TOKEN=...（格式见仓库根的 .env.example）。"
+                    "Token 获取路径：控制台 → 设置 → 开发者Token")
+
+
+def set_wallet(plan, changes, observed_at=None):
+    """余额只能从这一处写入：无论是接口拉取还是手工登记，观测时间都由这里统一盖章。
+
+    observed_at 用取数那一刻的时间：结算在文件锁外联网，盖章时间必须早于落盘时间。
+    """
+    plan["wallet"].update(changes)
+    plan["wallet"]["observed_at"] = observed_at or stamp()
+    return plan["wallet"]
+
+
+def wallet_fetch(store, args):
+    """联网取数一律在文件锁之外完成，落盘只用一次 store.change()：超时不会卡住并发的写进程。"""
+    number(args.timeout, "超时秒数", low=0.5, high=300)
+    token = resolve_token(args.token)
+    fetched_at = stamp()
+    amounts = balance_amounts(api_post(API_BALANCE_PATH, token, timeout=args.timeout))
+    if args.dry_run:
+        return {"wallet": amounts, "saved": False}
+    result = store.change(lambda plan: set_wallet(plan, amounts, fetched_at))
+    return {"revision": result["revision"], "wallet": result["item"], "saved": True}
+
+
+def sanitize_error(exc):
+    """last_error 会落盘也会显示：压成单行并截断，别把多行堆栈写进计划文件。"""
+    return " ".join(str(exc).split())[:ERROR_LIMIT]
+
+
+def cycle(store, interval=None, token=None, timeout=20.0, expires_at=KEEP):
+    """一轮自动结算：联网在文件锁之外，落盘只用一次 store.change()。
+
+    取数失败（断网、401、超时）只记进 last_error 并保留上一份结论，不抛出——
+    定时进程不该因为一次断网就退出；没配 token 更不算故障（那是"没开自动余额"）。
+    """
+    now = utcnow()
+    error, amounts, observed_at, resolved = "", None, None, None
+    try:
+        resolved = resolve_token(token)
+    except PlanError:
+        resolved = None
+    if resolved:
+        try:
+            observed_at = stamp(now)
+            amounts = balance_amounts(api_post(API_BALANCE_PATH, resolved, timeout=timeout))
+        except PlanError as exc:
+            error = sanitize_error(exc)
+
+    def operation(plan):
+        monitor = plan["monitor"]
+        if amounts is not None:
+            set_wallet(plan, amounts, observed_at)
+        if interval is not None:
+            monitor["interval_minutes"] = interval
+        if expires_at is not KEEP:
+            monitor["expires_at"] = expires_at
+        monitor["last_run"] = stamp(now)
+        monitor["token_ready"] = resolved is not None
+        monitor["last_error"] = error
+        if not error:
+            monitor["last_ok"] = stamp(now)
+            # 结算与写入同一次 change：revision 就是这份结论对应的版本，之后任何改动都能对上。
+            monitor["estimate"] = {"computed_at": stamp(now), "revision": plan["revision"],
+                                   "plan_hash": plan_fingerprint(plan), **estimate_view(plan, now)}
+        return {"wallet": dict(plan["wallet"]), "monitor": dict(monitor),
+                "settlement": settlement(plan)}
+
+    result = store.change(operation)
+    return {"revision": result["revision"], **result["item"]}
+
+
+def run_monitor(store, args, sleep=time.sleep, monotonic=time.monotonic):
+    """前台结算循环；--once 只跑一轮并交给 main 输出 JSON，方便挂到系统 cron。
+
+    节奏用单调时钟对齐，免得每轮的网络耗时把周期越拖越长；--expires-at 到点自动退出，
+    不留守护进程。
+    """
+    interval = getattr(args, "interval", None)
+    expires = getattr(args, "expires_at", KEEP)
+    deadline = date(expires) if isinstance(expires, str) else None
+    if args.once:
+        return cycle(store, interval, args.token, args.timeout, expires)
+    interval_minutes = interval
+    try:
+        while True:
+            started = monotonic()
+            report = cycle(store, interval, args.token, args.timeout, expires)
+            interval_minutes = report["monitor"]["interval_minutes"]
+            error = report["monitor"]["last_error"]
+            print(f"TrainOps {stamp()} · {report['settlement']['text']}" + (f" | {error}" if error else ""),
+                  flush=True)
+            if deadline is not None and utcnow() + timedelta(minutes=interval_minutes) >= deadline:
+                print(f"TrainOps: 已到 --expires-at {expires}，结算进程退出", flush=True)
+                return None
+            # 周期从本轮开始时刻算起，把网络耗时抵消掉，长期跑不会越漂越慢。
+            sleep(max(1.0, interval_minutes * 60 - (monotonic() - started)))
+    except KeyboardInterrupt:
+        print("TrainOps: 收到中断，结算进程停止（计划文件已是最新）", flush=True)
+        return None
+
+
+def background_monitor(store, interval, token=None, timeout=20.0):
+    """面板进程内的结算线程：daemon 线程，失败只记进计划，绝不把面板拖死。"""
+    def loop():
+        while True:
+            try:
+                cycle(store, interval, token, timeout)
+            except (PlanError, OSError, ValueError) as exc:  # 计划被删/写坏也不该掀掉面板
+                print(f"TrainOps: 结算失败 {sanitize_error(exc)}", file=sys.stderr, flush=True)
+            time.sleep(interval * 60)
+
+    thread = threading.Thread(target=loop, daemon=True, name="trainops-monitor")
+    thread.start()
+    return thread
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -586,8 +1056,104 @@ def duration(value):
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def interval_arg(value):
+    """结算周期（分钟）：在解析阶段就拒绝非法值，别等落盘时才发现。"""
+    if not re.fullmatch(r"\d+", value.strip()):
+        raise argparse.ArgumentTypeError(f"结算周期应为分钟数，实际为 {value!r}")
+    result = int(value)
+    try:
+        integer(result, "结算周期", INTERVAL_LIMITS[0])
+        if result > INTERVAL_LIMITS[1]:
+            raise PlanError(f"结算周期必须在 {INTERVAL_LIMITS[0]} 到 {INTERVAL_LIMITS[1]} 分钟之间")
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return result
+
+
+def moment(value):
+    """带时区的 ISO 时间参数；none / - / ? 表示清空。"""
+    value = nullable(value)
+    if value is None:
+        return None
+    try:
+        return stamp(date(value))
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def dependencies(value):
     return [] if value.strip() in ("", "-") else [part.strip() for part in value.split(",") if part.strip()]
+
+
+def gigabytes(value, label):
+    if value in ("none", "?", "-", ""):
+        return None
+    try:
+        result = float(value)
+    except ValueError as exc:
+        raise PlanError(f"{label}应为 GB 数字，实际为 {value!r}") from exc
+    number(result, label, high=1_000_000)
+    return result
+
+
+def disk_changes(spec):
+    """'data:40/50,fs:5/200' → 字段字典。按盘名逐项合并：没提到的盘保持原值，不会被清空。"""
+    changes = {}
+    for entry in spec.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        prefix, sep, value = entry.partition(":")
+        prefix, value = prefix.strip().lower(), value.strip()
+        if not sep or prefix not in DISK_PREFIXES:
+            raise PlanError(f"磁盘写成 '盘名:已用/总量'（盘名取 {'/'.join(DISK_PREFIXES)}），实际为 {entry!r}")
+        field, label = DISK_PREFIXES[prefix]
+        if value in ("none", "?", "-"):
+            changes[f"{field}_used_gb"] = changes[f"{field}_total_gb"] = None
+            continue
+        used, slash, total = value.partition("/")
+        if not slash:
+            raise PlanError(f"{label}应写成 '已用/总量'（如 {prefix}:40/50），实际为 {value!r}")
+        changes[f"{field}_used_gb"] = gigabytes(used.strip(), f"{label}已用")
+        changes[f"{field}_total_gb"] = gigabytes(total.strip(), f"{label}总量")
+    if not changes:
+        raise PlanError("--disk 未提供任何磁盘，格式如 --disk \"data:40/50,fs:5/200\"")
+    return changes
+
+
+def disk_arg(value):
+    try:
+        return disk_changes(value)
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def price_arg(value):
+    if value in ("none", "?", "-", ""):
+        return None
+    try:
+        result = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"时价应为元/小时数字，实际为 {value!r}") from exc
+    try:
+        number(result, "时价", low=0.001, high=10000)
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return result
+
+
+def money_arg(value):
+    if value in ("none", "?", "-", ""):
+        return None
+    try:
+        result = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"金额应为元数字，实际为 {value!r}") from exc
+    try:
+        number(result, "金额", high=1_000_000)
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return round(result, 2)
 
 
 def parse_instance_spec(spec):
@@ -627,6 +1193,73 @@ def parse_set_spec(spec):
     if not changes:
         raise PlanError(f"未在 {spec!r} 中提供有效更新字段")
     return task_id, changes
+
+
+def disk_text(disk):
+    """压成一行 '系统 12/30G·数据 40/50G'；≥90% 的盘打 ! ，让巡检的 agent 一眼看到。"""
+    chunks = []
+    for _, field, label in DISK_MOUNTS:
+        used, total = disk[f"{field}_used_gb"], disk[f"{field}_total_gb"]
+        if used is None and total is None:
+            continue
+        name = DISK_SHORT[label]
+        if used is not None and total:
+            chunks.append(f"{name} {used:g}/{total:g}G" + ("!" if used / total >= FULL_RATIO else ""))
+        elif used is not None:
+            chunks.append(f"{name} {used:g}G")
+        else:
+            chunks.append(f"{name} ?/{total:g}G")
+    return "·".join(chunks)
+
+
+def instance_line(item):
+    extras = []
+    if item["price"] is not None:
+        extras.append(f"¥{item['price']:g}/h")
+    disks = disk_text(item["disk"])
+    if disks:
+        extras.append("盘 " + disks)
+    suffix = (" " + " ".join(extras)) if extras else ""
+    return (f"{item['id']} {item['name']}({item['ssh_alias']}/{item['autodl_id']})"
+            f"[{item['status']}]{suffix}")
+
+
+def budget_parts(view):
+    """余额能推出的结论压成一行；缺数据就少说一句，绝不用 0 顶替。"""
+    entry = view["budget"]
+    parts = []
+    if entry.get("assets") is not None:
+        parts.append(f"余额 ¥{entry['assets']:.2f}")
+        if entry.get("observed_at"):
+            parts.append("观测于 " + age_text(entry["observed_at"]))
+        if entry.get("voucher"):
+            parts.append(f"代金券 ¥{entry['voucher']:.2f}（不计入可用时长）")
+        missing = [item["id"] for item in view["instances"]
+                   if item["status"] in AWAKE and item["price"] is None]
+        if entry.get("hours_awake") is not None:
+            parts.append(f"按开机时价 ¥{entry['burn_rate']:g}/h 还能跑 {entry['hours_awake']:g} 小时")
+        elif missing:
+            parts.append("未登记时价（" + ",".join(missing) + "），无法把余额换算成可用时长")
+    if entry.get("plan_gpu_hours") is not None:
+        owed = f"跑完剩余计划需 {entry['plan_gpu_hours']:g} GPU 小时"
+        if entry.get("plan_cost") is not None:
+            owed += f"、预估 ¥{entry['plan_cost']:.2f}"
+        parts.append(owed)
+    if entry.get("covers_plan") is not None:
+        parts.append("余额足以覆盖" if entry["covers_plan"] else "余额不足以覆盖剩余计划，请充值或缩减计划")
+    return parts
+
+
+def age_text(moment, now=None):
+    """余额是易腐数据：给人看'3 小时前'，比让人自己换算 ISO 时间戳更有用。"""
+    seconds = max(0, int(((now or utcnow()) - date(moment)).total_seconds()))
+    if seconds < 90:
+        return "刚刚"
+    if seconds < 5400:
+        return f"{seconds // 60} 分钟前"
+    if seconds < 36 * 3600:
+        return f"{seconds // 3600} 小时前"
+    return f"{seconds // 86400} 天前"
 
 
 def compact(data):
@@ -673,6 +1306,8 @@ def parser():
     show.add_argument("--json", action="store_true")
     serve = commands.add_parser("serve", help="仅本机只读页面，Ctrl+C 停止")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--interval", type=interval_arg, default=None,
+                       help="顺带在这个进程里跑自动结算（分钟）；不传则只做只读面板")
     instance = commands.add_parser("instance").add_subparsers(dest="action", required=True)
     instance_add = instance.add_parser("add")
     instance_add.add_argument("--name", required=True)
@@ -686,6 +1321,10 @@ def parser():
     instance_set.add_argument("--status", choices=INSTANCE_STATUSES)
     instance_set.add_argument("--note")
     instance_set.add_argument("--observed", action="store_true", help="记录本次真实观测时间")
+    instance_set.add_argument("--price", type=price_arg, default=argparse.SUPPRESS,
+                              help="元/小时；none 清空。标价不构成对机器的观测")
+    instance_set.add_argument("--disk", type=disk_arg, default=argparse.SUPPRESS,
+                              help="如 \"data:40/50,fs:5/200\"：逐盘合并，none 清空该盘")
     flow = commands.add_parser("flow").add_subparsers(dest="action", required=True)
     flow_add = flow.add_parser("add")
     flow_add.add_argument("--name", required=True)
@@ -705,10 +1344,24 @@ def parser():
     quick_set.add_argument("id")
     quick_set.add_argument("--name")
     add_task_args(quick_set, is_set=True)
-    monitor = commands.add_parser("monitor", help="登记已有调度器信息，不创建定时任务")
-    monitor.add_argument("--schedule-id", default="")
-    monitor.add_argument("--expires-at", type=nullable)
-    monitor.add_argument("--note", required=True)
+    monitor = commands.add_parser("monitor", help="自动结算：定时拉取余额并重算剩余计划的 GPU 小时与花费")
+    monitor.add_argument("--interval", type=interval_arg, default=None,
+                         help=f"结算周期（分钟，{INTERVAL_LIMITS[0]}–{INTERVAL_LIMITS[1]}）；默认沿用计划里的值")
+    monitor.add_argument("--once", action="store_true", help="只结算一轮就退出并输出 JSON，供系统 cron 调用")
+    monitor.add_argument("--expires-at", type=moment, default=argparse.SUPPRESS,
+                         help="到点自动退出（带时区时间）；none 清除")
+    monitor.add_argument("--token", help="临时覆盖 .env 与 AUTODL_TOKEN；不会写进计划或输出")
+    monitor.add_argument("--timeout", type=float, default=20.0)
+    monitor.add_argument("--strict", action="store_true", help="最近一次结算失败时以退出码 1 结束，便于 cron 告警")
+    wallet = commands.add_parser("wallet", help="账户余额：fetch 走只读接口自动拉取，set 手工登记")
+    wallet_actions = wallet.add_subparsers(dest="action", required=True)
+    wallet_fetch_parser = wallet_actions.add_parser("fetch", help="手动拉一次余额：只读接口，不下发任何实例指令")
+    wallet_fetch_parser.add_argument("--token", help="覆盖 .env 与 AUTODL_TOKEN；不会写进计划或输出")
+    wallet_fetch_parser.add_argument("--timeout", type=float, default=20.0)
+    wallet_fetch_parser.add_argument("--dry-run", action="store_true", help="只打印，不写入计划")
+    wallet_set = wallet_actions.add_parser("set", help="无 token / 断网时人工登记余额")
+    wallet_set.add_argument("--assets", type=money_arg, default=argparse.SUPPRESS, help="余额（元）；none 清空")
+    wallet_set.add_argument("--voucher", type=money_arg, default=argparse.SUPPRESS, help="代金券（元）；单独展示不计入可用时长")
     return root
 
 
@@ -752,16 +1405,28 @@ def dispatch(args, store):
                 "tasks": [t["id"] for t in created["tasks"]]}
     if args.operation_name == "check":
         return check_structure(store.read())
+    if args.operation_name == "monitor":
+        store.read()  # 先确认项目里有合法计划；没有计划就不该凭空建 .trainops 目录
+        return run_monitor(store, args)
+    if args.operation_name == "wallet":
+        store.read()  # 先确认项目里有合法计划，免得白白发一次网络请求
+        if args.action == "fetch":
+            return wallet_fetch(store, args)
+        if not (hasattr(args, "assets") or hasattr(args, "voucher")):
+            raise PlanError("wallet set 至少需要 --assets 或 --voucher（none 表示清空）")
+        changes = {key: getattr(args, key) for key in ("assets", "voucher") if hasattr(args, key)}
+        return store.change(lambda plan: set_wallet(plan, changes))
     if args.operation_name == "show":
         view = snapshot(store.read())
         if args.json:
             return view
         print(f"{view['name']} · rev {view['revision']} · {view['updated_at']}")
         if view["instances"]:
-            print("实例: " + " | ".join(
-                f"{i['id']} {i['name']}({i['ssh_alias']}/{i['autodl_id']})[{i['status']}]"
-                for i in view["instances"]
-            ))
+            print("实例: " + " | ".join(instance_line(i) for i in view["instances"]))
+        if view["budget"]:
+            print("预算: " + " | ".join(budget_parts(view)))
+        print("结算: " + view["settlement"]["text"]
+              + (f" | {view['settlement']['error']}" if view["settlement"]["error"] else ""))
         for flow in view["flows"]:
             print(f"\n{flow['id']} {flow['name']}")
             for task in view["tasks"]:
@@ -783,8 +1448,11 @@ def dispatch(args, store):
         store.read()
         if not 0 <= args.port <= 65535:
             raise PlanError("端口必须在 0–65535 之间")
+        if args.interval is not None:
+            background_monitor(store, args.interval)
         with server(store, args.port) as httpd:
-            print(f"TrainOps http://127.0.0.1:{httpd.server_port} · 只读计划，不是后台训练调度器", flush=True)
+            print(f"TrainOps http://127.0.0.1:{httpd.server_port} · 只读计划，不是后台训练调度器"
+                  + (f" · 每 {args.interval} 分钟自动结算" if args.interval is not None else ""), flush=True)
             try:
                 httpd.serve_forever()
             except KeyboardInterrupt:
@@ -809,7 +1477,11 @@ def dispatch(args, store):
             for key in ("name", "autodl_id", "ssh_alias", "status", "note"):
                 if getattr(args, key) is not None:
                     item[key] = getattr(args, key)
-            if args.observed or args.status is not None:
+            if hasattr(args, "price"):
+                item["price"] = args.price  # 时价是"标价"，不构成一次对机器的观测
+            if hasattr(args, "disk"):
+                item["disk"].update(args.disk)  # 逐盘合并：没提到的盘保持原值，不会被静默抹掉
+            if args.observed or args.status is not None or hasattr(args, "disk"):
                 item["observed_at"] = stamp()
             return item
         if args.operation_name == "flow":
@@ -818,9 +1490,6 @@ def dispatch(args, store):
             item = find(plan, "flows", args.id)
             item["name"] = args.name
             return item
-        if args.operation_name == "monitor":
-            plan["monitor"] = {"schedule_id": args.schedule_id, "expires_at": args.expires_at, "note": args.note}
-            return plan["monitor"]
         if getattr(args, "action", "set") == "add":
             return add_task(plan, args.flow, args.name, args.instance, args.duration_minutes, args.deps, args.not_before)
         changes = {key: value for key, value in vars(args).items()
@@ -853,8 +1522,10 @@ def main(argv=None):
             print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         else:
             print(json.dumps(compact(result), ensure_ascii=False, allow_nan=False))
-    # 默认沿用退出码 0（agent 读 JSON 即可），--strict 让脚本/CI 能直接判断结构检查结果。
+    # 默认沿用退出码 0（agent 读 JSON 即可），--strict 让脚本/CI 能直接判断检查结果。
     if args.operation_name == "check" and args.strict and not result["ok"]:
+        return 1
+    if args.operation_name == "monitor" and args.strict and result and result["monitor"]["last_error"]:
         return 1
     return 0
 

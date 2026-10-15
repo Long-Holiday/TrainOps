@@ -1,6 +1,7 @@
 // Dependency-free DOM smoke tests for continuous Gantt chart & vertical progress line.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const {execFileSync} = require('node:child_process');
@@ -35,10 +36,20 @@ function byClass(node, cls) {
   return node.children.flatMap(child => [...(child.classList && child.classList.contains(cls) ? [child] : []), ...byClass(child, cls)]);
 }
 const root = path.resolve(__dirname, '..');
+const cli = path.join(root, 'skills/trainops/scripts/trainops.py');
 const html = fs.readFileSync(path.join(root, 'skills/trainops/web/index.html'), 'utf8');
 const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-const data = JSON.parse(execFileSync('python3', [path.join(root, 'skills/trainops/scripts/trainops.py'),
-  '--project', path.join(root, 'examples/demo-project'), 'show', '--json'], {encoding:'utf8'}));
+// 演示数据的时间戳是"生成这一刻"推出来的。running 任务一旦超过预计完成时间就变成待估，
+// budget() 便按设计整块隐去余额结论（README：任一任务完成时间待估时结论不显示），
+// 于是拿仓库里那份快照断言余额块，结果会随提交时间漂移（生成后约 70 分钟内才成立）。
+// 这里现生成一份新鲜的演示计划，断言与仓库快照的年龄无关。
+const project = fs.mkdtempSync(path.join(os.tmpdir(), 'trainops-web-'));
+process.on('exit', () => fs.rmSync(project, {recursive: true, force: true}));
+// 与 Python 测试同一约定：测试进程绝不读开发机上的 .env（真 token）。
+const env = {...process.env, TRAINOPS_ENV: path.join(project, 'missing.env'), AUTODL_TOKEN: ''};
+execFileSync('python3', [cli, '--project', project, 'demo'], {encoding: 'utf8', env});
+const data = JSON.parse(execFileSync('python3', [cli, '--project', project, 'show', '--json'],
+  {encoding: 'utf8', env}));
 const nodes = Object.fromEntries(['title','updated','instances','summary','flows','error','refresh','theme']
   .map(id => [id, new Element('div')]));
 let failed = false;
@@ -89,6 +100,54 @@ async function main() {
   assert.match(nodes.flows.textContent, /F03-T02/);
   assert.match(nodes.flows.textContent, /待估/);
   console.log('PASS: Continuous Gantt charts / no task details / unobstructed badges / total flow progress line');
+
+  // 余额只有一块：金额、代金券标注、按当前开机时价的可跑时长、计划花费与充足结论
+  const budgetChips = byClass(nodes.summary, 'budget');
+  assert.equal(budgetChips.length, 1, '余额块必须渲染且只有一块');
+  assert.match(budgetChips[0].textContent, /余额 ¥128\.50/);
+  assert.match(budgetChips[0].textContent, /观测于 (刚刚|\d+ (分钟|小时|天)前)/);
+  assert.match(nodes.summary.textContent, /代金券 ¥20\.00（不计入可用时长）/);
+  assert.match(nodes.summary.textContent, /现价可跑 37\.1 小时/);
+  // 计划剩余时长随真实时间推移而变化，这里只要求它被算出来并带上预估花费
+  assert.match(nodes.summary.textContent, /跑完剩余计划 \d+(\.\d+)? GPU 小时≈ ¥\d+\.\d\d/);
+  assert.equal(byClass(nodes.summary, 'ok').length, 1, '余额充足时给出明确的结论徽标');
+  console.log('PASS: balance and affordable GPU hours are shown in the summary');
+
+  // 自动结算记录：整句文案由服务端写进计划，面板只显示、只按 over 换样式，不在浏览器里重算
+  assert.ok(data.settlement && typeof data.settlement.text === 'string',
+    '/api/plan 必须带上服务端算好的结算视图');
+  assert.equal(byClass(nodes.summary, 'settled').length, 1, '计划里有结算记录就要渲染一块结算徽标');
+  assert.match(byClass(nodes.summary, 'settled')[0].textContent, /自动结算/);
+  data.settlement = {live:false, over:false, computed_at:new Date().toISOString(),
+    text:'自动结算于 3 分钟前 · 跑完剩余计划 4.8 GPU 小时、约 ¥9.62 · 余额够'};
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.summary, 'settled-over').length, 0, '结论正常时结算徽标不该报警');
+  assert.match(nodes.summary.textContent, /自动结算于 3 分钟前 · 跑完剩余计划 4\.8 GPU 小时、约 ¥9\.62 · 余额够/);
+  data.settlement = {live:true, over:true, text:'自动结算已过期（3 小时前，超过 2 个周期）· 当前为实时值 · 上次结算失败'};
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.summary, 'settled-over').length, 1, '结算过期/失败时必须用醒目样式');
+  console.log('PASS: scheduled settlement is rendered straight from the server-side text');
+
+  // 没有余额观测时整块不渲染：绝不把缺失显示成 0（结算记录同理，一起隐去再看）
+  const savedBudget = data.budget;
+  const savedSettlement = data.settlement;
+  delete data.budget;
+  delete data.settlement;
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.summary, 'budget').length, 0);
+  assert.equal(byClass(nodes.summary, 'settled').length, 0, '没有结算记录时整块不渲染');
+  assert.ok(!/¥/.test(nodes.summary.textContent), '缺余额时不该出现任何金额');
+  data.budget = savedBudget;
+  data.settlement = savedSettlement;
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.summary, 'budget').length, 1);
+  assert.equal(byClass(nodes.summary, 'settled').length, 1);
+
+  // 面板只做只读展示：没有 TB 链接、没有磁盘条、没有新的外部请求入口
+  assert.equal(descendants(nodes.flows, 'a').length + descendants(nodes.summary, 'a').length, 0,
+    '面板不提供 TensorBoard 直链');
+  assert.ok(!/磁盘|disk_used|tf-logs|tensorboard/i.test(nodes.summary.textContent + nodes.instances.textContent),
+    '面板不展示磁盘与 TensorBoard 信息（这些留给 agent 巡检）');
 
   nodes.theme.fire('click');
   assert.equal(context.document.documentElement.dataset.theme, 'dark');

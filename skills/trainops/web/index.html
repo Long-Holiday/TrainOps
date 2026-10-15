@@ -74,6 +74,15 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .summary-total { font-weight:600; letter-spacing:.01em; }
 .chip { display:inline-flex; align-items:center; gap:6px; padding:3px 11px 3px 9px; border:1px solid var(--line); border-radius:999px; background:var(--surface); font-size:13px; box-shadow:0 1px 1px rgba(15,30,60,.03); }
 .chip b { font-family:var(--mono); font-weight:650; font-variant-numeric:tabular-nums; }
+/* 余额块：只读、静态，无倒计时也无外部请求；没有观测数据时整块不渲染 */
+.chip.budget { border-color:var(--accent-line); background:var(--accent-soft); }
+.chip.budget b { font-size:14.5px; }
+.chip.note { border-style:dashed; color:var(--secondary); }
+/* 自动结算记录：服务端写好整句文案，面板只显示，不在浏览器里重算任何数字 */
+.chip.settled { border-style:dashed; color:var(--secondary); font-variant-numeric:tabular-nums; }
+.chip.settled-over { border-style:solid; border-color:var(--warning); color:var(--warning); background:var(--warning-soft); font-variant-numeric:tabular-nums; }
+.chip.ok { border-color:var(--good); color:var(--good); background:var(--good-soft); }
+.chip.over { border-color:var(--critical); color:var(--critical); background:var(--critical-soft); font-weight:600; }
 .instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin-bottom:16px; }
 .instance { position:relative; padding:12px 16px 12px 19px; border:1px solid var(--line); border-radius:11px; background:var(--surface); box-shadow:var(--shadow),inset 0 1px 0 var(--rail); overflow:hidden; transition:border-color .15s,transform .15s; }
 .instance::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--line-strong); }
@@ -211,6 +220,61 @@ function copy(value) {
   });
   return button;
 }
+function money(value) {
+  return '¥' + Number(value).toFixed(2);
+}
+/* 余额是易腐数据：只显示观测于多久之前，不做倒计时——页面不联网也不该假装实时。 */
+function ageOf(value) {
+  const seconds = (Date.now() - Date.parse(value)) / 1000;
+  if (!Number.isFinite(seconds)) return '';
+  if (seconds < 90) return '刚刚';
+  if (seconds < 5400) return Math.round(seconds / 60) + ' 分钟前';
+  if (seconds < 36 * 3600) return Math.round(seconds / 3600) + ' 小时前';
+  return Math.round(seconds / 86400) + ' 天前';
+}
+/* 余额与可用时长：数据缺一项就少显示一项，绝不把缺失当成 0。
+   代金券单独标注——否则"2 元现金 + 500 元代金券"会被读成还能跑很久。 */
+function budgetNodes(budget) {
+  if (!budget || budget.assets === null || budget.assets === undefined) return [];
+  const nodes = [];
+  const amount = el('span',null,'chip budget');
+  amount.append(el('span','余额 '),el('b',money(budget.assets)));
+  const age = budget.observed_at ? ageOf(budget.observed_at) : '';
+  if (age) {
+    amount.append(el('span','观测于 ' + age));
+    amount.title = '余额观测于 ' + when(budget.observed_at) + '，不是实时数字；用 wallet fetch 更新';
+  }
+  nodes.push(amount);
+  if (budget.voucher) {
+    const voucher = el('span',null,'chip note');
+    voucher.append(el('span','代金券 '),el('b',money(budget.voucher)),el('span','（不计入可用时长）'));
+    nodes.push(voucher);
+  }
+  if (typeof budget.hours_awake === 'number') {
+    const hours = el('span',null,'chip');
+    hours.append(el('span','现价可跑 '),el('b',budget.hours_awake + ' 小时'));
+    hours.title = '按当前开机实例的时价合计 ' + money(budget.burn_rate) + '/h 粗算，未计代金券';
+    nodes.push(hours);
+  }
+  if (typeof budget.plan_gpu_hours === 'number') {
+    const rest = el('span',null,'chip');
+    rest.append(el('span','跑完剩余计划 '),el('b',budget.plan_gpu_hours + ' GPU 小时'));
+    if (typeof budget.plan_cost === 'number') rest.append(el('span','≈ ' + money(budget.plan_cost)));
+    nodes.push(rest);
+  }
+  if (typeof budget.covers_plan === 'boolean') {
+    nodes.push(el('span',budget.covers_plan ? '余额够跑完' : '余额不足以跑完，请充值或缩减计划',
+      'chip ' + (budget.covers_plan ? 'ok' : 'over')));
+  }
+  return nodes;
+}
+/* 自动结算记录：结论与文案都由服务端写进计划，这里只展示；没有结算记录就整块不渲染。 */
+function settlementNode(settlement) {
+  if (!settlement || !settlement.text) return null;
+  const node = el('span',settlement.text,'chip settled' + (settlement.over ? ' settled-over' : ''));
+  if (settlement.computed_at) node.title = '自动结算于 ' + when(settlement.computed_at) + '；由 trainops monitor 定时重算';
+  return node;
+}
 function taskProgress(task) {
   if (task.status === 'done') return 100;
   if (task.progress !== null && task.progress !== undefined) return Math.max(0, Math.min(100, Math.round(Number(task.progress))));
@@ -273,6 +337,9 @@ function render() {
     chip.append(el('span',null,'dot'),el('span',names[key] + ' '),el('b',counts[key]));
     summary.push(chip);
   }
+  summary.push(...budgetNodes(plan.budget));
+  const settled = settlementNode(plan.settlement);
+  if (settled) summary.push(settled);
   $('summary').replaceChildren(...summary);
   const spans = computeSpans(plan.tasks, plan.generated_at || plan.updated_at);
   const flows = [];

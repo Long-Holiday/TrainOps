@@ -1,6 +1,14 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+
+# 实验账本：各实验项目里的 .trainops/ 不进版本库，只保留演示快照
 .trainops/
 !examples/demo-project/.trainops/
 examples/demo-project/.trainops/*
 !examples/demo-project/.trainops/plan.json
+
+# 凭据：.env 只放本机，模板 .env.example 进版本库
+.env
+.env.*
+!.env.example

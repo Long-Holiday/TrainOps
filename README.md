@@ -6,13 +6,14 @@
 - **规律编号与依赖**：实例 `I01`、流程 `F01`、任务 `F01-T01` 编号稳定，支持同流程自动串联与跨流程依赖。
 - **甘特图 Web 面板**：每个流程以紧凑连续甘特图展示各节点子进度与大致完成时间，并用**红色竖线标出当前甘特图的总流程进度**。
 - **极简 Agent 操作**：单次命令完成建表/批量更新，只填核心字段（状态、进度、耗时、依赖），免填冗余记录，避免上下文过长产生幻觉。
+- **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；`monitor` 定时结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」。
 - **零第三方依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）。
 
 ## 1. 快速启用（任意 Agent 热插拔）
 
-在任意能读文件并执行命令的 agent 会话中输入（完整提示词见 [training-monitor.md](training-monitor.md)）：
+把下面的提示词复制给任意能读文件、能执行命令的 agent（把两处路径换成你自己的）：
 
-> 请读取 `/你的路径/TrainOps/skills/trainops/SKILL.md` 并启用 TrainOps，保留你原有角色。实验项目目录是 `/你的路径/my-experiment`。先用 `show` 查看现有计划；当前只加载能力，不操作实例。
+> 启用 TrainOps 训练管理能力：请读取 `/你的路径/TrainOps/skills/trainops/SKILL.md`（无需预读其他参考文档），保留你原有角色。本次实验项目目录是 `/你的路径/my-experiment`。先用文本模式 `show` 查看现有计划；若尚无计划，接到具体实验任务后用 `init` 单次命令建立实例、并行流程与任务节点，执行 `check` 完成结构性检查，并用 `set` / `batch` 维护任务状态与进度。训练产物按 SKILL.md 的三盘规范落盘（高 IO 与 checkpoint 放 `/root/autodl-tmp`，需长期保留或跨实例共享的放 `/root/autodl-fs`，释放实例前先转存），TensorBoard 事件写数据盘再软链到 `/root/tf-logs`；巡检时一并登记实例时价与 `df -h` 用量（`instance set --price/--disk`），余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱」交给 `monitor` 定时结算（token 放在 TrainOps 仓库根的 `.env`），余额不足以覆盖剩余计划时提醒我。需要可视化时后台启动 `serve` 本地甘特图面板。当前仅加载能力，具体实例映射与任务稍后提供。
 
 ## 2. 预览甘特图演示面板
 
@@ -20,7 +21,9 @@
 python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --port 8765
 ```
 
-浏览器打开 **http://127.0.0.1:8765** 查看各流程甘特图、任务子进度与流程总进度红线。
+浏览器打开 **http://127.0.0.1:8765** 查看各流程甘特图、任务子进度、流程总进度红线与余额结算结论。演示计划自带一份结算记录（数据是编造的演示值），所以开箱就能看到结算徽标；它超过 2 个周期（60 分钟）后自动回退为实时值并标注原因——这是设计好的降级，不是故障。
+
+演示目录不要启动自动结算：`serve --interval` / `monitor` 会真的写入 `examples/demo-project/.trainops/plan.json`（那是版本库里的快照），需要真实结算时用自己的实验项目目录。
 
 ## 3. 精简 CLI 用法
 
@@ -78,14 +81,75 @@ $CLI batch --task "F01:评估:-:30:F01-T01"
 | `set <任务ID> [--status ...] [--progress ...] [--instance ...] [--deps ...] [--minutes ...]` | 更新单个任务（`task set` 的简写） |
 | `task add --flow F01 --name 名称 [--instance I01] [--minutes 30] [--deps ...] [--not-before ...]` | 新增单个任务；`flow add --name ...`、`instance add` / `instance set I01 --status on --observed` 同理 |
 | `batch [--instance ...] [--flow ...] [--task ...] [--set ...]` | 单次命令批量追加实例/流程/任务或批量更新任务进度与状态（`--set "F01-T01:done:100:备注"`） |
-| `monitor --note ... [--schedule-id ...] [--expires-at ...]` | 登记外部调度器/巡检安排（仅记录，不创建定时任务） |
-| `serve --port 8765` | 启动本地只读甘特图 Web 面板（仅监听 `127.0.0.1`，写入一律拒绝） |
+| `instance set I01 --price 1.88 --disk "data:40/50,fs:5/200"` | 登记 GPU 时价（元/小时）与各盘用量（GB）；`--disk` 逐盘合并，`data:none` 清空该盘 |
+| `wallet fetch [--token ...] [--dry-run]` | 手动拉一次账户余额并写入计划（只读接口，不下发实例指令、不触发计费）；失败时退出码非 0 且计划文件不变。定时刷新余额用 `monitor` |
+| `wallet set --assets 128.50 [--voucher 20]` | 无 token / 断网时手工登记余额（`none` 清空；无参数会被拒绝） |
+| `monitor [--interval 30] [--once] [--expires-at ISO\|none] [--token ...] [--timeout 20] [--strict]` | **定时结算**：每轮刷新余额并重算「剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」，结论连同结算时间写进计划；默认前台循环，`--once` 跑一轮即退出（cron），`--strict` 在最近一次结算有错时返回非 0 |
+| `serve --port 8765 [--interval 30]` | 启动本地只读甘特图 Web 面板（仅监听 `127.0.0.1`，写入一律拒绝）；带 `--interval` 时同一进程内再跑一个结算线程 |
 
 几个容易被忽略的约束：同一实例同时只允许一个 `running` 任务（`local` 不占 GPU，可并行）；依赖未完成的任务不能被标记为 `running`；实例上仍有任务运行时不能把该实例标为 `off` / `unreachable`。
 
-## 5. 测试
+## 5. AutoDL 存储、TensorBoard 与余额
+
+项目只面向 AutoDL，因此把三件账外的事也纳入同一套记录与告警。**面板不展示磁盘与 TensorBoard 信息**——这些是 agent 巡检时要盯的事，写在 `show`／`check` 里更有用。
+
+### 三盘规范（`SKILL.md` 第 3 节，巡检时逐条对照）
+
+| 路径 | 特性 | 放什么 |
+|---|---|---|
+| `/` 系统盘 | 关机不丢、随镜像保存、容量最小 | 代码、conda 环境、脚本 |
+| `/root/autodl-tmp` 数据盘 | 快、关机不丢、**不随镜像保存、释放实例即丢** | 数据集、checkpoint、TB 事件、高 IO 产物 |
+| `/root/autodl-fs` 文件存储 | 跨实例共享、不受开关机与镜像影响 | 需长期保留或跨实例共享的产物 |
+
+`instance set I01 --disk "sys:12/30,data:44/50,fs:5/200"` 登记用量后，`show` 的实例行会显示 `盘 系统 12/30G·数据 44/50G`，已用 ≥90% 的盘带 `!`，`check` 同时给出提醒。
+
+### TensorBoard（数据盘 + 软链）
 
 ```bash
-python3 -m unittest discover -s tests -v   # CLI / 计划账本 / 并发写 / 演示快照一致性
-node tests/test_web.cjs                    # 面板渲染：甘特几何、滚动保持、逾期提示、XSS 转义
+TB=/root/autodl-tmp/tf-logs/<项目名>     # 每任务一个 run：$TB/F01-T02
+ln -sfn "$TB" /root/tf-logs/<项目名>     # 内置 TensorBoard 免启动即可读
 ```
+
+换 logdir 按官方流程重启：`ps -ef | grep tensorboard | awk '{print $2}' | xargs kill -9`，再 `tensorboard --port 6007 --logdir <目录>`；要公网直链则 `--port 6006 --host 0.0.0.0`（平台只映射 6006 / 6008）。
+
+### 余额与可用时长
+
+Token 放在 **TrainOps 仓库根目录的 `.env`**（模板见 [.env.example](.env.example)，`chmod 600`）：
+
+```bash
+cp .env.example .env && chmod 600 .env   # 填入 AUTODL_TOKEN=...（控制台 → 设置 → 开发者Token）
+$CLI wallet fetch                        # 只读接口，token 不进计划文件、不进输出、不进异常文本
+$CLI instance set I01 --price 1.88       # 时价决定"余额能跑多久"
+$CLI show                                # 预算行：余额、可跑小时、计划剩余 GPU 小时与花费、够不够
+```
+
+优先级为 `--token` > 环境变量 `AUTODL_TOKEN` > `.env`（`TRAINOPS_ENV` 可把 `.env` 指到别处）；文件缺失不算错误，没配 token 时本地命令照常可用，只有联网命令会提示怎么配。
+
+可用时长只按现金余额 `assets` 计算，代金券单独展示；任一开机实例缺时价或任一任务完成时间待估时，对应结论**不显示**而不是给出残缺数字。面板顶部只呈现这些算得出的结论：余额、代金券、可跑小时、"够不够跑完"，外加一块结算记录（文案由服务端写好，面板不做任何计算）。
+
+### 自动结算（余额与剩余计划开销定时重算）
+
+按需选一种方式让它定期跑（三种都是同一个 `cycle()`：联网在文件锁之外，落盘只写一次）：
+
+```bash
+$CLI monitor                        # ① 前台循环，每 --interval 分钟结算一轮，Ctrl+C 退出
+$CLI monitor --once                 # ② 跑一轮即退出：交给 cron / 系统定时器 / agent 巡检
+$CLI serve --interval 30 --port 8765  # ③ 面板进程内顺带结算，一个进程管两件事
+```
+
+```cron
+*/30 * * * * cd /你的路径/TrainOps && python3 skills/trainops/scripts/trainops.py -p /你的路径/my-experiment monitor --once --strict
+```
+
+每轮把结论写进计划：`余额能跑多久`、`跑完剩余计划还需多少 GPU 小时`、`预估花费`、`余额够不够`，外加结算时刻。`show` 与面板直接读这份结论并标注"自动结算于 X"；超过 2 个周期没有新结算就回退为实时值并说明原因，**同一屏不会出现两套互相矛盾的数字**。结算失败（断网、token 失效）只记进计划的 `last_error`，不打断循环也不改动其余数据，`check` 会把它当成提醒报出来，`--strict` 让 cron 能据此告警。
+
+`--expires-at ISO` 用于给循环加个自动退出时间（避免留下遗忘的守护进程），`--expires-at none` 清空；手动改计划后想立刻刷新结论用 `monitor --once`，不要用 `wallet fetch` —— 后者只更新余额，不动结算记录。
+
+## 6. 测试
+
+```bash
+python3 -m unittest discover -s tests -v   # 计划账本 / CLI / 并发写 / 自动结算 / 余额接口 / 演示快照一致性
+node tests/test_web.cjs                    # 面板渲染：甘特几何、滚动保持、余额与结算块、逾期提示、XSS 转义
+```
+
+测试进程一律把 `.env` 指向不存在的路径，绝不会读到开发机上的真 token。
