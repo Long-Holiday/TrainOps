@@ -34,6 +34,12 @@ INSTANCE_STATUSES = ("unknown", "off", "starting", "on", "unreachable")
 AWAKE = ("on", "starting")
 DEFAULT_INTERVAL_MINUTES = 30
 INTERVAL_LIMITS = (1, 1440)
+# 时价是元/小时的标价：0 与负数会被读成"不花钱"，宁可拒绝也不让账目失真（validate 与面板接口共用）。
+PRICE_LIMITS = (0.001, 10000)
+# 无卡开机（含持续请求等待 GPU）仍按小时计费，只是费率低：AutoDL 目前是 0.1 元/小时。
+# 它和 GPU 时价是两个字段，因为两种开机模式会来回切换，各自的价格不该互相冲掉。
+NO_GPU_PRICE = 0.1
+MODES = ("gpu", "no-gpu")
 # 结算快照只装"算得出的结论"：缺数据的键不落盘，也不拿 0 顶替（与 budget() 同一约定）。
 ESTIMATE_KEYS = ("burn_rate", "hours_awake", "plan_gpu_hours", "plan_cost", "covers_plan")
 ERROR_LIMIT = 200
@@ -49,6 +55,9 @@ DISK_PREFIXES = {prefix: (field, label) for prefix, field, label in DISK_MOUNTS}
 DISK_SHORT = {"系统盘": "系统", "数据盘": "数据", "文件存储": "存储"}
 FULL_RATIO = 0.9
 API_BALANCE_PATH = "/api/v1/dev/wallet/balance"
+# 面板唯一可写的端点：登记时价。其余路径全是只读，写动词一律 405。
+PRICE_PATH = "/api/instance-price"
+BODY_LIMIT = 4096
 TERMINAL = ("done", "failed", "cancelled")
 TRANSITIONS = {
     "pending": {"running", "blocked", "cancelled"},
@@ -207,7 +216,13 @@ def validate(plan):
                 raise PlanError("实例状态无效")
             text(item["note"], "实例备注")
             if item["price"] is not None:
-                number(item["price"], "时价", low=0.001, high=10000)
+                number(item["price"], "时价", low=PRICE_LIMITS[0], high=PRICE_LIMITS[1])
+            # 开机模式与无卡费率是后加的字段：老计划没有这两个键，缺了就按"未观测 + 平台默认无卡费率"读，
+            # 因此不用升 schema 版本，也不会逼人重建计划。
+            if item.get("mode") is not None and item["mode"] not in MODES:
+                raise PlanError("开机模式只能是 gpu（有卡）或 no-gpu（无卡准备）")
+            if item.get("no_gpu_price") is not None:
+                number(item["no_gpu_price"], "无卡费率", low=PRICE_LIMITS[0], high=PRICE_LIMITS[1])
             disk = item["disk"]
             for key in DISK_FIELDS:
                 if disk[key] is not None:
@@ -390,11 +405,32 @@ class Store:
 def add_instance(plan, name, autodl_id, ssh_alias):
     item = {"id": f"I{plan['next_instance']:02d}", "name": name,
             "autodl_id": autodl_id, "ssh_alias": ssh_alias, "status": "unknown",
-            "observed_at": None, "note": "", "price": None,
+            "observed_at": None, "note": "", "price": None, "mode": None,
+            "no_gpu_price": NO_GPU_PRICE,
             "disk": dict.fromkeys(DISK_FIELDS)}
     plan["next_instance"] += 1
     plan["instances"].append(item)
     return item
+
+
+def instance_mode(item):
+    """开机模式：no-gpu（无卡开机，含持续请求等待 GPU）或 gpu。没有这个键 = 未观测。
+
+    用 .get 而不是直取：新增字段要保持向后兼容，老计划少了这两个键也要照常读得出来。
+    """
+    mode = item.get("mode")
+    return mode if mode in MODES else None
+
+
+def instance_rate(item):
+    """这台实例现在每小时的费率（元/小时）：无卡按无卡费率，其余按 GPU 时价。
+
+    模式未观测时按 GPU 时价算——宁可高估花费，也不让人以为余额还能跑很久。
+    费率没登记就返回 None：缺数据就缺结论，绝不拿 0 顶替（无卡不等于免费，0 更会误导）。
+    """
+    if instance_mode(item) == "no-gpu":
+        return item.get("no_gpu_price", NO_GPU_PRICE)
+    return item["price"]
 
 
 def add_flow(plan, name):
@@ -539,8 +575,9 @@ def forecast(plan, now=None):
 
 
 def budget(plan, now=None, estimates=None):
-    """余额 × 时价 × 剩余计划能推出的全部结论：缺数据就缺结论，绝不用 0 顶替。
+    """余额 × 当前费率 × 剩余计划能推出的全部结论：缺数据就缺结论，绝不用 0 顶替。
 
+    费率按实例当前的开机模式取：无卡开机按无卡费率（0.1 元/小时，不是免费），有卡按 GPU 时价。
     金额一律只按现金余额 assets 计算，代金券单独展示——否则「2 元现金 + 500 元代金券」
     会得出「还能跑 1 小时」这种吓人的错误结论。
     """
@@ -548,6 +585,7 @@ def budget(plan, now=None, estimates=None):
     estimates = forecast(plan, now) if estimates is None else estimates
     wallet = plan["wallet"]
     assets = wallet["assets"]
+    rates = {item["id"]: instance_rate(item) for item in plan["instances"]}
     result = {}
     if assets is not None:
         result["assets"] = round(assets, 2)
@@ -556,9 +594,9 @@ def budget(plan, now=None, estimates=None):
         if wallet["observed_at"]:
             result["observed_at"] = wallet["observed_at"]
         awake = [item for item in plan["instances"] if item["status"] in AWAKE]
-        # 任一开机实例缺时价，烧钱速度就是残缺的；低估会让人以为还能跑很久，所以宁可不下结论。
-        if awake and all(item["price"] is not None for item in awake):
-            result["burn_rate"] = round(sum(item["price"] for item in awake), 4)
+        # 任一开机实例缺费率，烧钱速度就是残缺的；低估会让人以为还能跑很久，所以宁可不下结论。
+        if awake and all(rates[item["id"]] is not None for item in awake):
+            result["burn_rate"] = round(sum(rates[item["id"]] for item in awake), 4)
             result["hours_awake"] = round(assets / result["burn_rate"], 1)
     # 剩余计划按"实例最后完成时间"衡量：AutoDL 按开机时长计费，这比累加任务耗时更贴近真实花销。
     lanes, unknown = {}, False
@@ -576,6 +614,8 @@ def budget(plan, now=None, estimates=None):
     if lanes and not unknown:
         hours = {key: max(0.0, (moment - now).total_seconds() / 3600) for key, moment in lanes.items()}
         result["plan_gpu_hours"] = round(sum(hours.values()), 1)
+        # 这里故意用 GPU 时价而不是 instance_rate()：待跑的任务将来是在有卡模式下跑的，
+        # 按无卡费率去估会把花费压低（"余额够"的假结论），缺 GPU 时价就少给结论。
         prices = {item["id"]: item["price"] for item in plan["instances"]}
         if all(prices.get(key) is not None for key in hours):
             result["plan_cost"] = round(sum(hours[key] * prices[key] for key in hours), 2)
@@ -595,7 +635,10 @@ def plan_fingerprint(plan):
 
     不能拿 revision 当判据：monitor 自己每轮都要更新 last_run，用完 revision 会永远显示"有变更"。
     """
-    payload = [[item[key] for key in ("id", "status", "price")] for item in plan["instances"]]
+    # 开机模式与无卡费率同样进指纹：它们会改变 burn_rate/hours_awake，改了就该判成"结算后计划有变更"。
+    # 老计划缺这两个键，所以用 .get 读成 None，而不是让指纹报错。
+    payload = [[item.get(key) for key in ("id", "status", "mode", "price", "no_gpu_price")]
+               for item in plan["instances"]]
     payload += [[task[key] for key in ("id", "status", "deps", "instance", "duration_minutes",
                                        "not_before", "started_at", "finished_at", "progress",
                                        "progress_at")] for task in plan["tasks"]]
@@ -675,7 +718,7 @@ def demo_plan(now=None):
              {"system_used_gb": 9.1, "system_total_gb": 30, "data_used_gb": 22.5, "data_total_gb": 50,
               "fs_used_gb": 5, "fs_total_gb": 200})
     for instance, price, disk in zip(plan["instances"], (1.88, 1.58), disks):
-        instance.update(status="on", observed_at=stamp(now), note="演示占位，非真实实例",
+        instance.update(status="on", mode="gpu", observed_at=stamp(now), note="演示占位，非真实实例",
                         price=price, disk=disk)
     plan["wallet"] = {"assets": 128.5, "voucher": 20.0, "observed_at": stamp(now)}
     add_flow(plan, "基线模型")
@@ -741,10 +784,10 @@ def check_structure(plan, now=None, *, amounts=True):
     view = budget(plan, now)
     if view.get("assets") is not None:
         missing = [item["id"] for item in plan["instances"]
-                   if item["status"] in AWAKE and item["price"] is None]
+                   if item["status"] in AWAKE and instance_rate(item) is None]
         if missing:
-            warnings.append("未登记时价（" + ", ".join(f"instance set {key} --price 单价" for key in missing) +
-                            "），无法把余额换算成可用时长")
+            warnings.append("未登记时价（" + ", ".join(missing) +
+                            "），无法把余额换算成可用时长；请打开面板（serve）在实例卡上登记")
         if view.get("covers_plan") is False:
             detail = "实时预算提醒：余额不足以覆盖剩余计划"
             if amounts:
@@ -1013,11 +1056,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def do_GET(self):
-        allowed_hosts = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+    def local(self):
+        """只认 127.0.0.1/localhost：外部域名解析到本机也不能读走或改写计划（防 DNS rebinding）。"""
+        hosts = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
         if self.server.server_port == 80:
-            allowed_hosts.update({"127.0.0.1", "localhost"})
-        if self.headers.get("Host", "").lower() not in allowed_hosts:
+            hosts.update({"127.0.0.1", "localhost"})
+        return self.headers.get("Host", "").lower() in hosts
+
+    def do_GET(self):
+        if not self.local():
             self.respond(403, {"error": "只允许本机 Host，不能通过外部域名访问计划"})
             return
         try:
@@ -1031,10 +1078,75 @@ class Handler(BaseHTTPRequestHandler):
         except (PlanError, OSError, OverflowError) as exc:
             self.respond(500, {"error": str(exc)})
 
-    def reject_write(self):
-        self.respond(405, {"error": "只读页面，请通过 agent/CLI 修改计划"})
+    def do_POST(self):
+        """唯一写入口：面板登记时价。其余一切都还是只读。
 
-    do_POST = do_PUT = do_PATCH = do_DELETE = reject_write
+        页面只监听本机，但请求可能来自别处，所以三道关：Host 白名单、Origin 必须是本机同源、
+        Content-Type 必须是 application/json（跨站 <form> 发不出这个类型，跨站 JSON fetch 要先过预检，
+        而本服务不答 OPTIONS、不发 CORS 头）。落盘照旧只走 store.change()，不新增第二条写路径。
+        """
+        if not self.local():
+            self.respond(403, {"error": "只允许本机 Host，不能通过外部域名修改计划"})
+            return
+        path = urlsplit(self.path).path
+        if path != PRICE_PATH:
+            # 在已知的读取路径上写是"方法不允许"，不存在的路径才是 404。
+            if path in ("/", "/api/plan"):
+                self.reject_write()
+            else:
+                self.respond(404, {"error": "not found"})
+            return
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in {
+                f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"}:
+            self.respond(403, {"error": "只接受本机面板发出的请求"})
+            return
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            self.respond(415, {"error": "登记时价只接受 application/json"})
+            return
+        try:
+            size = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self.respond(400, {"error": "请求缺少合法的 Content-Length"})
+            return
+        if not 0 <= size <= BODY_LIMIT:
+            self.respond(413, {"error": f"请求体过大，最多 {BODY_LIMIT} 字节"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(size))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            self.respond(400, {"error": f"请求体不是合法 JSON：{exc}"})
+            return
+        # 键集必须恰好是这两种之一：多一个键就报错，免得"顺手改点别的"从这里溜进计划。
+        keys = set(payload) if isinstance(payload, dict) else set()
+        if keys not in ({"id", "price"}, {"id", "no_gpu_price"}):
+            self.respond(400, {"error": '请求体必须恰好是 {"id": 实例编号, "price": 元/小时或 null}'
+                                        '（无卡费率用 no_gpu_price）'})
+            return
+        field = "price" if "price" in keys else "no_gpu_price"
+        try:
+            plan = self.store.read()
+        except (PlanError, OSError, OverflowError) as exc:  # 计划损坏是服务端问题，不能报成 400
+            self.respond(500, {"error": str(exc)})
+            return
+        try:
+            instance_id = payload["id"]
+            text(instance_id, "实例编号", required=True)
+            price = price_value(payload[field])
+            find(plan, "instances", instance_id)
+        except PlanError as exc:
+            self.respond(400, {"error": str(exc)})
+            return
+        try:
+            self.store.change(lambda current: set_instance_price(current, instance_id, field, price))
+            self.respond(200, snapshot(self.store.read()))
+        except (PlanError, OSError, OverflowError) as exc:
+            self.respond(500, {"error": str(exc)})
+
+    def reject_write(self):
+        self.respond(405, {"error": "只有时价能在面板上登记，其余修改请通过 agent/CLI"})
+
+    do_PUT = do_PATCH = do_DELETE = reject_write
 
     def log_message(self, format, *args):
         pass
@@ -1132,18 +1244,37 @@ def disk_arg(value):
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def price_arg(value):
-    if value in ("none", "?", "-", ""):
+def price_value(raw):
+    """时价（元/小时）或 None（未登记）。none/?/-/空串表示清空。
+
+    面板接口是唯一写入口，所以这里必须把住边界：0、负数、nan 都拒绝——缺数据不能拿 0 顶替，
+    而"时价 0"会让人以为机器白跑。落盘前 validate() 会再查一遍。
+    """
+    if raw is None:
         return None
+    if isinstance(raw, str) and raw.strip() in ("", "none", "?", "-"):
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+        raise PlanError(f"时价应为元/小时数字，实际为 {raw!r}")
     try:
-        result = float(value)
+        result = float(raw)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"时价应为元/小时数字，实际为 {value!r}") from exc
-    try:
-        number(result, "时价", low=0.001, high=10000)
-    except PlanError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
+        raise PlanError(f"时价应为元/小时数字，实际为 {raw!r}") from exc
+    number(result, "时价", low=PRICE_LIMITS[0], high=PRICE_LIMITS[1])
     return result
+
+
+def set_instance_price(plan, instance_id, field, price):
+    """登记时价（元/小时），price 为 None 表示清空。
+
+    field 只能是 price（GPU 时价）或 no_gpu_price（无卡费率）。时价是"标价"，不构成一次对机器的观测，
+    因此不刷新 observed_at——那个字段记录的是"上次有人看过这台机器"。
+    """
+    if field not in ("price", "no_gpu_price"):
+        raise PlanError(f"只能登记 price 或 no_gpu_price，实际为 {field!r}")
+    item = find(plan, "instances", instance_id)
+    item[field] = price
+    return item
 
 
 def money_arg(value):
@@ -1218,7 +1349,11 @@ def disk_text(disk):
 
 def instance_line(item):
     extras = []
-    if item["price"] is not None:
+    # 无卡开机没有 GPU 在计费，报的是另一档费率；模式没登记过就还是照 GPU 时价显示。
+    if instance_mode(item) == "no-gpu":
+        extras.append(f"无卡 ¥{instance_rate(item):g}/h" if instance_rate(item) is not None
+                      else "无卡（费率未登记）")
+    elif item["price"] is not None:
         extras.append(f"¥{item['price']:g}/h")
     disks = disk_text(item["disk"])
     if disks:
@@ -1239,11 +1374,11 @@ def budget_parts(view):
         if entry.get("voucher"):
             parts.append(f"代金券 ¥{entry['voucher']:.2f}（不计入可用时长）")
         missing = [item["id"] for item in view["instances"]
-                   if item["status"] in AWAKE and item["price"] is None]
+                   if item["status"] in AWAKE and instance_rate(item) is None]
         if entry.get("hours_awake") is not None:
-            parts.append(f"按开机时价 ¥{entry['burn_rate']:g}/h 还能跑 {entry['hours_awake']:g} 小时")
+            parts.append(f"按开机费率 ¥{entry['burn_rate']:g}/h 还能跑 {entry['hours_awake']:g} 小时")
         elif missing:
-            parts.append("未登记时价（" + ",".join(missing) + "），无法把余额换算成可用时长")
+            parts.append("未登记时价（" + ",".join(missing) + "），无法把余额换算成可用时长，请在面板登记")
     if entry.get("plan_gpu_hours") is not None:
         owed = f"跑完剩余计划需 {entry['plan_gpu_hours']:g} GPU 小时"
         if entry.get("plan_cost") is not None:
@@ -1358,8 +1493,8 @@ def brief_plan(plan, now=None):
     lines.extend(brief_group("结构问题", report["issues"]))
     lines.extend(brief_group("提醒", report["warnings"]))
     remaining_resources = {task["instance"] for task in tasks if task["status"] not in TERMINAL}
-    missing = [f"{item['id']}: 未登记时价，对应费用/可用时长待估" for item in view["instances"]
-               if item["price"] is None and (item["status"] in AWAKE or item["id"] in remaining_resources)]
+    missing = [f"{item['id']}: 未登记时价，对应费用/可用时长待估（可在面板登记）" for item in view["instances"]
+               if instance_rate(item) is None and (item["status"] in AWAKE or item["id"] in remaining_resources)]
     lines.extend(brief_group("缺失信息", missing))
     hidden = counts["done"] + counts["cancelled"]
     if hidden:
@@ -1390,10 +1525,10 @@ def brief_receipt(args, result):
         fields = []
         for key, label in (("status", "状态"), ("progress", "进度"), ("instance", "实例"),
                            ("duration_minutes", "耗时"), ("deps", "依赖"), ("not_before", "开始限制"),
-                           ("name", "名称"), ("note", "备注"), ("price", "时价"), ("disk", "磁盘")):
+                           ("name", "名称"), ("note", "备注"), ("mode", "开机模式"), ("disk", "磁盘")):
             if hasattr(args, key) and (getattr(args, key) is not None or key in (
-                    "instance", "duration_minutes", "deps", "not_before", "price", "disk")):
-                value = item[key]
+                    "instance", "duration_minutes", "deps", "not_before", "mode", "disk")):
+                value = item.get(key)  # 开机模式等后加字段在老计划里可能还没有这个键
                 if value is None:
                     value = "待估" if key == "duration_minutes" else "未登记"
                 if key == "progress":
@@ -1467,10 +1602,10 @@ def parser():
     show_output = show.add_mutually_exclusive_group()
     show_output.add_argument("--json", action="store_true")
     show_output.add_argument("--brief", action="store_true", help="只看当前行动摘要，分组限量并注明省略数")
-    serve = commands.add_parser("serve", help="仅本机只读页面，Ctrl+C 停止")
+    serve = commands.add_parser("serve", help="仅本机面板（唯一可写处是登记时价），Ctrl+C 停止")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--interval", type=interval_arg, default=None,
-                       help="顺带在这个进程里跑自动结算（分钟）；不传则只做只读面板")
+                       help="顺带在这个进程里跑自动结算（分钟）；不传则只做面板")
     instance = commands.add_parser("instance").add_subparsers(dest="action", required=True)
     instance_add = instance.add_parser("add")
     instance_add.add_argument("--name", required=True)
@@ -1482,10 +1617,10 @@ def parser():
     instance_set.add_argument("--autodl-id")
     instance_set.add_argument("--ssh-alias")
     instance_set.add_argument("--status", choices=INSTANCE_STATUSES)
+    instance_set.add_argument("--mode", type=nullable, default=argparse.SUPPRESS,
+                              help="开机模式：gpu 有卡 / no-gpu 无卡准备（含持续请求等待）；none 表示未观测")
     instance_set.add_argument("--note")
     instance_set.add_argument("--observed", action="store_true", help="记录本次真实观测时间")
-    instance_set.add_argument("--price", type=price_arg, default=argparse.SUPPRESS,
-                              help="元/小时；none 清空。标价不构成对机器的观测")
     instance_set.add_argument("--disk", type=disk_arg, default=argparse.SUPPRESS,
                               help="如 \"data:40/50,fs:5/200\"：逐盘合并，none 清空该盘")
     flow = commands.add_parser("flow").add_subparsers(dest="action", required=True)
@@ -1625,7 +1760,7 @@ def dispatch(args, store):
         if args.interval is not None:
             background_monitor(store, args.interval)
         with server(store, args.port) as httpd:
-            print(f"TrainOps http://127.0.0.1:{httpd.server_port} · 只读计划，不是后台训练调度器"
+            print(f"TrainOps http://127.0.0.1:{httpd.server_port} · 本机面板（仅时价可登记），不是后台训练调度器"
                   + (f" · 每 {args.interval} 分钟自动结算" if args.interval is not None else ""), flush=True)
             try:
                 httpd.serve_forever()
@@ -1651,11 +1786,15 @@ def dispatch(args, store):
             for key in ("name", "autodl_id", "ssh_alias", "status", "note"):
                 if getattr(args, key) is not None:
                     item[key] = getattr(args, key)
-            if hasattr(args, "price"):
-                item["price"] = args.price  # 时价是"标价"，不构成一次对机器的观测
+            if hasattr(args, "mode"):
+                # 开机模式不能走上面那个循环：null 也是有意义的值（"还没核实过"）。
+                item["mode"] = args.mode
+                # 老计划里没有无卡费率这个键，而读的时候按平台默认值算；这里把它落实成字段，
+                # 免得面板显示"费率未登记"、服务端却按 0.1 计算，两边各说各话。
+                item.setdefault("no_gpu_price", NO_GPU_PRICE)
             if hasattr(args, "disk"):
                 item["disk"].update(args.disk)  # 逐盘合并：没提到的盘保持原值，不会被静默抹掉
-            if args.observed or args.status is not None or hasattr(args, "disk"):
+            if args.observed or args.status is not None or hasattr(args, "disk") or hasattr(args, "mode"):
                 item["observed_at"] = stamp()
             return item
         if args.operation_name == "flow":

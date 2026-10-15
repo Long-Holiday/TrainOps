@@ -27,7 +27,7 @@
 
 后台等待由 MCP 进程承担：`AUTODL_MAX_WAIT_SECONDS` 默认 0（不限缺货等待时间），不是 `power_on` 的参数；需要有限等待时与用户约定服务配置或取消时点。后台任务仅保存在当前 MCP 进程中，服务退出会取消任务但不会自动关机，重启后旧 `job_id` 无法恢复；接管先查实例真实状态，不因任务不存在就重发开机。不同模式的活动任务冲突时先按授权取消并核实实例；已运行的不同模式必须先关机，不会原地切换。
 
-**账本与费用边界**：现有实例状态只表示电源/可达性，不区分无卡与有卡；无卡已开机仍登记 `on`，不能用 `off` 冒充“不占 GPU”。持续请求期间按真实电源状态记录，不能仅因请求已提交就标为 `on`。当前单一时价不能同时表达无卡准备费率与后续 GPU 训练费率：准备/等待阶段不据此给出跨模式费用或“余额够训练”的结论，不把无卡时价用于后续训练估算。用 `instance set I01 --price none --brief` 清除不适用的时价，并用 `monitor --once --brief` 重算以免沿用旧结算；不填 0、不沿用旧 GPU 时价冒充无卡费用；正式有卡开机后登记核实的 GPU 时价并用 `monitor --once --brief` 重算，未知则保持待估。磁盘等费用以平台实际计费为准。
+**账本与费用边界**：实例状态只表示电源/可达性，不区分无卡与有卡；无卡已开机仍登记 `on`，不能用 `off` 冒充“不占 GPU”。持续请求期间按真实电源状态记录，不能仅因请求已提交就标为 `on`。开机模式另用 `--mode` 记录：无卡准备与持续请求等待期间是 `--mode no-gpu`，正式有卡开机是 `--mode gpu`，核实不了就 `--mode none`（未观测）而不是猜。两种模式各有自己的费率——无卡按 `no_gpu_price`（平台默认 0.1 元/小时，无卡不等于免费），有卡按 `price`（GPU 时价）——两者互不覆盖，由用户在面板（`serve`）的实例卡上登记。切模式后用 `monitor --once --brief` 重算，免得沿用旧结算；不填 0、不拿一个档位的价格冒充另一个档位。模式未登记时按 GPU 时价算，宁可高估花费。磁盘等费用以平台实际计费为准。
 
 ## 三盘与用量
 
@@ -67,7 +67,7 @@ Token 放 TrainOps 仓库根 `.env`（模板 `.env.example`，建议 chmod 600�
 插件被复制到别处时（远程 marketplace、Codex 的 `$CODEX_HOME/plugins/cache`、Antigravity 的 `~/.gemini/config/plugins`），那份副本里没有 `.env`：用 `TRAINOPS_ENV` 指向原仓库的 `.env`，或直接给环境变量 `AUTODL_TOKEN`；软链安装（`.agents/skills/`、`~/.claude/skills/` 等）没有这个问题。
 
 ```bash
-$CLI instance set I01 --price 1.88 --brief     # 元/小时；登记标价不等于真实观测
+$CLI instance set I01 --mode no-gpu --brief   # 无卡准备/持续请求等待；有卡开机用 --mode gpu
 $CLI monitor --once --brief                   # 一轮余额刷新与结算
 $CLI monitor --once --strict --brief          # 最近结算失败时退出 1；无 Token 不算失败
 $CLI wallet fetch --brief                     # 只刷新余额，不重算结算
@@ -89,8 +89,10 @@ $CLI serve --port 8765 --interval 30           # 面板进程内顺带结算
 
 也可交给系统 cron/定时器调用 `monitor --once --strict --brief`。定时器只保证结算；monitor 不做 SSH 巡检、不执行训练、不自动关机，主 agent 的真实巡检和用户约定汇报不能被替代。正常巡检简报即可，完成/失败、异常风险、需决策时及时说明；不要每轮贴完整计划或训练日志。
 
-## 只读面板
+## 面板（只读展示 + 登记时价）
 
 `serve --port 8765` 在前台监听 http://127.0.0.1:8765；需要持续运行时由调用方管理后台进程，不会自动后台化或登记 PID。页面展示甘特图、预算与结算，不展示磁盘条或 TensorBoard 链接。
+
+面板上唯一能改的是时价：点实例卡右上角按钮登记/清空当前档位的费率（无卡按 `--mode no-gpu` 登记无卡费率，有卡按 GPU 时价），其余写请求一律拒绝。时价是标价，不构成一次对机器的观测。
 
 不要在仓库演示项目上启动 monitor 或 serve --interval，否则会改写版本库快照；真实实验用自己的项目目录。

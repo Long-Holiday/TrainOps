@@ -92,6 +92,25 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .instance:hover { transform:translateY(-1px); border-color:var(--line-strong); }
 .instance-title { display:flex; justify-content:space-between; gap:8px; font-size:15.5px; font-weight:600; align-items:center; }
 .instance p { margin-top:6px; font-size:13.5px; }
+/* 时价按钮是面板唯一的写入口，所以做得低调；没登记时用警示色，提醒"缺了它余额换算不出时长" */
+.instance-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+button.price { padding:3px 9px; font-family:var(--mono); font-size:12.5px; font-variant-numeric:tabular-nums; }
+button.price.unset { border-color:var(--warning); color:var(--warning); background:var(--warning-soft); }
+/* 时价弹窗：常驻在 #modal（不在重绘范围内），所以 10 秒轮询不会冲掉正在输入的数字。
+   关闭状态必须用 #modal.hidden 压过下面这条 #modal 的 display:flex——id 选择器赢过 .hidden，
+   否则空弹窗会以 fixed 全屏盖在页面上，把整页的点击都吃掉。 */
+#modal { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; padding:20px; }
+#modal.hidden { display:none; }
+.modal-backdrop { position:absolute; inset:0; background:rgba(8,13,19,.45); }
+.dialog { position:relative; width:100%; max-width:370px; padding:18px 20px; border:1px solid var(--line-strong); border-radius:13px; background:var(--surface); box-shadow:var(--shadow); }
+.dialog-title { font-size:15.5px; font-weight:600; margin:0 0 12px; }
+.dialog-row { display:flex; align-items:center; gap:9px; margin-bottom:10px; }
+.dialog input { flex:1; min-width:0; padding:7px 10px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface-2); color:var(--ink); font:15px var(--mono); }
+.dialog input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
+.dialog-hint { margin:0 0 12px; font-size:12.5px; line-height:1.45; color:var(--secondary); }
+.dialog-error { margin:0 0 12px; font-size:13px; color:var(--critical); }
+.dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
+.dialog-actions .primary { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600; }
 .flow { position:relative; margin:14px 0; border:1px solid var(--line); border-radius:13px; overflow:hidden; background:var(--surface); box-shadow:var(--shadow),inset 0 1px 0 var(--rail); }
 .flow-header { position:relative; padding:11px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:10px 14px; flex-wrap:wrap; background:var(--surface-2); }
 .flow-title { display:flex; align-items:center; gap:9px; min-width:0; }
@@ -175,9 +194,10 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 </header>
 <div class="notice hidden" id="error" role="alert"></div>
 <div class="instances" id="instances"></div>
+<div id="modal" class="hidden"></div>
 <div id="summary" aria-live="polite"></div>
 <div id="flows"></div>
-<p class="page-foot">只读快照 · 数据源 <code>.trainops/plan.json</code> · 修改计划请通过 agent / CLI</p>
+<p class="page-foot">数据源 <code>.trainops/plan.json</code> · 仅时价可在面板登记，其余修改请通过 agent / CLI</p>
 </main>
 <script>
 'use strict';
@@ -232,6 +252,101 @@ function ageOf(value) {
   if (seconds < 36 * 3600) return Math.round(seconds / 3600) + ' 小时前';
   return Math.round(seconds / 86400) + ' 天前';
 }
+/* 面板唯一的写操作：登记时价。无卡开机（含持续请求等待 GPU）没有 GPU 在计费，登记的是另一档
+   无卡费率；GPU 模式开机后才登记 GPU 时价。开机模式由 agent 核实后经 CLI 写进计划，面板只读不写。 */
+function priceButton(item) {
+  const noGpu = item.mode === 'no-gpu';
+  const current = noGpu ? item.no_gpu_price : item.price;
+  const known = current !== null && current !== undefined;
+  const button = el('button',
+    known ? (noGpu ? '无卡 ¥' + current : '¥' + current) + '/h' : (noGpu ? '无卡 费率未登记' : '登记时价'),
+    'price' + (known ? '' : ' unset'));
+  button.type = 'button';
+  button.title = noGpu
+    ? (known ? '无卡开机按 ' + money(current) + '/h 计费，点击修改无卡费率'
+             : '无卡开机但没登记费率，余额换算不出可用时长；点击登记')
+    : (known ? '当前登记 GPU 时价 ' + money(current) + '/h，点击修改'
+             : '未登记 GPU 时价，余额换算不出可用时长；点击登记');
+  button.addEventListener('click',() => openPrice(item));
+  return button;
+}
+/* 弹窗常驻在 #modal（不在 render() 重绘的范围内），所以 10 秒轮询不会冲掉正在输入的数字。 */
+function closePrice() {
+  $('modal').replaceChildren();
+  $('modal').classList.add('hidden');
+}
+function openPrice(item) {
+  const noGpu = item.mode === 'no-gpu';
+  const current = noGpu ? item.no_gpu_price : item.price;
+  const backdrop = el('div',null,'modal-backdrop');
+  backdrop.addEventListener('click',closePrice);
+  const dialog = el('div',null,'dialog');
+  dialog.setAttribute('role','dialog');
+  dialog.setAttribute('aria-modal','true');
+  dialog.append(el('h2',(noGpu ? '登记无卡费率' : '登记 GPU 时价') + ' · ' + item.id + ' ' + item.name,
+    'dialog-title'));
+  const input = el('input',null,'dialog-input');
+  input.type = 'number';
+  input.step = '0.01';
+  input.min = '0.001';
+  input.max = '10000';
+  input.value = current === null || current === undefined ? '' : String(current);
+  input.setAttribute('aria-label',(noGpu ? '无卡费率' : 'GPU 时价') + '（元/小时）');
+  const row = el('div',null,'dialog-row');
+  row.append(input,el('span','元/小时','muted'));
+  const note = el('p',null,'dialog-error hidden');
+  const actions = el('div',null,'dialog-actions');
+  const clear = el('button','清空时价');
+  const cancel = el('button','取消');
+  const save = el('button','保存','primary');
+  for (const button of [clear,cancel,save]) button.type = 'button';
+  actions.append(clear,cancel,save);
+  dialog.append(
+    row,
+    el('p',noGpu
+      ? '当前是无卡开机（含持续请求等待 GPU）：没有 GPU 在计费，这里登记的是无卡费率。GPU 模式开机后再登记 GPU 时价。'
+      : '登记的是标价，不是一次观测，不会刷新实例的观测时间；不登记就不计算 GPU 时间，余额也算不出还能跑多久。',
+      'dialog-hint'),
+    note,actions
+  );
+  const fail = message => { note.className = 'dialog-error'; note.textContent = message; };
+  const advise = message => { note.className = 'dialog-hint'; note.textContent = message; };
+  const submit = async value => {
+    save.disabled = clear.disabled = true;
+    note.className = 'dialog-error hidden';
+    try {
+      const body = noGpu ? {id:item.id,no_gpu_price:value} : {id:item.id,price:value};
+      const response = await fetch('/api/instance-price',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '登记失败');
+      plan = data;                       // 服务端回的就是新快照，不必等下一轮轮询
+      closePrice();
+      $('error').classList.add('hidden');
+      render();
+    } catch (failure) {
+      fail('登记失败：' + failure.message + '（计划未改动）');
+    } finally { save.disabled = clear.disabled = false; }
+  };
+  /* 没填就只提示，不报错、也不写计划：不登记时价的结果是"少给结论"，不是错误。 */
+  const commit = () => {
+    const raw = input.value.trim();
+    if (!raw) return advise('还没填单价：不登记就不计算 GPU 时间，余额也算不出还能跑多久。'
+      + '要撤销已有的登记请点「清空时价」。');
+    if (!Number.isFinite(Number(raw))) return advise('时价要填数字（元/小时）。');
+    submit(Number(raw));                 // 范围由服务端把关，越界会在弹窗里报错而不是悄悄改数
+  };
+  save.addEventListener('click',commit);
+  clear.addEventListener('click',() => submit(null));
+  cancel.addEventListener('click',closePrice);
+  input.addEventListener('keydown',event => {
+    if (event.key === 'Enter') commit();
+    else if (event.key === 'Escape') closePrice();
+  });
+  $('modal').replaceChildren(backdrop,dialog);
+  $('modal').classList.remove('hidden');
+  input.focus();
+}
 /* 余额与可用时长：数据缺一项就少显示一项，绝不把缺失当成 0。
    代金券单独标注——否则"2 元现金 + 500 元代金券"会被读成还能跑很久。 */
 function budgetNodes(budget) {
@@ -253,7 +368,7 @@ function budgetNodes(budget) {
   if (typeof budget.hours_awake === 'number') {
     const hours = el('span',null,'chip');
     hours.append(el('span','现价可跑 '),el('b',budget.hours_awake + ' 小时'));
-    hours.title = '按当前开机实例的时价合计 ' + money(budget.burn_rate) + '/h 粗算，未计代金券';
+    hours.title = '按当前开机费率合计 ' + money(budget.burn_rate) + '/h 粗算（无卡实例按无卡费率），未计代金券';
     nodes.push(hours);
   }
   if (typeof budget.plan_gpu_hours === 'number') {
@@ -321,7 +436,9 @@ function render() {
     const node = el('article',null,'instance ' + item.status);
     const heading = el('div',null,'instance-title');
     const label = el('span'); label.append(copy(item.id),document.createTextNode(' ' + item.name));
-    heading.append(label,status(item.status));
+    const actions = el('span',null,'instance-actions');
+    actions.append(priceButton(item),status(item.status));
+    heading.append(label,actions);
     const tasks = plan.tasks.filter(task => task.instance === item.id);
     const active = tasks.filter(task => task.status === 'running');
     const queued = tasks.filter(task => ['pending','blocked'].includes(task.status)).length;

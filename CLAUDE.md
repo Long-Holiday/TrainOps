@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库概览
 
-TrainOps 是给任意 agent 热插拔的**多实例 GPU 训练管理能力包**（面向 AutoDL）：本地计划账本 + 只读甘特图面板 + 技能文档。它本身不跑训练、也不是服务，只负责记录与展示实验计划。
+TrainOps 是给任意 agent 热插拔的**多实例 GPU 训练管理能力包**（面向 AutoDL）：本地计划账本 + 甘特图面板 + 技能文档。它本身不跑训练、也不是服务，只负责记录与展示实验计划。
 
 **仓库本身就是插件包**：同一份 `skills/trainops/` 同时满足 Agent Plugins 1.0.0（根 `plugin.json`）与 Agent Skills 两个公开标准，各 agent 的清单（`.claude-plugin/`、`.codex-plugin/`、`gemini-extension.json`、`antigravity/`）只声明打包方式，不复制能力。
 
 三条硬约束贯穿全仓：
 
 - **零第三方依赖**：只用 Python 标准库；测试用 Node 内置模块（没有 package.json，不装 npm 包）。
-- **计划文件只能过 CLI**：`$PROJECT/.trainops/plan.json` 是唯一事实来源，禁止用 Edit/Write 直接改。
-- **缺数据就缺结论**：算不出的数字（缺时价、缺耗时、缺余额）一律不显示，绝不用 0 顶替或自行估算。这条口径同时约束 CLI 文本、`/api/plan` 与面板三处。
+- **写入只有两条入口**：CLI，以及面板的时价接口（`POST /api/instance-price`，只能改时价）。两条都走 `Store.change()`；`$PROJECT/.trainops/plan.json` 是唯一事实来源，禁止用 Edit/Write 直接改。
+- **缺数据就缺结论**：算不出的数字（缺费率、缺耗时、缺余额）一律不显示，绝不用 0 顶替或自行估算。这条口径同时约束 CLI 文本、`/api/plan` 与面板三处。
 
 ## 常用命令
 
@@ -46,10 +46,10 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 - `Store`：唯一写入口。`fcntl.flock` 排他锁 + 临时文件 `os.replace` + 文件与目录 fsync；所有读改写都走 `store.change(operation)`。
 - `validate()`：读取与写入两侧都跑，账本不变量集中在这里——编号与计数器一致性、`TRANSITIONS` 状态机、依赖闭环（Kahn）、`done` ⇒ 进度 100、同一 GPU 实例同时只能有一个 `running`。校验失败只报错，**从不静默修复**；schema 版本不符直接拒绝读（开发阶段无迁移，提示"备份并核对文件"）。
 - `forecast()`：排程的唯一事实来源。每个 GPU 实例一条车道，`estimate.start/finish` 由依赖 + 车道 + `not_before` 推出；`running` 任务靠 `progress_at` 采样外推，进度 100% 或已超期即降级为"待估"。
-- `budget()` / `estimate_view()` / `settlement()`：共用一套口径。可用时长只按现金余额 `assets` 算，代金券单独展示；结算结论超过 2 个周期未更新就回退为实时值并说明原因，同一屏不出现两套数字。
+- `budget()` / `estimate_view()` / `settlement()`：共用一套口径。可用时长只按现金余额 `assets` 算，代金券单独展示；费率按开机模式取——无卡（`mode=no-gpu`，含持续请求等待 GPU）按 `no_gpu_price`，有卡按 `price`，模式未观测时按 `price`（宁可高估花费），费率缺失则整块不下结论。结算结论超过 2 个周期未更新就回退为实时值并说明原因，同一屏不出现两套数字。
 - `plan_fingerprint()`：用参与计算的字段做哈希，判断"结算之后计划有没有变过"。不要改用 `revision`——monitor 每轮都自增它，会永远显示"有变更"。
 - `cycle()`：一轮结算。联网在文件锁**之外**，落盘只走一次 `store.change()`；失败只写 `monitor.last_error`，不打断循环、不动其余数据。
-- `Handler`：只读 HTTP，仅 `/`（面板）与 `/api/plan`（`snapshot()`）；写动词一律 405，Host 白名单只放 127.0.0.1/localhost（防 DNS rebinding）。
+- `Handler`：唯一可写的端点是 `POST /api/instance-price`（只能改时价与无卡费率），其余路径与写动词一律 404/405；Host 白名单只放 127.0.0.1/localhost（防 DNS rebinding），另加 Origin 同源与 `application/json` 两道关（跨站表单发不出这个 Content-Type，跨站 JSON fetch 过不了预检）。
 - 唯一的外部调用是 AutoDL 只读余额接口（POST 无请求体、拒绝重定向以免转发 `Authorization`）。返回值是千分之一元整数，单位对不上就报错，而不是写错 1000 倍。
 
 ### `skills/trainops/web/index.html`（单文件面板，无构建步骤）
@@ -58,6 +58,7 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 - **面板不做业务计算**：金额、结算整句文案、甘特条几何全部由服务端在 `/api/plan` 里算好，前端只负责打点。条形几何以服务端 `estimate` 为准是硬要求（有测试盯着时间轴、ETA 文案与红色总进度线三者一致）。
 - DOM 一律 `createElement` + `textContent`：计划文件里的文本是不可信输入（`test_web.cjs` 有 XSS 用例）。
 - 每 10 秒轮询 `/api/plan`，`document.hidden` 时跳过；重绘必须保留各流程甘特的横向滚动位置。
+- **唯一的写操作是登记时价**（实例卡按钮 → 弹窗 → `POST /api/instance-price`）：按开机模式登记无卡费率或 GPU 时价，空值只给提示、不报错；弹窗挂在 `#modal`（不在重绘范围内），否则轮询会冲掉正在输入的数字。
 
 ### 文档也是产品
 

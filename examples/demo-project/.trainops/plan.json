@@ -2,7 +2,7 @@
   "schema_version": 3,
   "name": "双实例实验 · 演示（不会连接服务器）",
   "revision": 1,
-  "updated_at": "2026-10-14T17:19:12+00:00",
+  "updated_at": "2026-10-15T08:22:51+00:00",
   "next_instance": 3,
   "next_flow": 4,
   "instances": [
@@ -12,9 +12,11 @@
       "autodl_id": "DEMO-NOT-REAL-A",
       "ssh_alias": "demo-gpu-a",
       "status": "on",
-      "observed_at": "2026-10-14T17:19:12+00:00",
+      "observed_at": "2026-10-15T08:22:51+00:00",
       "note": "演示占位，非真实实例",
       "price": 1.88,
+      "mode": "gpu",
+      "no_gpu_price": 0.1,
       "disk": {
         "system_used_gb": 12.4,
         "system_total_gb": 30,
@@ -30,9 +32,11 @@
       "autodl_id": "DEMO-NOT-REAL-B",
       "ssh_alias": "demo-gpu-b",
       "status": "on",
-      "observed_at": "2026-10-14T17:19:12+00:00",
+      "observed_at": "2026-10-15T08:22:51+00:00",
       "note": "演示占位，非真实实例",
       "price": 1.58,
+      "mode": "gpu",
+      "no_gpu_price": 0.1,
       "disk": {
         "system_used_gb": 9.1,
         "system_total_gb": 30,
@@ -71,10 +75,10 @@
       "not_before": null,
       "status": "done",
       "progress": 100,
-      "started_at": "2026-10-14T16:49:12+00:00",
-      "finished_at": "2026-10-14T16:59:12+00:00",
+      "started_at": "2026-10-15T07:52:51+00:00",
+      "finished_at": "2026-10-15T08:02:51+00:00",
       "checked_at": null,
-      "progress_at": "2026-10-14T16:59:12+00:00",
+      "progress_at": "2026-10-15T08:02:51+00:00",
       "note": ""
     },
     {
@@ -89,10 +93,10 @@
       "not_before": null,
       "status": "running",
       "progress": 18,
-      "started_at": "2026-10-14T16:59:12+00:00",
+      "started_at": "2026-10-15T08:02:51+00:00",
       "finished_at": null,
-      "checked_at": "2026-10-14T17:19:12+00:00",
-      "progress_at": "2026-10-14T17:19:12+00:00",
+      "checked_at": "2026-10-15T08:22:51+00:00",
+      "progress_at": "2026-10-15T08:22:51+00:00",
       "note": ""
     },
     {
@@ -125,10 +129,10 @@
       "not_before": null,
       "status": "running",
       "progress": 15,
-      "started_at": "2026-10-14T16:59:12+00:00",
+      "started_at": "2026-10-15T08:02:51+00:00",
       "finished_at": null,
-      "checked_at": "2026-10-14T17:19:12+00:00",
-      "progress_at": "2026-10-14T17:19:12+00:00",
+      "checked_at": "2026-10-15T08:22:51+00:00",
+      "progress_at": "2026-10-15T08:22:51+00:00",
       "note": ""
     },
     {
@@ -189,15 +193,15 @@
   ],
   "monitor": {
     "interval_minutes": 30,
-    "last_run": "2026-10-14T17:19:12+00:00",
-    "last_ok": "2026-10-14T17:19:12+00:00",
+    "last_run": "2026-10-15T08:22:51+00:00",
+    "last_ok": "2026-10-15T08:22:51+00:00",
     "last_error": "",
     "token_ready": true,
     "expires_at": null,
     "estimate": {
-      "computed_at": "2026-10-14T17:19:12+00:00",
+      "computed_at": "2026-10-15T08:22:51+00:00",
       "revision": 1,
-      "plan_hash": "cb41721132b72456",
+      "plan_hash": "6f8f4d5af3888932",
       "burn_rate": 3.46,
       "hours_awake": 37.1,
       "plan_gpu_hours": 3.9,
@@ -208,6 +212,6 @@
   "wallet": {
     "assets": 128.5,
     "voucher": 20.0,
-    "observed_at": "2026-10-14T17:19:12+00:00"
+    "observed_at": "2026-10-15T08:22:51+00:00"
   }
 }

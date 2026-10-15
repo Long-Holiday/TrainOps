@@ -27,7 +27,8 @@ class Element {
   replaceChildren(...children) { this.text = ''; this.children = children; }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   setAttribute(name, value) { this[name] = value; }
-  fire(name) { return this.listeners[name](); }
+  focus() {}
+  fire(name, event) { return this.listeners[name](event); }
 }
 function descendants(node, tag) {
   return node.children.flatMap(child => [...(child.tagName === tag ? [child] : []), ...descendants(child, tag)]);
@@ -50,9 +51,11 @@ const env = {...process.env, TRAINOPS_ENV: path.join(project, 'missing.env'), AU
 execFileSync('python3', [cli, '--project', project, 'demo'], {encoding: 'utf8', env});
 const data = JSON.parse(execFileSync('python3', [cli, '--project', project, 'show', '--json'],
   {encoding: 'utf8', env}));
-const nodes = Object.fromEntries(['title','updated','instances','summary','flows','error','refresh','theme']
+const nodes = Object.fromEntries(['title','updated','instances','summary','flows','error','refresh','theme','modal']
   .map(id => [id, new Element('div')]));
 let failed = false;
+const calls = [];              // 面板发出的每个请求，用来断言时价登记真的走了 POST
+let postResult = null;         // 覆盖下一次 POST 的响应，用来演服务端拒绝
 const storage = {};
 const context = vm.createContext({
   document: {getElementById: id => nodes[id], createElement: tag => new Element(tag),
@@ -61,7 +64,12 @@ const context = vm.createContext({
   navigator: {clipboard: {writeText: async () => {}}},
   localStorage: {getItem: key => storage[key], setItem: (key,value) => {storage[key] = value;}},
   matchMedia: () => ({matches:false}),
-  fetch: async () => { if (failed) throw new Error('offline'); return {ok:true,json:async () => data}; },
+  fetch: async (url, options = {}) => {
+    calls.push({url, options});
+    if (failed) throw new Error('offline');
+    if (options.method === 'POST' && postResult) return postResult;
+    return {ok:true,json:async () => data};
+  },
   AbortController, Date, console,
   setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1,
 });
@@ -69,6 +77,8 @@ const context = vm.createContext({
 async function main() {
   assert.ok(!html.includes('id="search"'), 'Task search input should be removed');
   assert.ok(!html.includes('<details'), 'Task details dropdown should be removed');
+  // DOM 桩看不到层叠：id 选择器的 display:flex 会压过 .hidden，空弹窗就成了全屏遮罩
+  assert.ok(html.includes('#modal.hidden'), '关闭态必须有 #modal.hidden 压过 #modal 的 display:flex');
   new vm.Script(source, {filename:'index.html'}).runInContext(context);
   await new Promise(resolve => setImmediate(resolve));
   const gantts = byClass(nodes.flows, 'gantt');
@@ -100,6 +110,84 @@ async function main() {
   assert.match(nodes.flows.textContent, /F03-T02/);
   assert.match(nodes.flows.textContent, /待估/);
   console.log('PASS: Continuous Gantt charts / no task details / unobstructed badges / total flow progress line');
+
+  // 面板唯一的写入口：实例卡上的时价按钮 → 弹窗 → POST /api/instance-price
+  const priceButtons = byClass(nodes.instances, 'price');
+  assert.equal(priceButtons.length, 2, '每台实例卡上都要有登记时价的入口');
+  assert.equal(priceButtons[0].textContent, '¥1.88/h', '已登记的时价直接显示在卡上');
+  priceButtons[0].fire('click');
+  const dialogNode = () => byClass(nodes.modal, 'dialog')[0];
+  const dialogInput = () => descendants(nodes.modal, 'input')[0];
+  const dialogButton = text => descendants(nodes.modal, 'button').find(button => button.textContent === text);
+  assert.equal(nodes.modal.classList.contains('hidden'), false, '点时价按钮要打开弹窗');
+  assert.match(dialogNode().textContent, /登记 GPU 时价 · I01 基线 \/ GPU A/);
+  assert.match(dialogNode().textContent, /不会刷新实例的观测时间/);
+  assert.equal(dialogInput().value, '1.88', '弹窗要预填当前时价，不能让人重新查一遍');
+  dialogInput().value = '2.5';
+  dialogButton('保存').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  const posted = calls.filter(call => call.options.method === 'POST').pop();
+  assert.equal(posted.url, '/api/instance-price');
+  assert.equal(posted.options.headers['Content-Type'], 'application/json');
+  assert.equal(posted.options.body, '{"id":"I01","price":2.5}');
+  assert.equal(nodes.modal.classList.contains('hidden'), true, '登记成功后关窗');
+  assert.equal(nodes.modal.children.length, 0);
+
+  // 服务端拒绝时错误留在弹窗里：不关窗、不改本地状态、不假装成功
+  postResult = {ok:false, json: async () => ({error:'时价 必须在 0.001 到 10000 之间且为有限数字'})};
+  byClass(nodes.instances, 'price')[0].fire('click');
+  dialogInput().value = '0';
+  dialogButton('保存').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(dialogNode().textContent, /登记失败：时价 必须在 0\.001 到 10000 之间且为有限数字/);
+  assert.equal(nodes.modal.classList.contains('hidden'), false, '被拒绝时不能关窗');
+  // 清空发的是 null；缺时价就少给结论，绝不补一个 0
+  postResult = null;
+  dialogButton('清空时价').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call.options.method === 'POST').pop().options.body, '{"id":"I01","price":null}');
+  // 空输入只在弹窗里提示，不发请求：不登记时价的结果是"少给结论"，不是报错
+  byClass(nodes.instances, 'price')[0].fire('click');
+  dialogInput().value = '   ';
+  const sent = calls.length;
+  dialogButton('保存').fire('click');
+  assert.equal(calls.length, sent, '空输入不该发请求');
+  assert.match(dialogNode().textContent, /还没填单价/);
+  assert.equal(byClass(nodes.modal, 'dialog-error').length, 0, '没填不是错误，用中性提示就行');
+  // 弹窗里的实例名同样只走 textContent
+  const hostileName = '<img src=x onerror="alert(1)">';
+  const savedName = data.instances[0].name;
+  data.instances[0].name = hostileName;
+  byClass(nodes.instances, 'price')[0].fire('click');
+  assert.equal(descendants(nodes.modal, 'img').length, 0, '弹窗标题不能被当成 HTML');
+  assert.match(dialogNode().textContent, /<img src=x/);
+  data.instances[0].name = savedName;
+  dialogButton('取消').fire('click');
+  assert.equal(nodes.modal.children.length, 0, '取消后弹窗清空');
+  assert.equal(nodes.modal.classList.contains('hidden'), true);
+  console.log('PASS: GPU price is registered from the panel and rejections stay in the dialog');
+
+  // 无卡开机（含持续请求等待 GPU）：没有 GPU 在计费，弹窗改成登记无卡费率，不碰 GPU 时价
+  data.instances[1].mode = 'no-gpu';
+  data.instances[1].no_gpu_price = 0.1;
+  await nodes.refresh.fire('click');
+  const noGpuButton = byClass(nodes.instances, 'price')[1];
+  assert.equal(noGpuButton.textContent, '无卡 ¥0.1/h', '无卡实例显示的是无卡费率，不是 GPU 时价');
+  noGpuButton.fire('click');
+  assert.match(dialogNode().textContent, /登记无卡费率 · I02/);
+  assert.match(dialogNode().textContent, /GPU 模式开机后再登记 GPU 时价/);
+  assert.equal(dialogInput().value, '0.1', '无卡档位要预填当前无卡费率');
+  dialogInput().value = '0.12';
+  dialogButton('保存').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call.options.method === 'POST').pop().options.body,
+    '{"id":"I02","no_gpu_price":0.12}', '无卡费率写 no_gpu_price，不能把 GPU 时价覆盖掉');
+  assert.equal(nodes.modal.classList.contains('hidden'), true, '登记成功后关窗');
+  // 开机模式没登记就退回 GPU 时价：没有依据时宁可高估花费
+  data.instances[1].mode = null;
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.instances, 'price')[1].textContent, '¥1.58/h');
+  console.log('PASS: no-GPU instances register the no-GPU rate instead of a GPU price');
 
   // 余额只有一块：金额、代金券标注、按当前开机时价的可跑时长、计划花费与充足结论
   const budgetChips = byClass(nodes.summary, 'budget');

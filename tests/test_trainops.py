@@ -240,6 +240,33 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ops.PlanError, "大于总容量"):
             ops.validate(self.plan)
 
+    def test_mode_and_no_gpu_price_bounds(self):
+        item = self.plan["instances"][0]
+        for value in ("no_gpu", "", 0, True):
+            item["mode"] = value
+            with self.subTest(mode=value), self.assertRaises(ops.PlanError):
+                ops.validate(self.plan)
+        for value in ("no-gpu", "gpu", None):
+            item["mode"] = value
+            ops.validate(self.plan)
+        for value in (-1, 0, "0.1", float("inf")):
+            item["no_gpu_price"] = value
+            with self.subTest(no_gpu_price=value), self.assertRaises(ops.PlanError):
+                ops.validate(self.plan)
+        item["no_gpu_price"] = None
+        ops.validate(self.plan)
+
+    def test_plans_without_the_new_fields_still_read(self):
+        """开机模式与无卡费率是后加的字段：老计划少了这两个键也要照常读，不逼人重建计划。"""
+        for item in self.plan["instances"]:
+            del item["mode"], item["no_gpu_price"]
+        ops.validate(self.plan)
+        self.plan["instances"][0].update(status="on", price=2.0)
+        self.plan["instances"][1]["status"] = "off"
+        self.plan["wallet"]["assets"] = 100.0
+        self.assertEqual(ops.budget(self.plan, NOW)["burn_rate"], 2.0, "缺字段时按 GPU 时价，不是 0")
+        self.assertIn("¥2/h", ops.instance_line(self.plan["instances"][0]))
+
 
 class ForecastTests(unittest.TestCase):
     def setUp(self):
@@ -353,8 +380,8 @@ class RepoSnapshotTests(unittest.TestCase):
                 "-p examples/demo-project demo --force")
         self.assertEqual([[t[f] for f in fields] for t in committed["tasks"]],
                          [[t[f] for f in fields] for t in fresh["tasks"]], hint)
-        # 时价与三盘用量也是演示数据的一部分：不比对就看不到它们的漂移（时间戳除外）。
-        instance_fields = ("id", "name", "status", "note", "price", "disk")
+        # 时价、开机模式与三盘用量也是演示数据的一部分：不比对就看不到它们的漂移（时间戳除外）。
+        instance_fields = ("id", "name", "status", "mode", "note", "price", "no_gpu_price", "disk")
         self.assertEqual([{f: i[f] for f in instance_fields} for i in committed["instances"]],
                          [{f: i[f] for f in instance_fields} for i in fresh["instances"]], hint)
         self.assertEqual({k: v for k, v in committed["wallet"].items() if k != "observed_at"},
@@ -618,15 +645,52 @@ class DiskAndPriceTests(unittest.TestCase):
                 self.assertEqual(before, self.store.path.read_bytes())
 
     def test_price_is_a_quote_not_an_observation(self):
-        self.command("instance", "set", "I01", "--price", "1.88")
+        """时价现在只能从面板登记，但它依旧只是标价：登记它不刷新观测时间。"""
+        self.store.change(lambda plan: ops.set_instance_price(plan, "I01", "price", ops.price_value("1.88")))
         item = self.instance()
         self.assertEqual(item["price"], 1.88)
         self.assertIsNone(item["observed_at"], "时价是标价，不该刷新观测时间")
-        for value in ("0", "-1", "nan"):
-            with self.subTest(price=value):
-                self.command("instance", "set", "I01", "--price", value, success=False)
-        self.command("instance", "set", "I01", "--price", "none")
-        self.assertIsNone(self.instance()["price"])
+
+    def test_price_bounds_reject_zero_and_junk(self):
+        """0 和负数一律拒绝：它们会被读成"机器白跑"，而缺数据不能拿 0 顶替。"""
+        for value in (0, -1, 0.0, 10001, "nan", "abc", [], {}, True):
+            with self.subTest(price=value), self.assertRaises(ops.PlanError):
+                ops.price_value(value)
+        for cleared in (None, "none", "?", "-", "  "):
+            with self.subTest(price=cleared):
+                self.assertIsNone(ops.price_value(cleared))
+        self.assertEqual(ops.price_value("1.88"), 1.88)
+
+    def test_price_flag_is_gone_from_the_cli(self):
+        """时价只有面板一个入口：CLI 参数必须消失，免得两条写路径各自漂移。"""
+        result = run_cli(self.project, "instance", "set", "I01", "--price", "1.88", success=False)
+        self.assertEqual(result.returncode, 2, "argparse 应该把已删除的 --price 判成用法错误")
+        self.assertIn("--price", result.stderr)
+        self.assertIsNone(self.instance()["price"], "被拒绝的写法不能顺手把时价写进去")
+
+    def test_old_plan_gains_the_no_gpu_price_when_the_mode_is_recorded(self):
+        """老计划没有无卡费率这个键，而读取时按平台默认值算：登记模式时要把它落实成字段，
+        否则面板显示"费率未登记"、服务端却按 0.1 计算，两边各说各话。"""
+        self.store.change(lambda plan: plan["instances"][0].pop("no_gpu_price", None))
+        self.command("instance", "set", "I01", "--mode", "no-gpu")
+        self.assertEqual(self.instance()["no_gpu_price"], ops.NO_GPU_PRICE)
+
+    def test_mode_flag_records_the_power_mode(self):
+        """无卡/有卡由 agent 从平台侧核实后登记，它和时价是两件事，互不覆盖。"""
+        self.command("instance", "set", "I01", "--status", "on", "--mode", "no-gpu")
+        item = self.instance()
+        self.assertEqual(item["mode"], "no-gpu")
+        self.assertEqual(item["no_gpu_price"], ops.NO_GPU_PRICE, "新实例默认带上平台的无卡费率")
+        self.assertIsNotNone(item["observed_at"], "开机模式是观测，要刷新观测时间")
+        self.assertIn("无卡 ¥0.1/h", self.command("show").stdout)
+        self.store.change(lambda plan: ops.set_instance_price(plan, "I01", "price", 1.88))
+        self.command("instance", "set", "I01", "--mode", "gpu")
+        item = self.instance()
+        self.assertEqual(item["mode"], "gpu")
+        self.assertEqual(item["price"], 1.88, "切模式不该把另一个档位的价格冲掉")
+        self.command("instance", "set", "I01", "--mode", "none")
+        self.assertIsNone(self.instance()["mode"], "核实不了就先记成未观测，不猜")
+        self.command("instance", "set", "I01", "--mode", "no_gpu", success=False)
 
 
 class BudgetTests(unittest.TestCase):
@@ -682,6 +746,33 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(view["plan_cost"], 20.0)
         self.assertFalse(view["covers_plan"])
 
+    def test_no_gpu_instances_use_the_no_gpu_rate(self):
+        """无卡开机不等于免费：按无卡费率算，既不退回 GPU 时价，也不当成 0。"""
+        self.plan["wallet"]["assets"] = 100.0
+        self.plan["instances"][0].update(status="on", mode="no-gpu")
+        self.plan["instances"][1]["status"] = "off"
+        view = ops.budget(self.plan, NOW)
+        self.assertEqual(view["burn_rate"], ops.NO_GPU_PRICE)
+        self.assertEqual(view["hours_awake"], round(100.0 / ops.NO_GPU_PRICE, 1))
+        self.plan["instances"][1].update(status="on", mode="no-gpu")
+        self.assertEqual(ops.budget(self.plan, NOW)["burn_rate"], 0.2, "两台无卡各自计费")
+        # 无卡费率被清空就少给结论：不退回 GPU 时价，也不写 0
+        self.plan["instances"][0]["no_gpu_price"] = None
+        self.assertNotIn("burn_rate", ops.budget(self.plan, NOW))
+        # 开机模式没登记过（老计划）仍按 GPU 时价：宁可高估花费，也不让人以为还能跑很久
+        self.plan["instances"][0].update(mode=None, no_gpu_price=0.1)
+        self.assertEqual(ops.budget(self.plan, NOW)["burn_rate"], 2.1)
+
+    def test_plan_cost_still_uses_the_gpu_price(self):
+        """待跑任务将来是在有卡模式下跑的，计划花费不能拿无卡费率压低。"""
+        self.plan["wallet"]["assets"] = 100.0
+        ops.add_task(self.plan, "F01", "训练", "I01", 120)
+        self.plan["instances"][0].update(status="on", mode="no-gpu")
+        self.plan["instances"][1]["status"] = "off"
+        view = ops.budget(self.plan, NOW)
+        self.assertEqual(view["burn_rate"], ops.NO_GPU_PRICE)
+        self.assertEqual(view["plan_cost"], 4.0, "2 小时 × GPU 时价 2 元，而不是无卡费率")
+
 
 class CheckWarningTests(unittest.TestCase):
     def setUp(self):
@@ -709,13 +800,22 @@ class CheckWarningTests(unittest.TestCase):
         self.assertIn("数据盘已用 48/50G", text)
         self.assertIn("未登记时价", text)
         self.assertNotIn("不足以", text, "缺时价时算不出计划花费，不能凭空说余额不够")
-        self.command("instance", "set", "I01", "--price", "2")
+        self.assertIn("面板", text, "提示要告诉用户去哪儿登记时价")
+        self.store.change(lambda plan: ops.set_instance_price(plan, "I01", "price", 2.0))
         self.command("task", "set", "F01-T01", "--minutes", "6000")
         result = self.command("check")
         text = " ".join(result["warnings"])
         self.assertIn("不足以覆盖", text)
         self.assertNotIn("系统盘", " ".join(result["warnings"]))
         self.assertTrue(result["ok"], "这些只是提醒，不能把结构检查判成失败")
+
+    def test_no_gpu_instance_is_not_asked_for_a_gpu_price(self):
+        """无卡开机按无卡费率计费，不该追着要 GPU 时价。"""
+        self.command("instance", "set", "I01", "--status", "on", "--mode", "no-gpu")
+        self.command("wallet", "set", "--assets", "100")
+        text = " ".join(self.command("check")["warnings"])
+        self.assertNotIn("未登记时价", text)
+        self.assertIn("无卡 ¥0.1/h", self.command("show").stdout)
 
     def test_full_disk_warning_appears_in_show_text(self):
         self.command("instance", "set", "I01", "--disk", "sys:29/30,data:10/50")
@@ -1087,7 +1187,7 @@ class BriefTests(unittest.TestCase):
                         ("set", "F01-T01", "--checked"),
                         ("set", "F01-T01", "--name", "改名"),
                         ("batch", "--set", "F01-T01:running:30"),
-                        ("instance", "set", "I01", "--price", "2")):
+                        ("instance", "set", "I01", "--disk", "data:1/2")):
             with self.subTest(command=command), mock.patch.object(ops, "check_structure") as checks:
                 result = ops.dispatch(self.parse(*command, "--brief"), self.store)
                 checks.assert_not_called()
@@ -1484,6 +1584,88 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as error:
             OPEN(request)
         self.assertEqual(error.exception.code, 403)
+
+    def post(self, payload, ctype="application/json", origin=None, headers=None, method="POST",
+             path="/api/instance-price"):
+        """登记时价的请求，默认是面板该发出的那个形状。"""
+        head = {"Content-Type": ctype, **(headers or {})}
+        if origin:
+            head["Origin"] = origin
+        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        return OPEN(Request(self.url + path, data=data, headers=head, method=method))
+
+    def test_price_is_registered_through_the_store(self):
+        """面板是时价的唯一入口：写进去的必须是"标价"，不是一次对机器的观测。"""
+        before = self.store.read()
+        with self.post({"id": "I01", "price": 2.5}) as response:
+            self.assertEqual(response.status, 200)
+            plan = json.load(response)
+        self.assertEqual(plan["instances"][0]["price"], 2.5)
+        self.assertEqual(plan["revision"], before["revision"] + 1, "登记时价也要走同一条落盘路径")
+        written = self.store.read()["instances"][0]
+        self.assertEqual(written["price"], 2.5)
+        self.assertEqual(written["observed_at"], before["instances"][0]["observed_at"],
+                         "时价是标价，不该刷新观测时间")
+        with self.post({"id": "I01", "price": None}) as response:
+            self.assertEqual(response.status, 200)
+        self.assertIsNone(self.store.read()["instances"][0]["price"], "清空要真的清空，不是写 0")
+        with self.post({"id": "I01", "price": 1.5}, origin=self.url) as response:
+            self.assertEqual(response.status, 200, "面板自己发出的同源请求要放行")
+
+    def test_bad_price_requests_never_touch_the_file(self):
+        before = self.store.path.read_bytes()
+        for payload in ({"id": "I01", "price": 0}, {"id": "I01", "price": -1}, {"id": "I01", "price": "nan"},
+                        {"id": "I01", "price": "abc"}, {"id": "I09", "price": 1}, {"id": "I01"},
+                        {"price": 1}, {"id": "I01", "price": 1, "note": "顺手改点别的"}, [], "I01",
+                        {"id": "I01", "price": 1, "no_gpu_price": 1}, {"id": "I01", "no_gpu_price": 0}):
+            with self.subTest(payload=payload), self.assertRaises(HTTPError) as error:
+                self.post(payload)
+            self.assertEqual(error.exception.code, 400)
+            self.assertEqual(before, self.store.path.read_bytes(), "被拒绝的登记不能留下半个文件")
+
+    def test_no_gpu_rate_is_a_field_of_its_own(self):
+        """无卡费率与 GPU 时价各写各的：切回有卡时 GPU 时价还在。"""
+        with self.post({"id": "I01", "no_gpu_price": 0.2}) as response:
+            self.assertEqual(response.status, 200)
+        item = self.store.read()["instances"][0]
+        self.assertEqual(item["no_gpu_price"], 0.2)
+        self.assertEqual(item["price"], 1.88, "改无卡费率不能动 GPU 时价")
+        with self.post({"id": "I01", "no_gpu_price": None}) as response:
+            self.assertEqual(response.status, 200)
+        self.assertIsNone(self.store.read()["instances"][0]["no_gpu_price"])
+
+    def test_price_endpoint_only_takes_local_json_requests(self):
+        for ctype in ("text/plain", "application/x-www-form-urlencoded"):
+            with self.subTest(ctype=ctype), self.assertRaises(HTTPError) as error:
+                self.post({"id": "I01", "price": 1}, ctype=ctype)
+            self.assertEqual(error.exception.code, 415)
+        with self.assertRaises(HTTPError) as error:
+            self.post({"id": "I01", "price": 1}, origin="https://evil.example")
+        self.assertEqual(error.exception.code, 403, "跨站页面不能借面板改计划")
+        with self.assertRaises(HTTPError) as error:
+            self.post({"id": "I01", "price": 1}, headers={"Host": "external.example"})
+        self.assertEqual(error.exception.code, 403)
+        with self.assertRaises(HTTPError) as error:
+            self.post(b"{" + b"x" * 5000)
+        self.assertEqual(error.exception.code, 413)
+        with self.assertRaises(HTTPError) as error:
+            self.post(b"{not json")
+        self.assertEqual(error.exception.code, 400)
+
+    def test_only_price_is_writable(self):
+        for method in ("PUT", "PATCH", "DELETE"):
+            with self.subTest(method=method), self.assertRaises(HTTPError) as error:
+                self.post({"id": "I01", "price": 1}, method=method)
+            self.assertEqual(error.exception.code, 405)
+        with self.assertRaises(HTTPError) as error:  # 时价接口本身不读
+            OPEN(self.url + "/api/instance-price")
+        self.assertEqual(error.exception.code, 404)
+        with self.assertRaises(HTTPError) as error:  # 已知读取路径上写入 = 方法不允许
+            self.post({"id": "I01", "price": 1}, path="/api/plan")
+        self.assertEqual(error.exception.code, 405)
+        with self.assertRaises(HTTPError) as error:
+            self.post({"id": "I01", "price": 1}, path="/api/nope")
+        self.assertEqual(error.exception.code, 404)
 
     def test_corruption_is_reported_not_hidden(self):
         self.store.path.write_text("oops")
