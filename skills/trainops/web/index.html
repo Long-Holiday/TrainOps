@@ -6,198 +6,227 @@
 <meta name="color-scheme" content="light dark">
 <title>TrainOps · 项目计划</title>
 <style>
-/* 视觉：科研仪器面板。全部为静态 CSS（渐变/细描边/圆角），不引入外部字体、图片、
-   图标库、JS 库或 canvas，也没有持续动画循环，因此不增加任何运行时负担。 */
+/* 视觉：调度台。三条规矩——
+   一、颜色只归"状态"与"结论"（执行中/已完成/阻塞/失败、余额够不够），其余一律墨色；
+   二、面板块是凹进去的（内嵌阴影 + 比纸面更深的底），全页只有弹窗有投影；
+   三、方格纸只画在甘特轨道里——那里每条竖线都对应一个时刻，别处不画。
+   全部为静态 CSS，不引入外部字体、图片、图标库、JS 库或 canvas，也没有持续动画循环。 */
 :root {
   color-scheme:light;
   --pad:16px;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
-  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
-  --page:#eef1f6; --surface:#ffffff; --surface-2:#f7f9fc;
-  --ink:#0e1726; --secondary:#5a6779;
-  --line:#e3e8f0; --line-strong:#ccd5e2;
-  --grid:rgba(23,42,73,.055); --glow:rgba(14,116,144,.10); --glow-fade:rgba(14,116,144,0); --hover:rgba(23,42,73,.03);
-  --accent:#0e7490; --accent-soft:rgba(14,116,144,.10); --accent-line:rgba(14,116,144,.38);
-  --good:#047857; --good-soft:rgba(4,120,87,.12);
-  --warning:#b45309; --warning-soft:rgba(180,83,9,.13);
-  --critical:#dc2626; --critical-soft:rgba(220,38,38,.12);
-  --soft:#edf1f6; --rail:rgba(14,116,144,.32); --hatch:rgba(23,42,73,.07); --bar-top:rgba(255,255,255,.6);
-  --cursor:#e11d48; --cursor-bg:#be123c; --cursor-ink:#ffffff;
-  --shadow:0 1px 2px rgba(15,30,60,.05),0 14px 30px -24px rgba(15,30,60,.45);
+  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace;
+  --paper:#eff1ed; --panel:#e6e9e2; --raise:#f8f9f6;
+  --ink:#161a17; --secondary:#5c665e;
+  --rule:#d6dbd2; --rule-strong:#b2baad;
+  --wash:rgba(22,26,23,.045); --hatch:rgba(22,26,23,.08); --scrim:rgba(12,18,14,.45);
+  --running:#1c53c8; --running-tint:rgba(28,83,200,.13);
+  --done:#0e7a3e; --done-tint:rgba(14,122,62,.14);
+  --blocked:#96540a; --blocked-tint:rgba(150,84,10,.14);
+  --failed:#c02a24; --failed-tint:rgba(192,42,36,.12);
+  --recess:inset 0 2px 3px -2px rgba(18,28,20,.24);
+  --r-mark:5px; --r-ctl:6px; --r-panel:8px; --r-dialog:12px;
 }
 :root[data-theme="dark"] {
   color-scheme:dark;
-  --page:#080d13; --surface:#0f1620; --surface-2:#141d29;
-  --ink:#e8eff9; --secondary:#8ea1b8;
-  --line:#1d2937; --line-strong:#2c3b4e;
-  --grid:rgba(125,211,252,.05); --glow:rgba(34,211,238,.09); --glow-fade:rgba(34,211,238,0); --hover:rgba(125,211,252,.035);
-  --accent:#22d3ee; --accent-soft:rgba(34,211,238,.13); --accent-line:rgba(34,211,238,.42);
-  --good:#34d399; --good-soft:rgba(52,211,153,.15);
-  --warning:#fbbf24; --warning-soft:rgba(251,191,36,.14);
-  --critical:#f87171; --critical-soft:rgba(248,113,113,.14);
-  --soft:#18222f; --rail:rgba(34,211,238,.28); --hatch:rgba(160,220,255,.07); --bar-top:rgba(255,255,255,.06);
-  --cursor:#ff5d76; --cursor-bg:#e11d48; --cursor-ink:#ffffff;
-  --shadow:0 1px 2px rgba(0,0,0,.5),0 18px 36px -28px rgba(0,0,0,.95);
+  --paper:#151816; --panel:#0e1110; --raise:#212523;
+  --ink:#e7eae5; --secondary:#98a59a;
+  --rule:#2a2f2b; --rule-strong:#3e453f;
+  --wash:rgba(231,234,229,.05); --hatch:rgba(231,234,229,.07); --scrim:rgba(0,0,0,.62);
+  --running:#7ba6ff; --running-tint:rgba(123,166,255,.16);
+  --done:#46c07a; --done-tint:rgba(70,192,122,.16);
+  --blocked:#e0a838; --blocked-tint:rgba(224,168,56,.15);
+  --failed:#f0736b; --failed-tint:rgba(240,115,107,.15);
+  --recess:inset 0 2px 4px -2px rgba(0,0,0,.7);
 }
 * { box-sizing:border-box; }
 body {
-  margin:0; min-height:100vh; color:var(--ink); font:16px/1.5 var(--sans);
-  background-color:var(--page);
-  background-image:
-    radial-gradient(115% 62% at 50% -18%, var(--glow), var(--glow-fade) 62%),
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size:100% 100%,28px 28px,28px 28px;
-  background-repeat:no-repeat,repeat,repeat;
+  margin:0; min-height:100vh; background:var(--paper); color:var(--ink);
+  font:15px/1.55 var(--sans);
   -webkit-font-smoothing:antialiased;
 }
-main { max-width:1420px; margin:0 auto; padding:24px 26px 44px; }
-header { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid var(--line); }
+main { max-width:1360px; margin:0 auto; padding:26px 26px 40px; }
+/* 页眉是一块铭牌：底部压一条 2px 墨线，和下面的读数条、计划区分开层次 */
+header { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; flex-wrap:wrap; padding-bottom:14px; border-bottom:2px solid var(--ink); }
 .brand { min-width:0; }
-.eyebrow { display:flex; align-items:center; gap:8px; margin:0 0 5px; font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--secondary); }
-.eyebrow::before { content:''; width:6px; height:6px; flex-shrink:0; border-radius:1px; background:var(--accent); transform:rotate(45deg); box-shadow:0 0 7px var(--accent-line); }
-h1 { font-size:24px; font-weight:650; margin:0 0 4px; line-height:1.25; }
-h2 { font-size:16.5px; font-weight:600; margin:0; line-height:1.35; }
+.eyebrow { display:flex; align-items:center; gap:9px; margin:0 0 7px; font-family:var(--mono); font-size:11.5px; font-weight:600; color:var(--secondary); }
+.eyebrow .mark { color:var(--ink); }
+.eyebrow .sep { width:1px; height:11px; background:var(--rule-strong); }
+h1 { margin:0; font-size:27px; font-weight:700; line-height:1.2; letter-spacing:-.015em; }
+h2 { margin:0; font-size:16px; font-weight:600; line-height:1.35; }
 p { margin:0; }
-.meta,.muted { color:var(--secondary); font-size:13.5px; }
-.meta { font-family:var(--mono); letter-spacing:.01em; font-variant-numeric:tabular-nums; }
+.meta,.muted { color:var(--secondary); font-size:13px; }
+.meta { margin-top:5px; font-family:var(--mono); font-variant-numeric:tabular-nums; letter-spacing:.01em; }
+/* 机器标识统一走等宽字体；字号交给上下文决定，别在这里锁死 */
+.id { font-family:var(--mono); font-variant-numeric:tabular-nums; }
 .controls { display:flex; gap:8px; align-items:center; }
-button { border:1px solid var(--line-strong); background:var(--surface); color:var(--ink); border-radius:7px; font:inherit; font-size:13.5px; font-weight:550; padding:7px 14px; cursor:pointer; transition:border-color .15s,background-color .15s,color .15s,transform .15s; }
-button:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+button { font:inherit; font-size:13.5px; font-weight:550; color:var(--ink); background:var(--raise); border:1px solid var(--rule-strong); border-radius:var(--r-ctl); padding:7px 13px; cursor:pointer; transition:border-color .12s,background-color .12s,color .12s,transform .08s; }
+button:hover { border-color:var(--ink); background:var(--wash); }
 button:active { transform:translateY(1px); }
-button:disabled { opacity:.5; cursor:progress; }
-button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.notice { display:flex; gap:9px; align-items:flex-start; border:1px solid var(--critical); border-left-width:3px; background:var(--surface); padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; box-shadow:var(--shadow); }
-.notice::before { content:'!'; flex-shrink:0; width:17px; height:17px; margin-top:1px; border-radius:50%; background:var(--critical); color:var(--surface); font:700 12px/17px var(--mono); text-align:center; }
+button:disabled { opacity:.45; cursor:progress; }
+button:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
 .hidden { display:none; }
-#summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-bottom:14px; font-size:14px; }
-.summary-total { font-weight:600; letter-spacing:.01em; }
-.chip { display:inline-flex; align-items:center; gap:6px; padding:3px 11px 3px 9px; border:1px solid var(--line); border-radius:999px; background:var(--surface); font-size:13px; box-shadow:0 1px 1px rgba(15,30,60,.03); }
-.chip b { font-family:var(--mono); font-weight:650; font-variant-numeric:tabular-nums; }
-/* 余额块：只读、静态，无倒计时也无外部请求；没有观测数据时整块不渲染 */
-.chip.budget { border-color:var(--accent-line); background:var(--accent-soft); }
-.chip.budget b { font-size:14.5px; }
-.chip.note { border-style:dashed; color:var(--secondary); }
-/* 自动结算记录：服务端写好整句文案，面板只显示，不在浏览器里重算任何数字 */
-.chip.settled { border-style:dashed; color:var(--secondary); font-variant-numeric:tabular-nums; }
-.chip.settled-over { border-style:solid; border-color:var(--warning); color:var(--warning); background:var(--warning-soft); font-variant-numeric:tabular-nums; }
-.chip.ok { border-color:var(--good); color:var(--good); background:var(--good-soft); }
-.chip.over { border-color:var(--critical); color:var(--critical); background:var(--critical-soft); font-weight:600; }
-.instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin-bottom:16px; }
-.instance { position:relative; padding:12px 16px 12px 19px; border:1px solid var(--line); border-radius:11px; background:var(--surface); box-shadow:var(--shadow),inset 0 1px 0 var(--rail); overflow:hidden; transition:border-color .15s,transform .15s; }
-.instance::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--line-strong); }
-.instance.on::before { background:var(--good); }
-.instance.starting::before { background:var(--warning); }
-.instance.off::before,.instance.unreachable::before { background:var(--critical); }
-.instance:hover { transform:translateY(-1px); border-color:var(--line-strong); }
-.instance-title { display:flex; justify-content:space-between; gap:8px; font-size:15.5px; font-weight:600; align-items:center; }
-.instance p { margin-top:6px; font-size:13.5px; }
-/* 时价按钮是面板唯一的写入口，所以做得低调；没登记时用警示色，提醒"缺了它余额换算不出时长" */
-.instance-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
-button.price { padding:3px 9px; font-family:var(--mono); font-size:12.5px; font-variant-numeric:tabular-nums; }
-button.price.unset { border-color:var(--warning); color:var(--warning); background:var(--warning-soft); }
+.notice { display:flex; gap:10px; align-items:flex-start; margin:16px 0 0; padding:11px 15px; border:1px solid var(--failed); border-left-width:3px; border-radius:var(--r-panel); background:var(--failed-tint); font-size:13.5px; }
+.notice::before { content:'!'; flex-shrink:0; width:18px; height:18px; margin-top:1px; border-radius:50%; background:var(--failed); color:var(--paper); font:700 12px/18px var(--mono); text-align:center; }
+/* 关闭态必须提权：上面这条 .notice 的 display:flex 与 .hidden 同为一条类选择器，
+   靠后写的会赢，于是"隐藏"的空通知框会整条盖在读数条上方。DOM 桩看不见层叠，
+   所以 test_web.cjs 只能盯这行字面量（#modal.hidden 是同一个坑的另一半）。 */
+.notice.hidden { display:none; }
+/* 读数条：一条被竖线切开的仪表带，不是一堆药丸标签；金额用大号等宽数字顶出来 */
+#summary { display:flex; flex-wrap:wrap; align-items:stretch; border-bottom:1px solid var(--rule); font-size:13px; }
+.summary-total { display:inline-flex; align-items:center; padding:8px 14px 8px 0; color:var(--ink); font-weight:600; }
+.chip { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-left:1px solid var(--rule); color:var(--secondary); line-height:1.25; white-space:nowrap; }
+.chip b { font-family:var(--mono); font-size:14px; font-weight:650; color:var(--ink); font-variant-numeric:tabular-nums; }
+.chip .dot { width:7px; height:7px; }
+/* 余额块：只读、静态，无倒计时也无外部请求；没有观测数据时整块不渲染。
+   金额是全页唯一"允许变大"的数字——它决定今晚还跑不跑得下去 */
+.chip.budget { border-left:2px solid var(--ink); }
+.chip.budget b { font-size:18px; letter-spacing:-.01em; }
+.chip.note b { color:var(--secondary); font-weight:600; }
+/* 余额够不够是判断，不是读数，所以给它底色——全条读数带只有这两块有颜色 */
+.chip.ok,.chip.over { border:0; border-radius:var(--r-mark); align-self:center; margin:0 10px; padding:5px 12px; font-weight:600; }
+.chip.ok { background:var(--done-tint); color:var(--done); }
+.chip.over { background:var(--failed-tint); color:var(--failed); }
+/* 自动结算记录：服务端写好整句文案，面板只显示，不在浏览器里重算任何数字。
+   它是一条带时间戳的记录，所以独占一行、按日志排版 */
+.chip.settled { flex-basis:100%; padding:6px 0 7px; border-left:0; border-top:1px dashed var(--rule); font-family:var(--mono); font-size:12px; color:var(--secondary); font-variant-numeric:tabular-nums; }
+.chip.settled-over { border-top-style:solid; border-top-color:var(--blocked); color:var(--blocked); }
+.instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; margin:18px 0 24px; }
+/* 实例是实打实的机器，所以是嵌进面板里的一块，不是浮在页面上的卡片 */
+.instance { position:relative; overflow:hidden; padding:13px 16px 14px 20px; border:1px solid var(--rule); border-radius:var(--r-panel); background:var(--panel); box-shadow:var(--recess); }
+.instance::before { content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--rule-strong); }
+.instance.on::before { background:var(--done); }
+.instance.starting::before { background:var(--blocked); }
+.instance.off::before,.instance.unreachable::before { background:var(--failed); }
+.instance-title { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:15px; font-weight:600; }
+.instance p { margin-top:7px; font-size:12.5px; }
+.instance-actions { display:flex; align-items:center; gap:9px; flex-shrink:0; }
+/* 时价按钮是面板唯一的写入口，所以做得低调；没登记时改虚线警示色，提醒"缺了它余额换算不出时长" */
+button.price { padding:4px 10px; border-radius:var(--r-mark); font-family:var(--mono); font-size:12.5px; font-weight:600; font-variant-numeric:tabular-nums; }
+button.price.unset { border-color:var(--blocked); border-style:dashed; color:var(--blocked); background:var(--blocked-tint); }
+button.price.unset:hover { border-style:solid; }
 /* 时价弹窗：常驻在 #modal（不在重绘范围内），所以 10 秒轮询不会冲掉正在输入的数字。
    关闭状态必须用 #modal.hidden 压过下面这条 #modal 的 display:flex——id 选择器赢过 .hidden，
    否则空弹窗会以 fixed 全屏盖在页面上，把整页的点击都吃掉。 */
 #modal { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; padding:20px; }
 #modal.hidden { display:none; }
-.modal-backdrop { position:absolute; inset:0; background:rgba(8,13,19,.45); }
-.dialog { position:relative; width:100%; max-width:370px; padding:18px 20px; border:1px solid var(--line-strong); border-radius:13px; background:var(--surface); box-shadow:var(--shadow); }
-.dialog-title { font-size:15.5px; font-weight:600; margin:0 0 12px; }
-.dialog-row { display:flex; align-items:center; gap:9px; margin-bottom:10px; }
-.dialog input { flex:1; min-width:0; padding:7px 10px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface-2); color:var(--ink); font:15px var(--mono); }
-.dialog input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
-.dialog-hint { margin:0 0 12px; font-size:12.5px; line-height:1.45; color:var(--secondary); }
-.dialog-error { margin:0 0 12px; font-size:13px; color:var(--critical); }
+.modal-backdrop { position:absolute; inset:0; background:var(--scrim); }
+.dialog { position:relative; width:100%; max-width:392px; padding:20px 22px; border:1px solid var(--rule-strong); border-radius:var(--r-dialog); background:var(--raise); box-shadow:0 26px 60px -22px rgba(8,16,10,.55); }
+.dialog-title { font-size:15.5px; font-weight:650; margin:0 0 14px; }
+.dialog-row { display:flex; align-items:center; gap:10px; margin-bottom:11px; }
+.dialog input { flex:1; min-width:0; padding:8px 11px; border:1px solid var(--rule-strong); border-radius:var(--r-ctl); background:var(--panel); color:var(--ink); font:15px var(--mono); }
+.dialog input:focus-visible { outline:2px solid var(--ink); outline-offset:1px; border-color:var(--ink); }
+.dialog-hint { margin:0 0 14px; font-size:12.5px; line-height:1.5; color:var(--secondary); }
+.dialog-error { margin:0 0 14px; font-size:13px; line-height:1.5; color:var(--failed); }
 .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
-.dialog-actions .primary { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600; }
-.flow { position:relative; margin:14px 0; border:1px solid var(--line); border-radius:13px; overflow:hidden; background:var(--surface); box-shadow:var(--shadow),inset 0 1px 0 var(--rail); }
-.flow-header { position:relative; padding:11px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:10px 14px; flex-wrap:wrap; background:var(--surface-2); }
-.flow-title { display:flex; align-items:center; gap:9px; min-width:0; }
-.flow-metrics { display:flex; align-items:center; gap:8px 12px; flex-wrap:wrap; font-size:13px; color:var(--secondary); font-variant-numeric:tabular-nums; }
+.dialog-actions .primary { border-color:var(--ink); background:var(--ink); color:var(--paper); font-weight:600; }
+.dialog-actions .primary:hover { border-color:var(--ink); background:var(--ink); color:var(--paper); opacity:.88; }
+/* 计划区：一张连续的横线纸，流程之间用横线分段，不再各自套一张浮起来的卡片 */
+#flows { margin-top:4px; }
+.flow { margin:0 0 26px; padding-top:16px; border-top:1px solid var(--rule-strong); }
+.flow:last-child { margin-bottom:4px; }
+.flow-header { display:flex; justify-content:space-between; align-items:center; gap:10px 18px; flex-wrap:wrap; padding-bottom:12px; }
+.flow-title { display:flex; align-items:center; gap:10px; min-width:0; font-size:17px; font-weight:650; letter-spacing:-.01em; }
+.flow-metrics { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
 .metric { white-space:nowrap; }
-.metric.strong { color:var(--ink); font-weight:600; }
-.flow-meter { display:inline-block; width:76px; height:6px; flex-shrink:0; border:1px solid var(--line); border-radius:3px; background:var(--soft); overflow:hidden; }
-.flow-meter-fill { display:block; height:100%; background:var(--accent); }
-.gantt-wrap { overflow-x:auto; }
+.metric.strong { color:var(--ink); font-weight:700; font-size:13.5px; }
+.flow-meter { display:inline-block; width:72px; height:6px; flex-shrink:0; border:1px solid var(--rule-strong); border-radius:3px; background:var(--panel); overflow:hidden; }
+.flow-meter-fill { display:block; height:100%; background:var(--ink); }
+.gantt-wrap { overflow-x:auto; scrollbar-width:thin; scrollbar-color:var(--rule-strong) transparent; }
 .gantt { min-width:920px; }
-.gantt-head,.gantt-row { display:grid; grid-template-columns:310px minmax(580px,1fr); border-bottom:1px solid var(--line); align-items:stretch; }
+.gantt-head,.gantt-row { display:grid; grid-template-columns:300px minmax(600px,1fr); align-items:stretch; }
+.gantt-head { background:var(--panel); border-top:1px solid var(--rule-strong); border-bottom:1px solid var(--rule-strong); color:var(--secondary); }
+.gantt-row { border-bottom:1px solid var(--rule); transition:background-color .12s; }
 .gantt-row:last-child { border-bottom:0; }
-.gantt-row { transition:background-color .15s; }
-.gantt-row:hover { background:var(--hover); }
-.gantt-head { background:var(--surface-2); color:var(--secondary); }
-.gantt-col-info { padding:0 16px; height:38px; border-right:1px solid var(--line); display:flex; align-items:center; font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; }
-.gantt-info { padding:10px 16px; border-right:1px solid var(--line); display:flex; flex-direction:column; justify-content:center; gap:5px; overflow-wrap:anywhere; }
-.gantt-axis { position:relative; height:38px; background-image:linear-gradient(90deg,var(--line-strong) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 6px; background-position:var(--pad) 100%; background-repeat:repeat-x; }
-.gantt-tick { position:absolute; top:50%; transform:translate(-50%,-50%); white-space:nowrap; font-family:var(--mono); font-size:12px; color:var(--secondary); font-variant-numeric:tabular-nums; }
+.gantt-row:hover { background:var(--wash); }
+.gantt-col-info { padding:0 16px; height:46px; border-right:1px solid var(--rule); display:flex; align-items:center; font-size:12px; font-weight:600; letter-spacing:.03em; }
+.gantt-info { padding:11px 16px; border-right:1px solid var(--rule); display:flex; flex-direction:column; justify-content:center; gap:5px; overflow-wrap:anywhere; }
+/* 时间轴：底部刻度线与轨道里的竖线同一套坐标，方格纸只出现在这里 */
+/* 表头分三带：总进度标签在上（top:3px 起，约到 19px）、时间刻度居中（top:30px，约 21–39px）、
+   刻度线贴底的 6px。标签与刻度必须分带——它们都跟着同一条竖线走，同带就会被盖住。 */
+.gantt-axis { position:relative; height:46px; background-image:linear-gradient(90deg,var(--rule-strong) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 6px; background-position:var(--pad) 100%; background-repeat:repeat-x; }
+.gantt-tick { position:absolute; top:30px; transform:translate(-50%,-50%); white-space:nowrap; font-family:var(--mono); font-size:11.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
 .gantt-tick.first { transform:translate(0,-50%); }
 .gantt-tick.last { transform:translate(-100%,-50%); }
-.gantt-track { position:relative; padding:9px 0 8px; display:flex; flex-direction:column; justify-content:center; background-image:linear-gradient(90deg,var(--line) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 100%; background-position:var(--pad) 0; background-repeat:repeat-x; }
-.flow-progress-line { position:absolute; top:0; bottom:0; width:0; border-left:2px solid var(--cursor); z-index:7; pointer-events:none; }
-.flow-progress-tag { position:absolute; top:7px; left:6px; background:var(--cursor-bg); color:var(--cursor-ink); font-family:var(--mono); font-size:11.5px; font-weight:600; padding:2px 7px; border-radius:5px; white-space:nowrap; line-height:1.35; box-shadow:0 1px 4px rgba(0,0,0,.28); }
+.gantt-track { position:relative; padding:9px 0 8px; display:flex; flex-direction:column; justify-content:center; background-image:linear-gradient(90deg,var(--rule) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 100%; background-position:var(--pad) 0; background-repeat:repeat-x; }
+/* 进度用墨线画（记录仪的笔），不占用任何状态色，红色因此只表示失败 */
+.flow-progress-line { position:absolute; top:0; bottom:0; width:0; border-left:2px solid var(--ink); z-index:7; pointer-events:none; }
+.flow-progress-tag { position:absolute; top:3px; left:6px; background:var(--ink); color:var(--paper); font-family:var(--mono); font-size:11px; font-weight:600; padding:1px 7px; border-radius:4px; white-space:nowrap; line-height:1.3; }
 .flow-progress-line.align-left .flow-progress-tag { left:auto; right:6px; }
+/* --pad 是轨道的左右内边距：laneLeft() 与这条 margin 必须同源，否则条形会与时间轴错位 */
 .gantt-lane { position:relative; height:28px; margin:0 var(--pad); }
 /* overflow 保持可见：窄条形上的进度徽标宁可略微外溢，也不被裁掉数字 */
-.gantt-bar { position:absolute; top:0; height:28px; min-width:16px; border-radius:6px; border:1px solid var(--line-strong); background-color:var(--soft); background-image:repeating-linear-gradient(135deg,transparent 0 6px,var(--hatch) 6px 7px); display:flex; align-items:center; justify-content:space-between; padding:0 6px 0 7px; gap:6px; box-shadow:inset 0 1px 0 var(--bar-top); }
-.gantt-bar.running { border-color:var(--accent); background-color:var(--accent-soft); }
-.gantt-bar.done { border-color:var(--good); background-color:var(--good-soft); }
-.gantt-bar.blocked { border-color:var(--warning); background-color:var(--warning-soft); }
-.gantt-bar.failed { border-color:var(--critical); background-color:var(--critical-soft); }
-.gantt-bar.is-unknown { border-style:dashed; }
-.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; border-radius:5px 0 0 5px; background:var(--accent); opacity:.26; pointer-events:none; }
-.gantt-bar.done .gantt-bar-fill { background:var(--good); opacity:.3; }
-.gantt-bar.blocked .gantt-bar-fill { background:var(--warning); opacity:.3; }
-.gantt-bar.failed .gantt-bar-fill { background:var(--critical); opacity:.3; }
-.gantt-progress-line { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:var(--accent); z-index:3; pointer-events:none; }
-.gantt-bar.done .gantt-progress-line { background:var(--good); }
-.gantt-bar-label { position:relative; z-index:4; font-family:var(--mono); font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.gantt-progress-badge { position:relative; z-index:5; background:var(--surface); color:var(--ink); border:1px solid var(--line-strong); font-family:var(--mono); font-size:11.5px; font-weight:600; padding:0 6px; border-radius:5px; line-height:1.5; white-space:nowrap; font-variant-numeric:tabular-nums; margin-left:auto; flex-shrink:0; }
-.gantt-eta { margin:6px var(--pad) 0; font-size:13px; line-height:1.3; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; position:relative; z-index:2; }
-.eta-done { color:var(--good); }
-.eta-failed { color:var(--critical); }
-.eta-overdue { color:var(--warning); font-weight:600; }
-.eta-stale { color:var(--warning); }
-.id { font-family:var(--mono); font-size:13px; font-variant-numeric:tabular-nums; }
-.copy { border:1px solid var(--line-strong); padding:1px 7px; background:var(--surface); color:var(--ink); border-radius:5px; font-family:var(--mono); font-size:12.5px; font-weight:600; flex-shrink:0; }
-.copy:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
-.flow-header .copy { border-color:transparent; background:var(--accent-soft); color:var(--accent); font-size:13px; padding:2px 9px; }
-.status { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-size:13px; font-weight:500; flex-shrink:0; }
-.dot { width:8px; height:8px; border-radius:50%; background:var(--secondary); flex-shrink:0; }
-.chip .dot { width:7px; height:7px; }
-.running .dot { background:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
-.done .dot,.on .dot { background:var(--good); box-shadow:0 0 0 3px var(--good-soft); }
-.blocked .dot,.starting .dot { background:var(--warning); box-shadow:0 0 0 3px var(--warning-soft); }
-.failed .dot,.unreachable .dot { background:var(--critical); box-shadow:0 0 0 3px var(--critical-soft); }
+.gantt-bar { position:absolute; top:0; height:28px; min-width:16px; border-radius:var(--r-mark); border:1px solid var(--rule-strong); background-color:var(--panel); display:flex; align-items:center; justify-content:space-between; padding:0 5px 0 7px; gap:6px; }
+.gantt-bar.running { border-color:var(--running); background-color:var(--running-tint); }
+.gantt-bar.done { border-color:var(--done); background-color:var(--done-tint); }
+.gantt-bar.blocked { border-color:var(--blocked); background-color:var(--blocked-tint); }
+.gantt-bar.failed { border-color:var(--failed); background-color:var(--failed-tint); }
+/* 斜纹只给"完成时间待估"的条形：底色深浅代表状态，斜纹代表这段时长是外推出来的 */
+.gantt-bar.is-unknown { border-style:dashed; background-image:repeating-linear-gradient(135deg,transparent 0 5px,var(--hatch) 5px 6px); }
+.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; background:var(--rule-strong); opacity:.45; pointer-events:none; }
+.gantt-bar.running .gantt-bar-fill { background:var(--running); opacity:.26; }
+.gantt-bar.done .gantt-bar-fill { background:var(--done); opacity:.26; }
+.gantt-bar.blocked .gantt-bar-fill { background:var(--blocked); opacity:.26; }
+.gantt-bar.failed .gantt-bar-fill { background:var(--failed); opacity:.26; }
+.gantt-progress-line { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:var(--ink); z-index:3; pointer-events:none; }
+.gantt-bar-label { position:relative; z-index:4; font-family:var(--mono); font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gantt-progress-badge { position:relative; z-index:5; background:var(--raise); color:var(--ink); border:1px solid var(--rule-strong); font-family:var(--mono); font-size:11px; font-weight:600; padding:0 6px; border-radius:4px; line-height:1.5; white-space:nowrap; font-variant-numeric:tabular-nums; margin-left:auto; flex-shrink:0; }
+.gantt-eta { margin:7px var(--pad) 0; font-size:12.5px; line-height:1.35; color:var(--secondary); display:flex; gap:12px; flex-wrap:wrap; font-variant-numeric:tabular-nums; position:relative; z-index:2; }
+.eta-done { color:var(--done); }
+.eta-failed { color:var(--failed); }
+.eta-cancelled { color:var(--secondary); }
+.eta-overdue { color:var(--blocked); font-weight:600; }
+.eta-stale { color:var(--blocked); }
+/* 待执行/已取消/未观测没有专门的颜色：它们既不是好事也不是故障，
+   落回上面 .dot 与 .gantt-bar 的墨色默认值，正是"颜色只归状态"想要的效果 */
+/* 复制按钮做成键帽：它是"取用这个标识"的操作，属于墨色交互，不该有颜色 */
+.copy { border:1px solid var(--rule-strong); padding:1px 7px; background:var(--raise); color:var(--secondary); border-radius:4px; font-family:var(--mono); font-size:12px; font-weight:600; flex-shrink:0; }
+.copy:hover { border-color:var(--ink); color:var(--ink); background:var(--raise); }
+.flow-title .copy { color:var(--ink); font-size:13px; padding:3px 9px; }
+.status { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; font-size:13px; font-weight:500; flex-shrink:0; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--rule-strong); flex-shrink:0; }
+.running .dot { background:var(--running); box-shadow:0 0 0 3px var(--running-tint); }
+.done .dot,.on .dot { background:var(--done); box-shadow:0 0 0 3px var(--done-tint); }
+.blocked .dot,.starting .dot { background:var(--blocked); box-shadow:0 0 0 3px var(--blocked-tint); }
+.failed .dot,.unreachable .dot { background:var(--failed); box-shadow:0 0 0 3px var(--failed-tint); }
 .task-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .task-title { display:flex; align-items:center; gap:8px; min-width:0; }
-.task-name { font-weight:600; font-size:15.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.tags { font-size:13px; color:var(--secondary); display:flex; gap:8px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
-.empty { padding:22px 16px; color:var(--secondary); font-size:14px; font-family:var(--mono); }
-.page-foot { margin-top:22px; padding-top:13px; border-top:1px solid var(--line); font-family:var(--mono); font-size:12px; color:var(--secondary); letter-spacing:.02em; }
+.task-name { font-weight:600; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tags { font-size:12.5px; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
+.empty { padding:24px 16px; color:var(--secondary); font-size:13px; font-family:var(--mono); text-align:center; }
+.page-foot { margin-top:10px; padding-top:14px; border-top:1px solid var(--rule); font-family:var(--mono); font-size:11.5px; color:var(--secondary); letter-spacing:.01em; }
 .page-foot code { color:var(--ink); }
 @media (prefers-reduced-motion:no-preference) {
-  @keyframes trainops-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.35; transform:scale(.75); } }
+  @keyframes trainops-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.38; transform:scale(.74); } }
   .running .dot { animation:trainops-pulse 2.6s ease-in-out infinite; }
 }
-@media(max-width:650px) { main { padding:14px 10px 30px; } header { flex-direction:column; align-items:flex-start; gap:10px; } }
+@media(max-width:760px) {
+  :root { --pad:12px; }
+  main { padding:16px 14px 30px; }
+  header { flex-direction:column; align-items:stretch; gap:12px; }
+  h1 { font-size:22px; }
+  .gantt-head,.gantt-row { grid-template-columns:210px minmax(520px,1fr); }
+  #summary,.chip { font-size:12.5px; }
+  .chip.budget b { font-size:16px; }
+}
 </style>
 </head>
 <body>
 <main>
 <header>
   <div class="brand">
-    <p class="eyebrow">TrainOps · 多实例训练计划</p>
+    <p class="eyebrow"><span class="mark">TrainOps</span><span class="sep"></span><span>多实例训练计划</span></p>
     <h1 id="title">项目计划</h1>
     <p class="meta" id="updated">正在读取…</p>
   </div>
   <div class="controls"><button id="refresh" type="button">刷新</button><button id="theme" type="button">深色模式</button></div>
 </header>
 <div class="notice hidden" id="error" role="alert"></div>
-<div class="instances" id="instances"></div>
-<div id="modal" class="hidden"></div>
 <div id="summary" aria-live="polite"></div>
+<div class="instances" id="instances"></div>
 <div id="flows"></div>
 <p class="page-foot">数据源 <code>.trainops/plan.json</code> · 仅时价可在面板登记，其余修改请通过 agent / CLI</p>
+<div id="modal" class="hidden"></div>
 </main>
 <script>
 'use strict';
@@ -539,7 +568,8 @@ function render() {
       if (task.status === 'done') {
         eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
       } else if (['failed','cancelled'].includes(task.status)) {
-        eta.append(el('span',when(task.finished_at) + ' 结束','eta-failed'));
+        /* 取消不是失败：红色只留给 failed，取消按"已经停下"的中性口径显示 */
+        eta.append(el('span',when(task.finished_at) + ' 结束',task.status === 'cancelled' ? 'eta-cancelled' : 'eta-failed'));
       } else if (task.estimate.overdue) {
         eta.append(el('span','已超过预计完成时间，需重新估计','eta-overdue'));
       } else {

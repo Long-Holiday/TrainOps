@@ -79,6 +79,8 @@ async function main() {
   assert.ok(!html.includes('<details'), 'Task details dropdown should be removed');
   // DOM 桩看不到层叠：id 选择器的 display:flex 会压过 .hidden，空弹窗就成了全屏遮罩
   assert.ok(html.includes('#modal.hidden'), '关闭态必须有 #modal.hidden 压过 #modal 的 display:flex');
+  // 同理：.notice 与 .hidden 同为一条类选择器，靠后写的赢，空错误条会整条盖在读数条上方
+  assert.ok(html.includes('.notice.hidden'), '关闭态必须有 .notice.hidden 压过 .notice 的 display:flex');
   new vm.Script(source, {filename:'index.html'}).runInContext(context);
   await new Promise(resolve => setImmediate(resolve));
   const gantts = byClass(nodes.flows, 'gantt');
