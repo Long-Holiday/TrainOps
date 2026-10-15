@@ -2,6 +2,7 @@ import copy
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import re
 import json
 import os
 from pathlib import Path
@@ -889,6 +890,304 @@ class WalletAPITests(unittest.TestCase):
                 ops.resolve_token()
 
 
+class BriefTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.project = Path(self.temp.name)
+        self.store = ops.Store(self.project)
+
+    def setup_plan(self):
+        return run_json(self.project, "init", "--name", "实验", "--instance", "GPU:id-a:gpu-a",
+                        "--flow", "基线", "--task", "F01:训练:I01:60")
+
+    def parse(self, *args):
+        return ops.parser().parse_args(["-p", str(self.project), *args])
+
+    def test_leaf_parsers_accept_brief(self):
+        commands = [
+            ["init", "--name", "实验"], ["batch", "--set", "F01-T01:done"], ["show"],
+            ["set", "F01-T01", "--checked"], ["task", "set", "F01-T01", "--minutes", "?"],
+            ["task", "add", "--flow", "F01", "--name", "任务"],
+            ["instance", "add", "--name", "GPU", "--autodl-id", "id-a", "--ssh-alias", "gpu-a"],
+            ["instance", "set", "I01", "--status", "on"], ["flow", "add", "--name", "流程"],
+            ["flow", "set", "F01", "--name", "改名"], ["wallet", "fetch"],
+            ["wallet", "set", "--assets", "0"], ["monitor", "--once"],
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(self.parse(*command, "--brief").brief)
+
+    def test_invalid_modes_fail_before_any_project_access(self):
+        for command in (("show", "--brief", "--json"), ("monitor", "--brief")):
+            result = run_cli(self.project / "不存在", *command, success=False)
+            self.assertEqual(result.returncode, 2)
+            self.assertFalse((self.project / "不存在").exists(), "非法组合不得读写项目或联网")
+
+    def test_default_outputs_remain_machine_readable(self):
+        result = self.setup_plan()
+        self.assertEqual(set(result), {"revision", "name", "instances", "flows", "tasks"})
+        update = run_json(self.project, "set", "F01-T01", "--status", "running", "--progress", "0")
+        self.assertEqual(set(update), {"revision", "item"})
+        self.assertEqual(update["item"]["progress"], 0)
+        view = run_json(self.project, "show", "--json")
+        self.assertEqual(view["tasks"][0]["deps"], [])
+        self.assertEqual(view["tasks"][0]["note"], "")
+        self.assertIsNone(view["tasks"][0]["finished_at"])
+        self.assertEqual(ops.compact({"a": False, "b": 0, "c": None, "d": []}), {"a": False, "b": 0})
+        self.assertIn("F01-T01", run_cli(self.project, "show").stdout)
+
+    def test_empty_and_completed_plans_have_explicit_counts(self):
+        plan = ops.new_plan("空计划")
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("done 0", text)
+        self.assertIn("余额未登记", text)
+        self.assertNotIn("¥0.00", text)
+        ops.add_flow(plan, "完成流程")
+        task = ops.add_task(plan, "F01", "已结束", "local", 10)
+        ops.set_task(plan, task["id"], {"status": "running"}, NOW)
+        ops.set_task(plan, task["id"], {"status": "done"}, NOW)
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("done 1", text)
+        self.assertIn("省略 1 个已完成/取消", text)
+        self.assertNotIn("F01-T01", text, "历史仍在计划中，但摘要不展开已完成任务")
+
+    def test_ready_candidates_deduplicate_gpu_but_not_local(self):
+        plan = base()
+        for name, resource, flow in (("GPU一", "I01", "F01"), ("GPU二", "I01", "F01"),
+                                     ("本地一", "local", "F02"), ("本地二", "local", "F02")):
+            ops.add_task(plan, flow, name, resource, 10)
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("依赖就绪 4 个任务", text)
+        candidates = text.split("候选（共 3 条）:")[1].split("实例（")[0]
+        for task_id in ("F01-T01", "F02-T01", "F02-T02"):
+            self.assertIn(task_id, candidates)
+        self.assertNotIn("F01-T02", candidates)
+        self.assertIn("I01[unknown]", candidates, "依赖就绪不能冒充实例已在线")
+        self.assertIn("仍需核实远端", text)
+
+    def test_running_markers_use_forecast_without_guessing(self):
+        plan = ops.new_plan("进度待核实")
+        ops.add_flow(plan, "训练")
+        task = ops.add_task(plan, "F01", "训练", "local", 60)
+        ops.set_task(plan, task["id"], {"status": "running"}, NOW - timedelta(hours=2))
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("已超期", text)
+        self.assertIn("未巡检", text)
+        self.assertIn("完成 待估", text)
+        ops.set_task(plan, task["id"], {"progress": 100}, NOW)
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("进度 100%，待核实", text)
+        self.assertIn("running 1", text)
+        self.assertIn("done 0", text)
+
+    def test_failed_blocked_cancelled_do_not_ready_their_dependents(self):
+        for status in ("failed", "blocked", "cancelled"):
+            with self.subTest(status=status):
+                plan = ops.new_plan("异常依赖")
+                ops.add_flow(plan, "流程")
+                first = ops.add_task(plan, "F01", "前置", "local", 10)
+                ops.set_task(plan, first["id"], {"status": "running"}, NOW)
+                ops.set_task(plan, first["id"], {"status": status}, NOW)
+                ops.add_task(plan, "F01", "后续", "local", 10, [first["id"]])
+                text = ops.brief_plan(plan, NOW)
+                self.assertIn("依赖就绪 0 个任务", text)
+                self.assertIn("依赖待完成/待估", text)
+                self.assertIn("F01-T02", text)
+                self.assertIn(f"{status} 1", text)
+
+    def test_future_start_and_missing_fields_remain_visible(self):
+        plan = ops.new_plan("待补数据")
+        ops.add_flow(plan, "流程")
+        ops.add_task(plan, "F01", "未分配", None, None)
+        ops.add_task(plan, "F01", "定时任务", "local", 10,
+                     not_before=ops.stamp(NOW + timedelta(hours=1)))
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("未分配", text)
+        self.assertIn("未设置预计耗时", text)
+        self.assertIn("最早开始", text)
+        self.assertIn(ops.stamp(NOW + timedelta(hours=1)), text)
+
+    def test_groups_bound_multiline_text_and_disclose_omissions(self):
+        entries = [f"F01-T{i:02}: " + "长名称\n" * 100 for i in range(1, 8)]
+        lines = ops.brief_group("结构问题", entries)
+        self.assertIn("共 7 条", lines[0])
+        self.assertEqual(len(lines), 5)
+        self.assertEqual(lines[-1], "  …省略 4 条")
+        self.assertTrue(all(len(line) <= ops.BRIEF_TEXT_LIMIT + 2 for line in lines))
+        self.assertTrue(all("\n" not in line for line in lines))
+        self.assertTrue(lines[1].endswith("…"))
+
+    def test_budget_missing_data_and_voucher_do_not_become_cash(self):
+        plan = ops.demo_plan(NOW)
+        plan["wallet"]["assets"] = None
+        plan["instances"][0]["price"] = None
+        plan["monitor"]["estimate"] = None
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("余额未登记", text)
+        self.assertIn("未登记时价", text)
+        self.assertIn("代金券 ¥20.00（不计入可用时长）", text)
+        self.assertNotIn("余额够", text)
+        self.assertNotIn("¥0.00", text)
+        self.assertNotIn("可用时长（同结算口径）:", text)
+
+    def test_fresh_changed_settlement_does_not_mix_live_plan_cost(self):
+        plan = ops.demo_plan(NOW)
+        old_cost = plan["monitor"]["estimate"]["plan_cost"]
+        plan["instances"][0]["price"] = 999
+        new_cost = ops.budget(plan, NOW)["plan_cost"]
+        self.assertNotEqual(old_cost, new_cost)
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("结算后计划有变更", text)
+        self.assertIn(f"¥{old_cost:.2f}", text)
+        self.assertNotIn(f"¥{new_cost:.2f}", text)
+        self.assertNotIn("实时结论:", text)
+        plan["monitor"]["estimate"]["computed_at"] = ops.stamp(NOW - timedelta(minutes=61))
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("已过期", text)
+        self.assertIn(f"¥{new_cost:.2f}", text)
+        self.assertEqual(text.count("实时结论:"), 1)
+
+    def test_structure_diagnostics_share_one_transaction_and_no_extra_read(self):
+        self.setup_plan()
+        previous = self.store.read()["revision"]
+        seen = []
+        check = ops.check_structure
+
+        def inspect(plan):
+            seen.append(copy.deepcopy(plan))
+            return check(plan)
+
+        args = self.parse("set", "F01-T01", "--minutes", "?", "--brief")
+        with mock.patch.object(self.store, "read", wraps=self.store.read) as read, \
+                mock.patch.object(ops, "check_structure", side_effect=inspect) as checks:
+            result = ops.dispatch(args, self.store)
+            self.assertEqual(read.call_count, 1, "仅 Store.change 内的一次读取")
+            self.assertEqual(checks.call_count, 1)
+        self.assertEqual(result["revision"], previous + 1)
+        self.assertEqual(seen[0]["revision"], result["revision"])
+        self.assertFalse(result["check"]["ok"])
+        self.assertIsNone(self.store.read()["tasks"][0]["duration_minutes"])
+        self.assertNotIn("check", self.store.read(), "诊断不写入账本 schema")
+        self.assertIn("已保存", ops.brief_receipt(args, result))
+
+    def test_show_brief_reads_once(self):
+        self.setup_plan()
+        args = self.parse("show", "--brief")
+        with mock.patch.object(self.store, "read", wraps=self.store.read) as read, \
+                mock.patch("builtins.print") as output:
+            self.assertIsNone(ops.dispatch(args, self.store))
+            self.assertEqual(read.call_count, 1)
+        self.assertIn("完整计划用 show", output.call_args.args[0])
+
+    def test_state_progress_checked_and_name_updates_do_not_check_structure(self):
+        self.setup_plan()
+        for command in (("set", "F01-T01", "--status", "running"),
+                        ("set", "F01-T01", "--progress", "25"),
+                        ("set", "F01-T01", "--checked"),
+                        ("set", "F01-T01", "--name", "改名"),
+                        ("batch", "--set", "F01-T01:running:30"),
+                        ("instance", "set", "I01", "--price", "2")):
+            with self.subTest(command=command), mock.patch.object(ops, "check_structure") as checks:
+                result = ops.dispatch(self.parse(*command, "--brief"), self.store)
+                checks.assert_not_called()
+                self.assertNotIn("check", result)
+
+    def test_checked_refreshes_inspection_without_changing_progress_sample(self):
+        self.setup_plan()
+        run_cli(self.project, "set", "F01-T01", "--status", "running", "--progress", "25")
+        before = self.store.read()["tasks"][0]
+        later = ops.utcnow() + timedelta(seconds=5)
+        with mock.patch.object(ops, "utcnow", return_value=later):
+            ops.dispatch(self.parse("set", "F01-T01", "--checked", "--brief"), self.store)
+        after = self.store.read()["tasks"][0]
+        self.assertEqual(after["progress"], before["progress"])
+        self.assertEqual(after["progress_at"], before["progress_at"])
+        self.assertEqual(after["checked_at"], ops.stamp(later))
+        self.assertFalse(ops.forecast(self.store.read(), later)["F01-T01"]["stale"])
+
+    def test_brief_structure_issues_save_but_hard_failures_remain_atomic(self):
+        self.setup_plan()
+        result = run_cli(self.project, "set", "F01-T01", "--minutes", "?", "--brief")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("结构问题", result.stdout)
+        self.assertEqual(run_cli(self.project, "check", "--strict", success=False).returncode, 1)
+        before = self.store.path.read_bytes()
+        result = run_cli(self.project, "set", "F01-T01", "--deps", "F01-T01", "--brief", success=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_batch_checks_only_final_state_and_reports_limited_ids(self):
+        self.setup_plan()
+        args = self.parse("batch", "--task", "F01:后续:I01:10", "--set", "F01-T01:done",
+                          "--set", "F01-T02:running:25", "--brief")
+        with mock.patch.object(ops, "check_structure", wraps=ops.check_structure) as check:
+            result = ops.dispatch(args, self.store)
+            check.assert_called_once()
+        self.assertEqual(result["item"]["updated"], ["F01-T01", "F01-T02"])
+        self.assertEqual(self.store.read()["tasks"][1]["status"], "running")
+        result = run_cli(self.project, "batch", *sum((["--task", f"F01:本地{i}:local:1"]
+                                                    for i in range(6)), []), "--brief")
+        self.assertIn("任务（共 6 条）", result.stdout)
+        self.assertIn("省略 3 条", result.stdout)
+
+    def test_wallet_brief_preserves_zero_clear_and_dry_run(self):
+        self.setup_plan()
+        result = run_cli(self.project, "wallet", "set", "--assets", "0", "--voucher", "10", "--brief")
+        self.assertIn("余额: ¥0.00", result.stdout, "真实零余额必须显示，与未知不同")
+        self.assertIn("不计入可用时长", result.stdout)
+        result = run_cli(self.project, "wallet", "set", "--assets", "none", "--brief")
+        self.assertIn("余额: 未登记", result.stdout)
+        args = self.parse("wallet", "fetch", "--dry-run", "--brief")
+        text = ops.brief_receipt(args, {"wallet": {"assets": 12, "voucher": 0}, "saved": False})
+        self.assertIn("未保存", text)
+        self.assertNotIn("rev", text)
+
+    def test_hundred_tasks_brief_is_small_and_read_only(self):
+        args = ["init", "--name", "百任务"]
+        for i in range(1, 6):
+            args.extend(["--instance", f"实例{i}:id-{i}:gpu-{i}", "--flow", f"流程{i}"])
+        for i in range(1, 6):
+            for j in range(1, 21):
+                args.extend(["--task", f"F{i:02}:训练阶段{j}:I{i:02}:60"])
+        run_cli(self.project, *args, "--brief")
+        args = ["batch"]
+        for i in range(1, 6):
+            for j in range(1, 19):
+                args.extend(["--set", f"F{i:02}-T{j:02}:done"])
+            args.extend(["--set", f"F{i:02}-T19:running:50"])
+        run_cli(self.project, *args, "--brief")
+        before = self.store.path.read_bytes()
+        full = run_cli(self.project, "show").stdout
+        brief = run_cli(self.project, "show", "--brief").stdout
+        self.assertLessEqual(len(brief), len(full) * 0.4)
+        self.assertIn("done 90", brief)
+        self.assertIn("running 5", brief)
+        self.assertIn("运行中（共 5 条）", brief)
+        self.assertIn("省略 2 条", brief)
+        self.assertNotIn("F01-T01 ", brief)
+        self.assertEqual(before, self.store.path.read_bytes(), "查看摘要不得写计划")
+
+    def test_entry_budget_safety_and_reference_links(self):
+        entry = ROOT / "skills/trainops/SKILL.md"
+        text = entry.read_text()
+        self.assertLessEqual(len(text), 1800, "仅限制常驻入口，不限制按需参考")
+        for rule in ("禁止直接 Edit/Write JSON", "用户授权", "释放前先转存", "Token", "--checked", "--brief"):
+            self.assertIn(rule, text)
+        docs = [ROOT / "README.md", entry, *entry.parent.glob("references/*.md")]
+        for doc in docs:
+            for link in re.findall(r"\]\(([^)]+)\)", doc.read_text()):
+                if "://" in link:
+                    continue
+                path, _, anchor = link.partition("#")
+                target = (doc.parent / path).resolve() if path else doc
+                self.assertTrue(target.is_file(), f"无效文档链接: {doc.name} -> {link}")
+                if anchor:
+                    headings = re.findall(r"^#+ (.+)$", target.read_text(), re.M)
+                    anchors = {re.sub(r"[^\w -]", "", heading.lower()).replace(" ", "-") for heading in headings}
+                    self.assertIn(anchor, anchors, f"无效锚点: {doc.name} -> {link}")
+
+
 class MonitorTests(unittest.TestCase):
     """自动结算：联网在文件锁之外，失败只记录不退出，结论与结算时间写回计划。"""
 
@@ -982,6 +1281,33 @@ class MonitorTests(unittest.TestCase):
         # show 把失败标出来，但结论仍然可读；--strict 让 cron 能告警
         self.assertIn("上次结算失败", self.command("show").stdout)
         self.command("monitor", "--once", "--strict", success=False)
+
+    def test_brief_once_keeps_strict_errors_and_token_private(self):
+        result = self.command("monitor", "--once", "--strict", "--brief")
+        self.assertIn("已保存", result.stdout)
+        self.assertIn("余额 ¥52.00", result.stdout)
+        self.assertIn("自动结算于", result.stdout)
+        self.assertIn("不代表远端训练已巡检", result.stdout)
+        self.assertNotIn("plan_hash", result.stdout)
+        self.handler_status(401, json.dumps({"code": "Fail"}))
+        result = self.command("monitor", "--once", "--strict", "--brief", success=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("HTTP 401", result.stdout)
+        self.assertIn("已保存", result.stdout)
+        self.assertNotIn("settle-token", result.stdout + result.stderr)
+        result = self.command("monitor", "--once", "--brief")
+        self.assertEqual(result.returncode, 0, "非 strict 的结算失败仍退出 0")
+        count = len(self.requests)
+        result = self.command("monitor", "--once", "--strict", "--brief", env={"AUTODL_TOKEN": ""})
+        self.assertIn("未配置 Token", result.stdout)
+        self.assertEqual(count, len(self.requests), "无 Token 不联网且不算失败")
+
+    def test_brief_network_error_keeps_strict_exit_code(self):
+        result = self.command("monitor", "--once", "--strict", "--brief", success=False,
+                              env={"TRAINOPS_API_BASE": "http://127.0.0.1:9"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("结算错误:", result.stdout)
+        self.assertNotIn("settle-token", result.stdout + result.stderr)
 
     def handler_status(self, status, body):
         handler = self.server.RequestHandlerClass

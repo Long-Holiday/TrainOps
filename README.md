@@ -13,7 +13,7 @@
 
 把下面的提示词复制给任意能读文件、能执行命令的 agent（把两处路径换成你自己的）：
 
-> 启用 TrainOps 训练管理能力：请读取 `/你的路径/TrainOps/skills/trainops/SKILL.md`（无需预读其他参考文档），保留你原有角色。本次实验项目目录是 `/你的路径/my-experiment`。先用文本模式 `show` 查看现有计划；若尚无计划，接到具体实验任务后用 `init` 单次命令建立实例、并行流程与任务节点，执行 `check` 完成结构性检查，并用 `set` / `batch` 维护任务状态与进度。训练产物按 SKILL.md 的三盘规范落盘（高 IO 与 checkpoint 放 `/root/autodl-tmp`，需长期保留或跨实例共享的放 `/root/autodl-fs`，释放实例前先转存），TensorBoard 事件写数据盘再软链到 `/root/tf-logs`；巡检时一并登记实例时价与 `df -h` 用量（`instance set --price/--disk`），余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱」交给 `monitor` 定时结算（token 放在 TrainOps 仓库根的 `.env`），余额不足以覆盖剩余计划时提醒我。需要可视化时后台启动 `serve` 本地甘特图面板。当前仅加载能力，具体实例映射与任务稍后提供。
+> 启用 TrainOps：读取 `/你的路径/TrainOps/skills/trainops/SKILL.md`，保留原有角色。实验项目目录为 `/你的路径/my-experiment`。当前仅加载能力，不创建计划、不启动进程；收到具体任务后按入口操作，其他参考按需读取。
 
 ## 2. 预览甘特图演示面板
 
@@ -39,25 +39,25 @@ $CLI init --name "双实例对照实验" \
   --task "F01:基线评估:I01:15" \
   --task "F02:对照训练:I02:90" \
   --task "F02:对照评估:I02:15" \
-  --task "F03:比较指标与报告:local:20:F01-T02,F02-T02"
+  --task "F03:比较指标与报告:local:20:F01-T02,F02-T02" --brief
 
-$CLI check
-$CLI show
+$CLI show --brief  # 需要决策时看摘要，建表回执已含结构检查
 ```
 
 ### 更新状态、进度与修改计划
 
 ```bash
 # 启动、更新进度、标记完成（无需填写额外字段）
-$CLI set F01-T01 --status running
-$CLI set F01-T01 --progress 35
-$CLI set F01-T01 --status done
+$CLI set F01-T01 --status running --brief
+$CLI set F01-T01 --progress 35 --brief
+$CLI set F01-T01 --checked --brief  # 已真实巡检，但没有可靠百分比
+$CLI set F01-T01 --status done --brief
 
 # 修改计划（改实例、依赖、预计耗时）
-$CLI set F02-T02 --instance I01 --deps F01-T02,F02-T01 --minutes 25
+$CLI set F02-T02 --instance I01 --deps F01-T02,F02-T01 --minutes 25 --brief
 
 # 批量追加或批量更新
-$CLI batch --task "F03:消融补充:I02:40" --set "F01-T02:done" --set "F02-T01:running:60"
+$CLI batch --task "F03:消融补充:I02:40" --set "F01-T02:done" --set "F02-T01:running:60" --brief
 ```
 
 **任务写法**：`流程ID:任务名[:实例[:耗时[:依赖]]]`。中间字段不确定时用 `-` 占位跳过，例如只想登记“F01 上耗时 30 分钟的评估、依赖 F01-T01”：
@@ -66,7 +66,13 @@ $CLI batch --task "F03:消融补充:I02:40" --set "F01-T02:done" --set "F02-T01:
 $CLI batch --task "F01:评估:-:30:F01-T01"
 ```
 
-耗时写 `?` 表示待估（文本摘要显示“待估”，面板按默认 30 分钟占位绘制）。依赖用逗号分隔，空字符串表示清空；`--instance -` 等价于 `none`（不占实例，可并行）。
+耗时写 `?` 表示待估（文本摘要显示“待估”，面板按默认 30 分钟占位绘制）。依赖用逗号分隔，空字符串表示清空；`--instance -` 等价于 `none`（未分配实例；本地并行任务应显式设为 `local`）。
+
+### 低上下文工作方式
+
+`--brief` 为显式选项，不改变默认完整文本/JSON 或脚本退出码：show 只看当前行动，写命令只看版本、编号和更新结果，monitor --once 只看一份结算结论。每组最多 3 条，长文本标 `…`，同时报告总数/省略数；历史任务仍保留在账本。完整问题看 check，完整任务看 show。
+
+brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒不会撤销已保存修改；纯状态/进度/巡检更新成功后不必机械再跑 check + show。脚本门禁仍用 check --strict。详细参数和批量语法见 [CLI 参考](skills/trainops/references/cli.md)，配置见 [AutoDL 参考](skills/trainops/references/autodl.md)，异常见 [恢复协议](skills/trainops/references/protocol.md)，目标 agent 按需读取即可，不必加载本 README 或开发用 CLAUDE.md。
 
 ## 4. 命令速查
 
@@ -77,7 +83,7 @@ $CLI batch --task "F01:评估:-:30:F01-T01"
 | `init --name ... [--instance ...] [--flow ...] [--task ...]` | 新建计划，支持一次传入全部实例、流程和任务（同流程自动串联）；已有计划时拒绝覆盖 |
 | `demo [--force]` | 在空目录生成演示计划，不涉及任何远程操作；`--force` 用于重置演示目录或已被改动的计划 |
 | `check [--strict]` | 结构性检查：返回问题（阻断性）与提醒（如相邻任务时间空隙过大）两组结果；`--strict` 在存在问题时不返回 0 退出码，便于脚本或 CI 拦截 |
-| `show` / `show --json` | 紧凑文本摘要（推荐 agent 使用）或完整 JSON 快照；文本模式下标出 `可开工`（依赖已就绪）、`未巡检`（running 超过 1 小时未更新进度）与 `已超期` |
+| `show --brief` / `show` / `show --json` | 当前行动摘要（推荐 agent 使用）、完整文本或完整 JSON；brief 分组限量并注明省略数，与 --json 互斥。`未巡检` 指未记录 checked_at 或超过 1 小时，`依赖就绪` 不保证远端在线 |
 | `set <任务ID> [--status ...] [--progress ...] [--instance ...] [--deps ...] [--minutes ...]` | 更新单个任务（`task set` 的简写） |
 | `task add --flow F01 --name 名称 [--instance I01] [--minutes 30] [--deps ...] [--not-before ...]` | 新增单个任务；`flow add --name ...`、`instance add` / `instance set I01 --status on --observed` 同理 |
 | `batch [--instance ...] [--flow ...] [--task ...] [--set ...]` | 单次命令批量追加实例/流程/任务或批量更新任务进度与状态（`--set "F01-T01:done:100:备注"`） |
@@ -93,7 +99,7 @@ $CLI batch --task "F01:评估:-:30:F01-T01"
 
 项目只面向 AutoDL，因此把三件账外的事也纳入同一套记录与告警。**面板不展示磁盘与 TensorBoard 信息**——这些是 agent 巡检时要盯的事，写在 `show`／`check` 里更有用。
 
-### 三盘规范（`SKILL.md` 第 3 节，巡检时逐条对照）
+### 三盘规范（详见 [AutoDL 配置](skills/trainops/references/autodl.md#三盘与用量)）
 
 | 路径 | 特性 | 放什么 |
 |---|---|---|
@@ -110,7 +116,7 @@ TB=/root/autodl-tmp/tf-logs/<项目名>     # 每任务一个 run：$TB/F01-T02
 ln -sfn "$TB" /root/tf-logs/<项目名>     # 内置 TensorBoard 免启动即可读
 ```
 
-换 logdir 按官方流程重启：`ps -ef | grep tensorboard | awk '{print $2}' | xargs kill -9`，再 `tensorboard --port 6007 --logdir <目录>`；要公网直链则 `--port 6006 --host 0.0.0.0`（平台只映射 6006 / 6008）。
+换 logdir 前先定位并核实本项目服务进程，按授权停止后重启，不批量杀掉其他实验的 TensorBoard；端口与访问方式见 [TensorBoard 配置](skills/trainops/references/autodl.md#tensorboard)。
 
 ### 余额与可用时长
 
@@ -133,13 +139,15 @@ $CLI show                                # 预算行：余额、可跑小时、�
 
 ```bash
 $CLI monitor                        # ① 前台循环，每 --interval 分钟结算一轮，Ctrl+C 退出
-$CLI monitor --once                 # ② 跑一轮即退出：交给 cron / 系统定时器 / agent 巡检
+$CLI monitor --once --brief         # ② 跑一轮即退出：交给 cron / 系统定时器 / agent 巡检
 $CLI serve --interval 30 --port 8765  # ③ 面板进程内顺带结算，一个进程管两件事
 ```
 
 ```cron
 */30 * * * * cd /你的路径/TrainOps && python3 skills/trainops/scripts/trainops.py -p /你的路径/my-experiment monitor --once --strict
 ```
+
+monitor --brief 仅与 --once 同用；--strict 保留原退出码语义。monitor 只结算余额，不检查远端训练、不自动关机；真实 SSH 巡检和用户约定汇报仍须执行，正常时简报，不每轮重复贴计划。serve 与 monitor 均为前台进程，后台运行/日志由调用方管理，不会自动后台化或登记 PID。
 
 每轮把结论写进计划：`余额能跑多久`、`跑完剩余计划还需多少 GPU 小时`、`预估花费`、`余额够不够`，外加结算时刻。`show` 与面板直接读这份结论并标注"自动结算于 X"；超过 2 个周期没有新结算就回退为实时值并说明原因，**同一屏不会出现两套互相矛盾的数字**。结算失败（断网、token 失效）只记进计划的 `last_error`，不打断循环也不改动其余数据，`check` 会把它当成提醒报出来，`--strict` 让 cron 能据此告警。
 

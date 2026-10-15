@@ -37,6 +37,8 @@ INTERVAL_LIMITS = (1, 1440)
 # 结算快照只装"算得出的结论"：缺数据的键不落盘，也不拿 0 顶替（与 budget() 同一约定）。
 ESTIMATE_KEYS = ("burn_rate", "hours_awake", "plan_gpu_hours", "plan_cost", "covers_plan")
 ERROR_LIMIT = 200
+BRIEF_LIMIT = 3
+BRIEF_TEXT_LIMIT = 120
 KEEP = object()  # 区分"没传这个参数"与"显式清空"
 # 磁盘容量一律以 GB 存进字段名，避免"这个数字是字节还是 G"的歧义（同 duration_minutes 的做法）。
 DISK_FIELDS = ("system_used_gb", "system_total_gb", "data_used_gb", "data_total_gb",
@@ -701,7 +703,7 @@ def demo_plan(now=None):
     return plan
 
 
-def check_structure(plan, now=None):
+def check_structure(plan, now=None, *, amounts=True):
     """Structural check for flow continuity, dependency links, and resource/duration readiness.
 
     issues 是需要修正的结构缺陷（ok 为假），warnings 只是观察到的现象，不影响 ok。
@@ -744,8 +746,10 @@ def check_structure(plan, now=None):
             warnings.append("未登记时价（" + ", ".join(f"instance set {key} --price 单价" for key in missing) +
                             "），无法把余额换算成可用时长")
         if view.get("covers_plan") is False:
-            warnings.append(f"余额 ¥{view['assets']:.2f} 不足以覆盖剩余计划（预估 ¥{view['plan_cost']:.2f}），"
-                            "请充值或缩减计划")
+            detail = "实时预算提醒：余额不足以覆盖剩余计划"
+            if amounts:
+                detail = f"余额 ¥{view['assets']:.2f} 不足以覆盖剩余计划（预估 ¥{view['plan_cost']:.2f}）"
+            warnings.append(detail + "，请充值或缩减计划")
     # 自动结算相关提醒：只报"正在计费却没人算账"和"算了但失败了"这两种要处置的情况。
     if plan["monitor"].get("last_error"):
         warnings.append("自动结算失败：" + plan["monitor"]["last_error"]
@@ -1262,6 +1266,163 @@ def age_text(moment, now=None):
     return f"{seconds // 86400} 天前"
 
 
+def brief_text(value, limit=BRIEF_TEXT_LIMIT):
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def brief_group(label, entries):
+    if not entries:
+        return []
+    lines = [f"{label}（共 {len(entries)} 条）:"]
+    lines.extend("  " + brief_text(entry) for entry in entries[:BRIEF_LIMIT])
+    if len(entries) > BRIEF_LIMIT:
+        lines.append(f"  …省略 {len(entries) - BRIEF_LIMIT} 条")
+    return lines
+
+
+def brief_finance(wallet, view, now=None):
+    parts = []
+    if wallet["assets"] is not None:
+        parts.append(f"余额 ¥{wallet['assets']:.2f}")
+    else:
+        parts.append("余额未登记，无法判断现金覆盖情况")
+    if wallet.get("observed_at"):
+        parts.append("观测于 " + age_text(wallet["observed_at"], now))
+    if wallet.get("voucher"):
+        parts.append(f"代金券 ¥{wallet['voucher']:.2f}（不计入可用时长）")
+    lines = ["钱包: " + " | ".join(parts)]
+    values = view["values"]
+    if values.get("hours_awake") is not None:
+        lines.append(f"可用时长（同结算口径）: {values['hours_awake']:g} 小时")
+    lines.append("结算: " + brief_text(view["text"], 240))
+    if view["live"]:
+        lines.append("实时结论: " + settlement_summary(values))
+    if view["changed"]:
+        lines.append("当前展示为变更前的结算；请 monitor --once 重算后决策")
+    if view["error"]:
+        lines.append("结算错误: " + brief_text(view["error"], ERROR_LIMIT))
+    return lines
+
+
+def brief_plan(plan, now=None):
+    now = now or utcnow()
+    view = snapshot(plan, now)
+    # 诊断保留实时风险，但不再展开另一套金额，避免与仍有效的旧结算混淆。
+    report = check_structure(plan, now, amounts=False)
+    tasks = sorted(view["tasks"], key=lambda task: natural_id(task["id"]))
+    instances = {item["id"]: item for item in view["instances"]}
+    counts = {status: 0 for status in STATUSES}
+    for task in tasks:
+        counts[task["status"]] += 1
+    lines = [f"{brief_text(view['name'])} · rev {view['revision']}",
+             "任务: " + " | ".join(f"{status} {counts[status]}" for status in STATUSES)]
+    lines.extend(brief_finance(plan["wallet"], view["settlement"], now))
+
+    def task_line(task):
+        eta = task["estimate"]
+        resource = task["instance"]
+        if resource in instances:
+            resource += f"[{instances[resource]['status']}]"
+        progress = f" {task['progress']:g}%" if task["progress"] is not None else ""
+        marks = [label for key, label in (("overdue", "已超期"), ("stale", "未巡检")) if eta[key]]
+        if task["not_before"] and date(task["not_before"]) > now:
+            marks.append("最早开始 " + task["not_before"])
+        detail = " · ".join([eta["reason"], *marks]).strip(" ·")
+        return (f"{task['id']} [{task['status']}{progress}] {resource or '未分配'} "
+                f"完成 {eta['finish'] or '待估'} | {detail} | {task['name']}")
+
+    running = [task for task in tasks if task["status"] == "running"]
+    attention = [task for task in tasks if task["status"] in ("failed", "blocked")
+                 or (task["status"] not in TERMINAL and (
+                     task["estimate"]["overdue"] or task["estimate"]["stale"]
+                     or task["estimate"]["finish"] is None
+                     or (task["not_before"] and date(task["not_before"]) > now)))]
+    lines.extend(brief_group("运行中", [task_line(task) for task in running]))
+    lines.extend(brief_group("待处置/待估", [task_line(task) for task in attention]))
+    ready = sorted((task for task in tasks if task["estimate"]["ready"]),
+                   key=lambda task: (task["estimate"]["start"], natural_id(task["id"])))
+    candidates, seen = [], set()
+    for task in ready:
+        resource = task["instance"]
+        if resource != "local" and resource in seen:
+            continue
+        seen.add(resource)
+        candidates.append(task_line(task))
+    lines.append(f"依赖就绪 {len(ready)} 个任务（GPU 每实例列一个候选，仍需核实远端）")
+    lines.extend(brief_group("候选", candidates))
+    if not ready and any(task["status"] not in TERMINAL for task in tasks):
+        lines.append("当前无依赖就绪候选，等待运行任务、依赖或开始时间条件；详情用 show")
+    lines.extend(brief_group("实例", [instance_line(item) for item in sorted(
+        view["instances"], key=lambda item: natural_id(item["id"]))]))
+    lines.extend(brief_group("结构问题", report["issues"]))
+    lines.extend(brief_group("提醒", report["warnings"]))
+    remaining_resources = {task["instance"] for task in tasks if task["status"] not in TERMINAL}
+    missing = [f"{item['id']}: 未登记时价，对应费用/可用时长待估" for item in view["instances"]
+               if item["price"] is None and (item["status"] in AWAKE or item["id"] in remaining_resources)]
+    lines.extend(brief_group("缺失信息", missing))
+    hidden = counts["done"] + counts["cancelled"]
+    if hidden:
+        lines.append(f"已省略 {hidden} 个已完成/取消任务的历史明细（取消不满足下游依赖）")
+    lines.append("完整计划用 show；完整问题与提醒用 check；机器快照用 show --json")
+    return "\n".join(lines)
+
+
+def brief_receipt(args, result):
+    operation = args.operation_name
+    saved = result.get("saved", True)
+    lines = [f"已保存 · rev {result['revision']}" if saved else "仅预览，未保存"]
+    if operation == "monitor":
+        lines.extend(brief_finance(result["wallet"], result["settlement"]))
+        lines.append("仅余额结算，不代表远端训练已巡检")
+    elif operation == "wallet":
+        wallet = result.get("wallet", result.get("item"))
+        for key, label in (("assets", "余额"), ("voucher", "代金券（不计入可用时长）")):
+            lines.append(f"{label}: ¥{wallet[key]:.2f}" if wallet.get(key) is not None else f"{label}: 未登记")
+        if wallet.get("observed_at"):
+            lines.append("余额观测于 " + age_text(wallet["observed_at"]))
+    elif operation in ("init", "batch"):
+        item = result if operation == "init" else result["item"]
+        for key, label in (("instances", "实例"), ("flows", "流程"), ("tasks", "任务"), ("updated", "更新")):
+            lines.extend(brief_group(label, item.get(key, [])))
+    else:
+        item = result["item"]
+        fields = []
+        for key, label in (("status", "状态"), ("progress", "进度"), ("instance", "实例"),
+                           ("duration_minutes", "耗时"), ("deps", "依赖"), ("not_before", "开始限制"),
+                           ("name", "名称"), ("note", "备注"), ("price", "时价"), ("disk", "磁盘")):
+            if hasattr(args, key) and (getattr(args, key) is not None or key in (
+                    "instance", "duration_minutes", "deps", "not_before", "price", "disk")):
+                value = item[key]
+                if value is None:
+                    value = "待估" if key == "duration_minutes" else "未登记"
+                if key == "progress":
+                    value = f"{value:g}%" if value is not None else "待估"
+                elif key == "disk":
+                    value = disk_text(value) or "未登记"
+                fields.append(f"{label} {brief_text(value, 60)}")
+        if getattr(args, "checked", False):
+            fields.append("已记录真实巡检")
+        lines.append(f"{item['id']}: " + " | ".join(fields or [brief_text(item.get("name", "已更新"))]))
+    if "check" in result:
+        report = result["check"]
+        lines.append(f"结构检查: {len(report['issues'])} 个问题，{len(report['warnings'])} 个提醒（已保存）")
+        lines.extend(brief_group("结构问题", report["issues"]))
+        lines.extend(brief_group("提醒", report["warnings"]))
+    if operation in ("init", "batch") or "check" in result:
+        lines.append("完整计划用 show；完整问题与提醒用 check")
+    return "\n".join(lines)
+
+
+def structural_edit(args):
+    if args.operation_name == "batch":
+        return bool(args.instance or args.flow or args.task)
+    if getattr(args, "action", None) == "add":
+        return True
+    return args.operation_name in ("set", "task") and any(
+        hasattr(args, key) for key in ("instance", "duration_minutes", "deps", "not_before"))
+
+
 def compact(data):
     if isinstance(data, dict):
         return {k: compact(v) for k, v in data.items() if v not in ("", None, [])}
@@ -1303,7 +1464,9 @@ def parser():
     check = commands.add_parser("check", help="执行结构性检查（流程连续性、依赖链、实例与耗时完整性）")
     check.add_argument("--strict", action="store_true", help="存在结构问题时以退出码 1 结束，便于脚本判断")
     show = commands.add_parser("show", help="读取最新计划和时间估算")
-    show.add_argument("--json", action="store_true")
+    show_output = show.add_mutually_exclusive_group()
+    show_output.add_argument("--json", action="store_true")
+    show_output.add_argument("--brief", action="store_true", help="只看当前行动摘要，分组限量并注明省略数")
     serve = commands.add_parser("serve", help="仅本机只读页面，Ctrl+C 停止")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--interval", type=interval_arg, default=None,
@@ -1362,6 +1525,9 @@ def parser():
     wallet_set = wallet_actions.add_parser("set", help="无 token / 断网时人工登记余额")
     wallet_set.add_argument("--assets", type=money_arg, default=argparse.SUPPRESS, help="余额（元）；none 清空")
     wallet_set.add_argument("--voucher", type=money_arg, default=argparse.SUPPRESS, help="代金券（元）；单独展示不计入可用时长")
+    for target in (init, batch, instance_add, instance_set, flow_add, flow_set, task_add,
+                   task_set, quick_set, wallet_fetch_parser, wallet_set, monitor):
+        target.add_argument("--brief", action="store_true", help="输出紧凑文本回执，不改变保存及退出码语义")
     return root
 
 
@@ -1394,11 +1560,15 @@ def dispatch(args, store):
     if args.operation_name == "init":
         plan = new_plan(args.name)
         apply_batch_specs(plan, args.instance, args.flow, args.task)
+        report = check_structure(plan) if args.brief else None
         created = store.create(plan)
-        return {"revision": created["revision"], "name": created["name"],
-                "instances": [i["id"] for i in created["instances"]],
-                "flows": [f["id"] for f in created["flows"]],
-                "tasks": [t["id"] for t in created["tasks"]]}
+        result = {"revision": created["revision"], "name": created["name"],
+                  "instances": [i["id"] for i in created["instances"]],
+                  "flows": [f["id"] for f in created["flows"]],
+                  "tasks": [t["id"] for t in created["tasks"]]}
+        if report is not None:
+            result["check"] = report
+        return result
     if args.operation_name == "demo":
         created = store.create(demo_plan(), force=args.force)
         return {"revision": created["revision"], "name": created["name"],
@@ -1417,7 +1587,11 @@ def dispatch(args, store):
         changes = {key: getattr(args, key) for key in ("assets", "voucher") if hasattr(args, key)}
         return store.change(lambda plan: set_wallet(plan, changes))
     if args.operation_name == "show":
-        view = snapshot(store.read())
+        plan = store.read()
+        if args.brief:
+            print(brief_plan(plan))
+            return None
+        view = snapshot(plan)
         if args.json:
             return view
         print(f"{view['name']} · rev {view['revision']} · {view['updated_at']}")
@@ -1506,19 +1680,36 @@ def dispatch(args, store):
             set_task(plan, args.id, {"status": "running", "checked_at": changes.get("checked_at")})
         return set_task(plan, args.id, changes)
 
-    return store.change(operation)
+    report = None
+
+    def checked_operation(plan):
+        nonlocal report
+        item = operation(plan)
+        if getattr(args, "brief", False) and structural_edit(args):
+            report = check_structure(plan)
+        return item
+
+    result = store.change(checked_operation)
+    if report is not None:
+        result["check"] = report
+    return result
 
 
 def main(argv=None):
     raw = sys.argv[1:] if argv is None else argv
-    args = parser().parse_args(raw)
+    cli = parser()
+    args = cli.parse_args(raw)
+    if args.operation_name == "monitor" and args.brief and not args.once:
+        cli.error("monitor --brief 仅用于 --once；循环模式已有单行结算日志")
     try:
         result = dispatch(args, Store(args.project))
     except (PlanError, OSError, OverflowError) as exc:
         print(f"TrainOps: {exc}", file=sys.stderr)
         return 1
     if result is not None:
-        if args.operation_name == "show" and args.json:
+        if getattr(args, "brief", False):
+            print(brief_receipt(args, result))
+        elif args.operation_name == "show" and args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         else:
             print(json.dumps(compact(result), ensure_ascii=False, allow_nan=False))
