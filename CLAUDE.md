@@ -66,6 +66,13 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 
 `SKILL.md` 是热插拔入口（外部 agent 读的那份）、`references/protocol.md` 是异常与恢复的按需参考、`README.md` 面向用户。CLI 行为变了，这几处要同步。
 
+外部 agent 反复踩过的两条默认路线，改入口时别丢（`test_plugin.SkillTests.test_entry_keeps_task_startup_order` 盯着）：
+
+- **收到任务就要起面板**：`serve --port 8765 --interval 30`（一个进程顺带结算），别再叠 `monitor`。
+- **无卡准备是默认**：先 `power_on_no_gpu` 准备再申请有卡，只有用户明确要求持续请求或已核实无需准备才直接 `power_on`。
+
+`SKILL.md` 有 1800 字符硬预算（`test_trainops` 的入口用例），新约束要挤进这个预算，别靠加长入口来写第二份细则。
+
 ### 插件包（多 agent 适配）
 
 一份技能、多份清单，各清单**只声明打包方式**：
