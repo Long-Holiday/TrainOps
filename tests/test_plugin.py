@@ -113,6 +113,16 @@ class SkillTests(unittest.TestCase):
         self.assertIn("serve --port 8765 --interval 30", body, "入口必须给出面板启动命令")
         self.assertIn("power_on_no_gpu", body, "入口必须把无卡准备写成默认路线")
 
+    def test_entry_requires_panel_as_resident_background_task(self):
+        """面板要以后台任务常驻，不能靠 shell 的 `&`。
+
+        早先入口只写「放后台」，对 harness 等于没写：调用方照样用 `&` 起，父 shell 一收尾
+        面板就被带走，结算跟着停，用户页面失联。两句都钉住，删任一句都算回归。
+        """
+        body = SKILL.read_text(encoding="utf-8")
+        self.assertIn("后台常驻任务", body, "入口必须要求面板以后台常驻任务起")
+        self.assertIn("别用 `&` 或前台", body, "入口必须排除 shell 的 `&` 与前台两种起法")
+
     def test_frontmatter_matches_directory_and_limits(self):
         meta = frontmatter(SKILL)
         self.assertEqual(meta["name"], SKILL_DIR.name, "技能名必须与目录名一致，否则客户端找不到")

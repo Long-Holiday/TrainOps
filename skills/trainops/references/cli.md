@@ -57,5 +57,6 @@ $CLI instance set I01 --status on --mode no-gpu --observed --brief
 - 纯状态/进度/巡检/备注/改名、实例观测/开机模式/磁盘、钱包及结算不自动做全计划结构检查；需要全局诊断时用 show --brief 或 check。
 - 时价不在 CLI：`instance set I01 --mode no-gpu` 只登记"这台现在无卡"，费率由用户在面板（`serve`）的实例卡上登记——无卡登记无卡费率、有卡登记 GPU 时价，两者互不覆盖。缺费率时少给结论，不补 0。
 - Token 同样不在 CLI（没有 `--token`，也不读环境变量或文件）：用户在面板表头登记，只存在面板进程内存里，口径见 [配置](autodl.md#余额与定时结算)。余额只能由面板进程结算，或人工用 `wallet set` 登记。
+- `serve` 本身是前台进程：常驻由起它的调用方以后台任务负责（别用 shell 的 `&`，父 shell 一退进程就没了），面板不自己后台化、不写 PID、不碰 systemd。口径与生命周期见 [面板](autodl.md#面板)。
 - `check` 把必须修复的 issues 与提醒 warnings 分组；默认退出 0。`check --strict` 仅在 issues 非空时退出 1，warnings 不影响 ok。brief 编辑发现问题仍是“已保存”，不撤销编辑、不改变成功退出码。硬校验拒绝的编辑不落盘。
 - `--version` 查询 schema；版本不符时先备份并核对文件，开发阶段不自动迁移。
