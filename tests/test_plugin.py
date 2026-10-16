@@ -123,6 +123,16 @@ class SkillTests(unittest.TestCase):
         self.assertIn("后台常驻任务", body, "入口必须要求面板以后台常驻任务起")
         self.assertIn("别用 `&` 或前台", body, "入口必须排除 shell 的 `&` 与前台两种起法")
 
+    def test_entry_pins_failure_escalation(self):
+        """故障口径：自愈有上限，第 5 次后先关机止付。
+
+        用户给的是一条预授权：先报现象 → 自愈最多 5 次 → 仍无法继续就先关机止付。
+        缺上限会变成无限重试（实例一直计费），缺关机就是没有出口，两句都钉住。
+        """
+        body = SKILL.read_text(encoding="utf-8")
+        self.assertIn("最多 5 次", body, "入口必须写死自愈次数上限")
+        self.assertIn("关机止付", body, "入口必须写明第 5 次仍无法继续就先关机")
+
     def test_frontmatter_matches_directory_and_limits(self):
         meta = frontmatter(SKILL)
         self.assertEqual(meta["name"], SKILL_DIR.name, "技能名必须与目录名一致，否则客户端找不到")

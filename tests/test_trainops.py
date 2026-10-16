@@ -1206,7 +1206,7 @@ class BriefTests(unittest.TestCase):
     def test_entry_budget_safety_and_reference_links(self):
         entry = ROOT / "skills/trainops/SKILL.md"
         text = entry.read_text()
-        self.assertLessEqual(len(text), 1800, "仅限制常驻入口，不限制按需参考")
+        self.assertLessEqual(len(text), 2000, "仅限制常驻入口，不限制按需参考")
         for rule in ("禁止直接 Edit/Write JSON", "用户授权", "释放前先转存", "Token", "--checked", "--brief",
                      "自主优化调度", "验收标准", "硬约束", "未授权费用"):
             self.assertIn(rule, text)
