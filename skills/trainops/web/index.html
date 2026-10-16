@@ -101,10 +101,13 @@ button:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
 .instance-title { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:15px; font-weight:600; }
 .instance p { margin-top:7px; font-size:12.5px; }
 .instance-actions { display:flex; align-items:center; gap:9px; flex-shrink:0; }
-/* 时价按钮是面板唯一的写入口，所以做得低调；没登记时改虚线警示色，提醒"缺了它余额换算不出时长" */
+/* 时价按钮与 Token 按钮是面板仅有的两处写入口，都做得低调；没登记时改虚线警示色——
+   缺了它们余额换算不出时长、也算不出还能跑多远。 */
 button.price { padding:4px 10px; border-radius:var(--r-mark); font-family:var(--mono); font-size:12.5px; font-weight:600; font-variant-numeric:tabular-nums; }
 button.price.unset { border-color:var(--blocked); border-style:dashed; color:var(--blocked); background:var(--blocked-tint); }
 button.price.unset:hover { border-style:solid; }
+button.token.unset { border-color:var(--blocked); border-style:dashed; color:var(--blocked); background:var(--blocked-tint); }
+button.token.unset:hover { border-style:solid; }
 /* 时价弹窗：常驻在 #modal（不在重绘范围内），所以 10 秒轮询不会冲掉正在输入的数字。
    关闭状态必须用 #modal.hidden 压过下面这条 #modal 的 display:flex——id 选择器赢过 .hidden，
    否则空弹窗会以 fixed 全屏盖在页面上，把整页的点击都吃掉。 */
@@ -219,13 +222,13 @@ button.price.unset:hover { border-style:solid; }
     <h1 id="title">项目计划</h1>
     <p class="meta" id="updated">正在读取…</p>
   </div>
-  <div class="controls"><button id="refresh" type="button">刷新</button><button id="theme" type="button">深色模式</button></div>
+  <div class="controls"><button id="token" type="button">Token</button><button id="refresh" type="button">刷新</button><button id="theme" type="button">深色模式</button></div>
 </header>
 <div class="notice hidden" id="error" role="alert"></div>
 <div id="summary" aria-live="polite"></div>
 <div class="instances" id="instances"></div>
 <div id="flows"></div>
-<p class="page-foot">数据源 <code>.trainops/plan.json</code> · 仅时价可在面板登记，其余修改请通过 agent / CLI</p>
+<p class="page-foot">数据源 <code>.trainops/plan.json</code> · 时价与 Token 可在面板登记（Token 只存本进程内存），其余修改请通过 agent / CLI</p>
 <div id="modal" class="hidden"></div>
 </main>
 <script>
@@ -281,7 +284,7 @@ function ageOf(value) {
   if (seconds < 36 * 3600) return Math.round(seconds / 3600) + ' 小时前';
   return Math.round(seconds / 86400) + ' 天前';
 }
-/* 面板唯一的写操作：登记时价。无卡开机（含持续请求等待 GPU）没有 GPU 在计费，登记的是另一档
+/* 登记时价（面板的写入口之一）。无卡开机（含持续请求等待 GPU）没有 GPU 在计费，登记的是另一档
    无卡费率；GPU 模式开机后才登记 GPU 时价。开机模式由 agent 核实后经 CLI 写进计划，面板只读不写。 */
 function priceButton(item) {
   const noGpu = item.mode === 'no-gpu';
@@ -300,7 +303,7 @@ function priceButton(item) {
   return button;
 }
 /* 弹窗常驻在 #modal（不在 render() 重绘的范围内），所以 10 秒轮询不会冲掉正在输入的数字。 */
-function closePrice() {
+function closeDialog() {
   $('modal').replaceChildren();
   $('modal').classList.add('hidden');
 }
@@ -308,7 +311,7 @@ function openPrice(item) {
   const noGpu = item.mode === 'no-gpu';
   const current = noGpu ? item.no_gpu_price : item.price;
   const backdrop = el('div',null,'modal-backdrop');
-  backdrop.addEventListener('click',closePrice);
+  backdrop.addEventListener('click',closeDialog);
   const dialog = el('div',null,'dialog');
   dialog.setAttribute('role','dialog');
   dialog.setAttribute('aria-modal','true');
@@ -350,7 +353,7 @@ function openPrice(item) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '登记失败');
       plan = data;                       // 服务端回的就是新快照，不必等下一轮轮询
-      closePrice();
+      closeDialog();
       $('error').classList.add('hidden');
       render();
     } catch (failure) {
@@ -367,10 +370,91 @@ function openPrice(item) {
   };
   save.addEventListener('click',commit);
   clear.addEventListener('click',() => submit(null));
-  cancel.addEventListener('click',closePrice);
+  cancel.addEventListener('click',closeDialog);
   input.addEventListener('keydown',event => {
     if (event.key === 'Enter') commit();
-    else if (event.key === 'Escape') closePrice();
+    else if (event.key === 'Escape') closeDialog();
+  });
+  $('modal').replaceChildren(backdrop,dialog);
+  $('modal').classList.remove('hidden');
+  input.focus();
+}
+/* Token 是面板的另一处写入口，也是唯一与计划无关的写：值只进服务端内存，客户端不留副本
+   （不落 localStorage、不预填、提交成功就清空输入），面板进程一退就没了。
+   状态由服务端给：只有"配没配、什么时候配的"，值本身不经过任何响应。 */
+function credentials() {
+  return (plan && plan.credentials) || {configured:false,set_at:null};
+}
+function renderTokenButton() {
+  const view = credentials();
+  const button = $('token');
+  button.className = 'token' + (view.configured ? '' : ' unset');
+  button.title = view.configured
+    ? 'Token 已登记' + (view.set_at ? '（' + when(view.set_at) + '）' : '')
+      + '，只在这个面板进程的内存里；点击可更换或清除'
+    : '未登记 Token：面板不刷新余额，也算不出还能跑多久；点击粘贴控制台 → 设置 → 开发者Token';
+}
+function openToken() {
+  const view = credentials();
+  const backdrop = el('div',null,'modal-backdrop');
+  backdrop.addEventListener('click',closeDialog);
+  const dialog = el('div',null,'dialog');
+  dialog.setAttribute('role','dialog');
+  dialog.setAttribute('aria-modal','true');
+  dialog.append(el('h2','登记开发者 Token','dialog-title'));
+  const input = el('input',null,'dialog-input');
+  input.type = 'password';                 // 不在屏幕上回显，也不预填：面板不留副本
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.value = '';
+  input.setAttribute('aria-label','AutoDL 开发者 Token');
+  const row = el('div',null,'dialog-row');
+  row.append(input,el('span',view.configured ? '已登记，可覆盖' : '未登记','muted'));
+  const note = el('p',null,'dialog-error hidden');
+  const actions = el('div',null,'dialog-actions');
+  const clear = el('button','清除 Token');
+  const cancel = el('button','取消');
+  const save = el('button','保存','primary');
+  for (const button of [clear,cancel,save]) button.type = 'button';
+  actions.append(clear,cancel,save);
+  dialog.append(
+    row,
+    el('p','Token 只存在这个面板进程的内存里：重启面板要重新填写。接口只用它做只读余额查询，'
+      + '不写进计划、日志或任何文件。获取路径：AutoDL 控制台 → 设置 → 开发者Token。','dialog-hint'),
+    note,actions
+  );
+  const fail = message => { note.className = 'dialog-error'; note.textContent = message; };
+  const advise = message => { note.className = 'dialog-hint'; note.textContent = message; };
+  const submit = async value => {
+    save.disabled = clear.disabled = true;
+    note.className = 'dialog-error hidden';
+    try {
+      const response = await fetch('/api/token',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({token:value})});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '登记失败');
+      input.value = '';                    // 成功即丢：值只在这次请求里出现过
+      plan = data;                         // 服务端回的是登记后重算的新快照
+      closeDialog();
+      $('error').classList.add('hidden');
+      render();
+    } catch (failure) {
+      fail('登记失败：' + failure.message);
+    } finally { save.disabled = clear.disabled = false; }
+  };
+  /* 没填就只提示，不报错：不登记 Token 的结果是"少给结论"，不是错误。 */
+  const commit = () => {
+    const raw = input.value.trim();
+    if (!raw) return advise('还没填 Token：不登记就不刷新余额，也算不出还能跑多久。'
+      + '要撤销已登记的凭据请点「清除 Token」。');
+    submit(raw);
+  };
+  save.addEventListener('click',commit);
+  clear.addEventListener('click',() => submit(null));
+  cancel.addEventListener('click',closeDialog);
+  input.addEventListener('keydown',event => {
+    if (event.key === 'Enter') commit();
+    else if (event.key === 'Escape') closeDialog();
   });
   $('modal').replaceChildren(backdrop,dialog);
   $('modal').classList.remove('hidden');
@@ -386,7 +470,7 @@ function budgetNodes(budget) {
   const age = budget.observed_at ? ageOf(budget.observed_at) : '';
   if (age) {
     amount.append(el('span','观测于 ' + age));
-    amount.title = '余额观测于 ' + when(budget.observed_at) + '，不是实时数字；用 wallet fetch 更新';
+    amount.title = '余额观测于 ' + when(budget.observed_at) + '，不是实时数字；面板登记 Token 后会按周期刷新';
   }
   nodes.push(amount);
   if (budget.voucher) {
@@ -416,7 +500,7 @@ function budgetNodes(budget) {
 function settlementNode(settlement) {
   if (!settlement || !settlement.text) return null;
   const node = el('span',settlement.text,'chip settled' + (settlement.over ? ' settled-over' : ''));
-  if (settlement.computed_at) node.title = '自动结算于 ' + when(settlement.computed_at) + '；由 trainops monitor 定时重算';
+  if (settlement.computed_at) node.title = '自动结算于 ' + when(settlement.computed_at) + '；由面板进程按周期重算';
   return node;
 }
 function taskProgress(task) {
@@ -461,6 +545,7 @@ function render() {
   $('title').textContent = plan.name;
   document.title = 'TrainOps · ' + plan.name;
   $('updated').textContent = '更新 ' + when(plan.updated_at) + ' · rev ' + plan.revision;
+  renderTokenButton();
   const instanceNodes = plan.instances.map(item => {
     const node = el('article',null,'instance ' + item.status);
     const heading = el('div',null,'instance-title');
@@ -617,6 +702,7 @@ try { initial = localStorage.getItem('trainops-theme') || initial; } catch {}
 theme(initial === 'dark' ? 'dark' : 'light');
 $('theme').addEventListener('click',() => theme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $('refresh').addEventListener('click',refresh);
+$('token').addEventListener('click',openToken);
 /* 页面在后台时不做无谓轮询；回到前台后最多 10 秒内自动刷新一次。 */
 refresh(); setInterval(() => { if (!document.hidden) refresh(); },10000);
 </script>

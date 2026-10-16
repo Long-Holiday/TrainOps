@@ -35,8 +35,8 @@ SSH 用 df -h 检查三盘，必要时只查看相关目录占用，登记方法
 
 ## 结算恢复
 
-- Token 配置与只读接口口径见 [配置](autodl.md#余额与定时结算)。没有 Token 不算 monitor 故障：仍用已有余额结算并标明未配置；明确联网的 wallet fetch 才报错。
-- 网络/API 失败：last_error 保存单行原因，保留上一份结论，不打断循环；check/show --brief 报提醒。monitor --once --strict 返回非零用于告警。修复后 monitor --once --brief 立即重算。
-- 人工顶替用 wallet set --assets/--voucher，汇报注明人工登记；无参数会被拒绝。不要用 wallet fetch 代替重算，它只更新余额。
+- Token 只从面板登记、只存在面板进程内存里，口径见 [配置](autodl.md#余额与定时结算)。没有 Token 不算故障：仍用已有余额结算并标明未配置。
+- 网络/API 失败：last_error 保存单行原因，保留上一份结论，不打断循环；check/show --brief 报提醒，面板进程下一轮自己重试。凭据填错或过期时，请在面板上重新登记（面板重启后也要重填）。
+- 结算面板不开就不跑：需要刷新余额时确认面板进程在跑（`serve --interval`）。人工顶替用 wallet set --assets/--voucher，汇报注明人工登记；无参数会被拒绝。
 - 新鲜结算若标记“结算后计划有变更”，不能当作新计划费用；超过 2 周期会退回实时值。缺字段是数据不足，不是零花费或余额足够。
 - schema 版本不符或文件损坏时先备份并核对文件，禁止直接编辑 JSON“修复”；开发阶段没有自动迁移。不要用 demo --force 覆盖真实计划。

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Local training plan ledger. The only outbound call is the read-only AutoDL wallet lookup
-used by `wallet fetch` and by the scheduled `monitor` settlement; no instance commands,
-no model API."""
+"""Local training plan ledger. The only outbound call is the read-only AutoDL wallet lookup,
+using the developer token a human registers in the local panel (kept in panel memory only);
+no instance commands, no model API."""
 
 import argparse
 from contextlib import contextmanager
@@ -45,7 +45,6 @@ ESTIMATE_KEYS = ("burn_rate", "hours_awake", "plan_gpu_hours", "plan_cost", "cov
 ERROR_LIMIT = 200
 BRIEF_LIMIT = 3
 BRIEF_TEXT_LIMIT = 120
-KEEP = object()  # 区分"没传这个参数"与"显式清空"
 # 磁盘容量一律以 GB 存进字段名，避免"这个数字是字节还是 G"的歧义（同 duration_minutes 的做法）。
 DISK_FIELDS = ("system_used_gb", "system_total_gb", "data_used_gb", "data_total_gb",
                "fs_used_gb", "fs_total_gb")
@@ -55,9 +54,12 @@ DISK_PREFIXES = {prefix: (field, label) for prefix, field, label in DISK_MOUNTS}
 DISK_SHORT = {"系统盘": "系统", "数据盘": "数据", "文件存储": "存储"}
 FULL_RATIO = 0.9
 API_BALANCE_PATH = "/api/v1/dev/wallet/balance"
-# 面板唯一可写的端点：登记时价。其余路径全是只读，写动词一律 405。
+# 面板可写的两个端点：登记时价（写计划）与登记 Token（只存进程内存）。其余路径全是只读，写动词一律 405。
 PRICE_PATH = "/api/instance-price"
+TOKEN_PATH = "/api/token"
 BODY_LIMIT = 4096
+# Token 是控制台发的开发者凭据，长度远超实际需要；上限只为挡住往内存里塞垃圾。
+TOKEN_LIMIT = 512
 TERMINAL = ("done", "failed", "cancelled")
 TRANSITIONS = {
     "pending": {"running", "blocked", "cancelled"},
@@ -686,7 +688,7 @@ def settlement(plan, now=None):
         else:
             view["text"] = f"自动结算已过期（{view['age']}，超过 2 个周期）· 当前为实时值"
     else:
-        view["text"] = "尚未自动结算 · 运行 trainops monitor 开启定时结算"
+        view["text"] = "尚未自动结算 · 开面板（serve --interval）并在面板上登记 Token 后自动结算"
     if view["live"]:
         view["values"] = estimate_view(plan, now)
     if view["error"]:
@@ -738,7 +740,7 @@ def demo_plan(now=None):
     add_task(plan, "F03", "比较指标并整理报告", "local", 20, ["F01-T03", "F02-T02"])
     add_task(plan, "F03", "根据结果设计下一轮", "local", None, ["F03-T01"])
     # 演示里也放一份自动结算记录（生成演示的这一刻算出来的），面板因此能直接看到结算徽标。
-    # token_ready 与余额一样是编造的演示值：fresh clone 里没有 .env，不该在演示面板上催配置。
+    # token_ready 与余额一样是编造的演示值：演示面板不该催人登记真凭据。
     plan["revision"] = 1
     plan["monitor"].update(last_run=stamp(now), last_ok=stamp(now), token_ready=True)
     plan["monitor"]["estimate"] = {"computed_at": stamp(now), "revision": 1,
@@ -796,10 +798,10 @@ def check_structure(plan, now=None, *, amounts=True):
     # 自动结算相关提醒：只报"正在计费却没人算账"和"算了但失败了"这两种要处置的情况。
     if plan["monitor"].get("last_error"):
         warnings.append("自动结算失败：" + plan["monitor"]["last_error"]
-                        + "；处理后运行 monitor --once 立即重算")
+                        + "；面板进程会按周期重试，Token 填错或过期就在面板上重新登记")
     if any(item["status"] in AWAKE for item in plan["instances"]) and settlement(plan, now)["live"]:
-        warnings.append("有实例开机计费，但自动结算未在运行；用 trainops monitor（或 serve --interval）"
-                        "定时重算余额与剩余计划的 GPU 小时")
+        warnings.append("有实例开机计费，但自动结算未在运行；开着面板（serve --interval）"
+                        "才会定时重算余额与剩余计划的 GPU 小时")
     return {"ok": not issues, "flows": len(plan["flows"]), "tasks": len(plan["tasks"]),
             "issues": issues, "warnings": warnings}
 
@@ -867,61 +869,50 @@ def balance_amounts(payload):
     return amounts
 
 
-def env_path():
-    """Token 从仓库根目录的 .env 读；TRAINOPS_ENV 可指向别处（测试或另一套凭据）。"""
-    override = os.environ.get("TRAINOPS_ENV", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return Path(__file__).resolve().parents[3] / ".env"
+class Credential:
+    """面板登记的开发者 Token：只活在面板进程的内存里，进程一退就没了，重开面板要重填。
 
-
-def load_env(path):
-    """只认 KEY=VALUE 与整行 # 注释，只取 AUTODL_TOKEN 一个键；文件不存在不算错误。
-
-    值里的 # 可能是 token 的一部分，因此不做行内注释剥离；只剥成对的引号。
+    面板是唯一入口，也就不存在"凭据文件该放哪"的问题：仓库被当插件安装后，跟着仓库走的
+    任何文件都落在插件副本里（Antigravity 会把插件根整个复制到 ~/.gemini/config/plugins/，
+    重新安装就换掉那一份），凭据写进去等于跟着副本走。不落盘还顺带保证 Token 不进取数计划、
+    不进日志、不进备份。
+    读写都上锁：HTTP 线程登记，结算线程取用。
     """
-    try:
-        content = path.read_text(encoding="utf-8-sig")
-    except FileNotFoundError:
-        return {}
-    except (OSError, UnicodeDecodeError) as exc:
-        raise PlanError(f"无法读取 {path}: {exc}") from None
-    values = {}
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].lstrip()
-        key, sep, value = line.partition("=")
-        if not sep:
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key.strip()] = value
-    return values
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._token = None
+        self._set_at = None
+
+    def get(self):
+        with self._lock:
+            return self._token
+
+    def set(self, token):
+        """登记或清除（None）；返回登记时间，未登记时为 None。"""
+        with self._lock:
+            self._token = token or None
+            self._set_at = stamp() if self._token else None
+            return self._set_at
+
+    def status(self):
+        """只报告"配没配、什么时候配的"：值本身不出现在任何响应、输出或异常里。"""
+        with self._lock:
+            return {"configured": self._token is not None, "set_at": self._set_at}
 
 
-def resolve_token(explicit=None):
-    """--token > 环境变量 AUTODL_TOKEN > 仓库根 .env；只在内存中使用，绝不回显。"""
-    if explicit and explicit.strip():
-        return explicit.strip()
-    token = os.environ.get("AUTODL_TOKEN", "").strip()
-    if token:
-        return token
-    path = env_path()
-    token = (load_env(path).get("AUTODL_TOKEN") or "").strip()
-    if token:
-        try:
-            if path.stat().st_mode & 0o077:
-                print(f"TrainOps: 提醒 {path} 权限过松，建议 chmod 600", file=sys.stderr)
-        except OSError:
-            pass
-        return token
-    raise PlanError(f"未配置开发者 Token：请设置环境变量 AUTODL_TOKEN，或在 {path} 里写入一行 "
-                    "AUTODL_TOKEN=...（格式见仓库根的 .env.example）。"
-                    "Token 获取路径：控制台 → 设置 → 开发者Token")
+def check_token(value):
+    """面板填进来的 Token：过短过长、带换行或控制字符都拒绝，返回去掉首尾空白后的值。"""
+    if not isinstance(value, str):
+        raise PlanError("Token 必须是字符串")
+    token = value.strip()
+    if not token:
+        raise PlanError("Token 不能为空；请粘贴控制台 → 设置 → 开发者Token 里的那一串")
+    if len(token) > TOKEN_LIMIT:
+        raise PlanError(f"Token 超过 {TOKEN_LIMIT} 字符，请核对是否粘错了内容")
+    if any(char < " " or char == "\x7f" for char in token):
+        raise PlanError("Token 里不能有换行或控制字符，请重新粘贴")
+    return token
 
 
 def set_wallet(plan, changes, observed_at=None):
@@ -934,39 +925,24 @@ def set_wallet(plan, changes, observed_at=None):
     return plan["wallet"]
 
 
-def wallet_fetch(store, args):
-    """联网取数一律在文件锁之外完成，落盘只用一次 store.change()：超时不会卡住并发的写进程。"""
-    number(args.timeout, "超时秒数", low=0.5, high=300)
-    token = resolve_token(args.token)
-    fetched_at = stamp()
-    amounts = balance_amounts(api_post(API_BALANCE_PATH, token, timeout=args.timeout))
-    if args.dry_run:
-        return {"wallet": amounts, "saved": False}
-    result = store.change(lambda plan: set_wallet(plan, amounts, fetched_at))
-    return {"revision": result["revision"], "wallet": result["item"], "saved": True}
-
-
 def sanitize_error(exc):
     """last_error 会落盘也会显示：压成单行并截断，别把多行堆栈写进计划文件。"""
     return " ".join(str(exc).split())[:ERROR_LIMIT]
 
 
-def cycle(store, interval=None, token=None, timeout=20.0, expires_at=KEEP):
-    """一轮自动结算：联网在文件锁之外，落盘只用一次 store.change()。
+def cycle(store, interval=None, token=None, timeout=20.0):
+    """一轮结算：联网在文件锁之外，落盘只用一次 store.change()。
 
-    取数失败（断网、401、超时）只记进 last_error 并保留上一份结论，不抛出——
-    定时进程不该因为一次断网就退出；没配 token 更不算故障（那是"没开自动余额"）。
+    token 由调用方从面板登记的那份凭据里现取（[Credential]），这里不做任何解析。
+    取数失败（断网、401、超时）只记进 last_error 并保留上一份结论，不抛出——结算线程
+    不该因为一次断网就死掉；没登记 Token 更不算故障（那是"没开自动余额"）。
     """
     now = utcnow()
-    error, amounts, observed_at, resolved = "", None, None, None
-    try:
-        resolved = resolve_token(token)
-    except PlanError:
-        resolved = None
-    if resolved:
+    error, amounts, observed_at = "", None, None
+    if token:
         try:
             observed_at = stamp(now)
-            amounts = balance_amounts(api_post(API_BALANCE_PATH, resolved, timeout=timeout))
+            amounts = balance_amounts(api_post(API_BALANCE_PATH, token, timeout=timeout))
         except PlanError as exc:
             error = sanitize_error(exc)
 
@@ -976,10 +952,8 @@ def cycle(store, interval=None, token=None, timeout=20.0, expires_at=KEEP):
             set_wallet(plan, amounts, observed_at)
         if interval is not None:
             monitor["interval_minutes"] = interval
-        if expires_at is not KEEP:
-            monitor["expires_at"] = expires_at
         monitor["last_run"] = stamp(now)
-        monitor["token_ready"] = resolved is not None
+        monitor["token_ready"] = bool(token)
         monitor["last_error"] = error
         if not error:
             monitor["last_ok"] = stamp(now)
@@ -993,42 +967,15 @@ def cycle(store, interval=None, token=None, timeout=20.0, expires_at=KEEP):
     return {"revision": result["revision"], **result["item"]}
 
 
-def run_monitor(store, args, sleep=time.sleep, monotonic=time.monotonic):
-    """前台结算循环；--once 只跑一轮并交给 main 输出 JSON，方便挂到系统 cron。
+def background_monitor(store, interval, credential, timeout=20.0):
+    """面板进程内的结算线程：daemon 线程，失败只记进计划，绝不把面板拖死。
 
-    节奏用单调时钟对齐，免得每轮的网络耗时把周期越拖越长；--expires-at 到点自动退出，
-    不留守护进程。
+    每轮现取凭据：面板上刚登记的 Token 从下一轮起生效，清除后立刻停下联网。
     """
-    interval = getattr(args, "interval", None)
-    expires = getattr(args, "expires_at", KEEP)
-    deadline = date(expires) if isinstance(expires, str) else None
-    if args.once:
-        return cycle(store, interval, args.token, args.timeout, expires)
-    interval_minutes = interval
-    try:
-        while True:
-            started = monotonic()
-            report = cycle(store, interval, args.token, args.timeout, expires)
-            interval_minutes = report["monitor"]["interval_minutes"]
-            error = report["monitor"]["last_error"]
-            print(f"TrainOps {stamp()} · {report['settlement']['text']}" + (f" | {error}" if error else ""),
-                  flush=True)
-            if deadline is not None and utcnow() + timedelta(minutes=interval_minutes) >= deadline:
-                print(f"TrainOps: 已到 --expires-at {expires}，结算进程退出", flush=True)
-                return None
-            # 周期从本轮开始时刻算起，把网络耗时抵消掉，长期跑不会越漂越慢。
-            sleep(max(1.0, interval_minutes * 60 - (monotonic() - started)))
-    except KeyboardInterrupt:
-        print("TrainOps: 收到中断，结算进程停止（计划文件已是最新）", flush=True)
-        return None
-
-
-def background_monitor(store, interval, token=None, timeout=20.0):
-    """面板进程内的结算线程：daemon 线程，失败只记进计划，绝不把面板拖死。"""
     def loop():
         while True:
             try:
-                cycle(store, interval, token, timeout)
+                cycle(store, interval, credential.get(), timeout)
             except (PlanError, OSError, ValueError) as exc:  # 计划被删/写坏也不该掀掉面板
                 print(f"TrainOps: 结算失败 {sanitize_error(exc)}", file=sys.stderr, flush=True)
             time.sleep(interval * 60)
@@ -1039,9 +986,14 @@ def background_monitor(store, interval, token=None, timeout=20.0):
 
 
 class Handler(BaseHTTPRequestHandler):
-    def __init__(self, *args, store, **kwargs):
+    def __init__(self, *args, store, credential, **kwargs):
         self.store = store
+        self.credential = credential
         super().__init__(*args, **kwargs)
+
+    def view(self):
+        """面板看到的计划：快照 + 凭据状态。状态只有"配没配、什么时候配的"，没有值。"""
+        return {**snapshot(self.store.read()), "credentials": self.credential.status()}
 
     def respond(self, status, data, content_type="application/json; charset=utf-8"):
         if not isinstance(data, bytes):
@@ -1069,7 +1021,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if urlsplit(self.path).path == "/api/plan":
-                self.respond(200, snapshot(self.store.read()))
+                self.respond(200, self.view())
             elif urlsplit(self.path).path == "/":
                 page = Path(__file__).resolve().parent.parent / "web" / "index.html"
                 self.respond(200, page.read_bytes(), "text/html; charset=utf-8")
@@ -1079,17 +1031,18 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(500, {"error": str(exc)})
 
     def do_POST(self):
-        """唯一写入口：面板登记时价。其余一切都还是只读。
+        """面板的两条写路径：登记时价（写计划）与登记 Token（只进本进程内存）。其余全只读。
 
         页面只监听本机，但请求可能来自别处，所以三道关：Host 白名单、Origin 必须是本机同源、
         Content-Type 必须是 application/json（跨站 <form> 发不出这个类型，跨站 JSON fetch 要先过预检，
-        而本服务不答 OPTIONS、不发 CORS 头）。落盘照旧只走 store.change()，不新增第二条写路径。
+        而本服务不答 OPTIONS、不发 CORS 头）。时价照旧只走 store.change()，不新增第二条写计划的路径；
+        Token 压根不落盘。
         """
         if not self.local():
             self.respond(403, {"error": "只允许本机 Host，不能通过外部域名修改计划"})
             return
         path = urlsplit(self.path).path
-        if path != PRICE_PATH:
+        if path not in (PRICE_PATH, TOKEN_PATH):
             # 在已知的读取路径上写是"方法不允许"，不存在的路径才是 404。
             if path in ("/", "/api/plan"):
                 self.reject_write()
@@ -1102,7 +1055,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(403, {"error": "只接受本机面板发出的请求"})
             return
         if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
-            self.respond(415, {"error": "登记时价只接受 application/json"})
+            self.respond(415, {"error": "面板只接受 application/json"})
             return
         try:
             size = int(self.headers.get("Content-Length", ""))
@@ -1117,6 +1070,13 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             self.respond(400, {"error": f"请求体不是合法 JSON：{exc}"})
             return
+        if path == TOKEN_PATH:
+            self.register_token(payload)
+        else:
+            self.register_price(payload)
+
+    def register_price(self, payload):
+        """登记时价：写进去的必须是"标价"，不是一次对机器的观测。"""
         # 键集必须恰好是这两种之一：多一个键就报错，免得"顺手改点别的"从这里溜进计划。
         keys = set(payload) if isinstance(payload, dict) else set()
         if keys not in ({"id", "price"}, {"id", "no_gpu_price"}):
@@ -1139,12 +1099,36 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             self.store.change(lambda current: set_instance_price(current, instance_id, field, price))
-            self.respond(200, snapshot(self.store.read()))
+            self.respond(200, self.view())
         except (PlanError, OSError, OverflowError) as exc:
             self.respond(500, {"error": str(exc)})
 
+    def register_token(self, payload):
+        """登记 Token：只存进本进程内存，没有第二处副本。null 表示清除。
+
+        登记后立刻结算一轮：填错了要当场看见"接口拒绝"，而不是等下一个结算周期。
+        """
+        keys = set(payload) if isinstance(payload, dict) else set()
+        if keys != {"token"}:
+            self.respond(400, {"error": '请求体必须恰好是 {"token": "开发者 Token 或 null"}'})
+            return
+        try:
+            raw = payload["token"]
+            token = None if raw is None else check_token(raw)
+        except PlanError as exc:
+            self.respond(400, {"error": str(exc)})
+            return
+        self.credential.set(token)
+        try:
+            cycle(self.store, token=self.credential.get())
+        except (PlanError, OSError, OverflowError) as exc:
+            # 凭据已经登记好了，这里失败的是结算本身；照实回报，别让用户以为 Token 没存上。
+            self.respond(500, {"error": f"Token 已登记，但本轮结算失败：{exc}"})
+            return
+        self.respond(200, self.view())
+
     def reject_write(self):
-        self.respond(405, {"error": "只有时价能在面板上登记，其余修改请通过 agent/CLI"})
+        self.respond(405, {"error": "只有时价与 Token 能在面板上登记，其余修改请通过 agent/CLI"})
 
     do_PUT = do_PATCH = do_DELETE = reject_write
 
@@ -1152,8 +1136,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def server(store, port=8765):
-    return ThreadingHTTPServer(("127.0.0.1", port), partial(Handler, store=store))
+def server(store, credential, port=8765):
+    return ThreadingHTTPServer(("127.0.0.1", port), partial(Handler, store=store, credential=credential))
 
 
 def nullable(value):
@@ -1184,17 +1168,6 @@ def interval_arg(value):
     except PlanError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
     return result
-
-
-def moment(value):
-    """带时区的 ISO 时间参数；none / - / ? 表示清空。"""
-    value = nullable(value)
-    if value is None:
-        return None
-    try:
-        return stamp(date(value))
-    except PlanError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def dependencies(value):
@@ -1434,7 +1407,7 @@ def brief_finance(wallet, view, now=None):
     if view["live"]:
         lines.append("实时结论: " + settlement_summary(values))
     if view["changed"]:
-        lines.append("当前展示为变更前的结算；请 monitor --once 重算后决策")
+        lines.append("当前展示为变更前的结算；等面板下一轮结算后再决策")
     if view["error"]:
         lines.append("结算错误: " + brief_text(view["error"], ERROR_LIMIT))
     return lines
@@ -1505,12 +1478,8 @@ def brief_plan(plan, now=None):
 
 def brief_receipt(args, result):
     operation = args.operation_name
-    saved = result.get("saved", True)
-    lines = [f"已保存 · rev {result['revision']}" if saved else "仅预览，未保存"]
-    if operation == "monitor":
-        lines.extend(brief_finance(result["wallet"], result["settlement"]))
-        lines.append("仅余额结算，不代表远端训练已巡检")
-    elif operation == "wallet":
+    lines = [f"已保存 · rev {result['revision']}"]
+    if operation == "wallet":
         wallet = result.get("wallet", result.get("item"))
         for key, label in (("assets", "余额"), ("voucher", "代金券（不计入可用时长）")):
             lines.append(f"{label}: ¥{wallet[key]:.2f}" if wallet.get(key) is not None else f"{label}: 未登记")
@@ -1602,7 +1571,7 @@ def parser():
     show_output = show.add_mutually_exclusive_group()
     show_output.add_argument("--json", action="store_true")
     show_output.add_argument("--brief", action="store_true", help="只看当前行动摘要，分组限量并注明省略数")
-    serve = commands.add_parser("serve", help="仅本机面板（唯一可写处是登记时价），Ctrl+C 停止")
+    serve = commands.add_parser("serve", help="仅本机面板（可写处是登记时价与 Token），Ctrl+C 停止")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--interval", type=interval_arg, default=None,
                        help="顺带在这个进程里跑自动结算（分钟）；不传则只做面板")
@@ -1642,26 +1611,13 @@ def parser():
     quick_set.add_argument("id")
     quick_set.add_argument("--name")
     add_task_args(quick_set, is_set=True)
-    monitor = commands.add_parser("monitor", help="自动结算：定时拉取余额并重算剩余计划的 GPU 小时与花费")
-    monitor.add_argument("--interval", type=interval_arg, default=None,
-                         help=f"结算周期（分钟，{INTERVAL_LIMITS[0]}–{INTERVAL_LIMITS[1]}）；默认沿用计划里的值")
-    monitor.add_argument("--once", action="store_true", help="只结算一轮就退出并输出 JSON，供系统 cron 调用")
-    monitor.add_argument("--expires-at", type=moment, default=argparse.SUPPRESS,
-                         help="到点自动退出（带时区时间）；none 清除")
-    monitor.add_argument("--token", help="临时覆盖 .env 与 AUTODL_TOKEN；不会写进计划或输出")
-    monitor.add_argument("--timeout", type=float, default=20.0)
-    monitor.add_argument("--strict", action="store_true", help="最近一次结算失败时以退出码 1 结束，便于 cron 告警")
-    wallet = commands.add_parser("wallet", help="账户余额：fetch 走只读接口自动拉取，set 手工登记")
+    wallet = commands.add_parser("wallet", help="账户余额：手工登记（自动结算由面板进程负责）")
     wallet_actions = wallet.add_subparsers(dest="action", required=True)
-    wallet_fetch_parser = wallet_actions.add_parser("fetch", help="手动拉一次余额：只读接口，不下发任何实例指令")
-    wallet_fetch_parser.add_argument("--token", help="覆盖 .env 与 AUTODL_TOKEN；不会写进计划或输出")
-    wallet_fetch_parser.add_argument("--timeout", type=float, default=20.0)
-    wallet_fetch_parser.add_argument("--dry-run", action="store_true", help="只打印，不写入计划")
-    wallet_set = wallet_actions.add_parser("set", help="无 token / 断网时人工登记余额")
+    wallet_set = wallet_actions.add_parser("set", help="面板没开或需要人工核对时登记余额")
     wallet_set.add_argument("--assets", type=money_arg, default=argparse.SUPPRESS, help="余额（元）；none 清空")
     wallet_set.add_argument("--voucher", type=money_arg, default=argparse.SUPPRESS, help="代金券（元）；单独展示不计入可用时长")
     for target in (init, batch, instance_add, instance_set, flow_add, flow_set, task_add,
-                   task_set, quick_set, wallet_fetch_parser, wallet_set, monitor):
+                   task_set, quick_set, wallet_set):
         target.add_argument("--brief", action="store_true", help="输出紧凑文本回执，不改变保存及退出码语义")
     return root
 
@@ -1710,13 +1666,8 @@ def dispatch(args, store):
                 "tasks": [t["id"] for t in created["tasks"]]}
     if args.operation_name == "check":
         return check_structure(store.read())
-    if args.operation_name == "monitor":
-        store.read()  # 先确认项目里有合法计划；没有计划就不该凭空建 .trainops 目录
-        return run_monitor(store, args)
     if args.operation_name == "wallet":
         store.read()  # 先确认项目里有合法计划，免得白白发一次网络请求
-        if args.action == "fetch":
-            return wallet_fetch(store, args)
         if not (hasattr(args, "assets") or hasattr(args, "voucher")):
             raise PlanError("wallet set 至少需要 --assets 或 --voucher（none 表示清空）")
         changes = {key: getattr(args, key) for key in ("assets", "voucher") if hasattr(args, key)}
@@ -1757,10 +1708,12 @@ def dispatch(args, store):
         store.read()
         if not 0 <= args.port <= 65535:
             raise PlanError("端口必须在 0–65535 之间")
+        # 凭据只活在这次 serve 里：进程一退就没了，重开面板要重新登记。面板是它唯一的入口。
+        credential = Credential()
         if args.interval is not None:
-            background_monitor(store, args.interval)
-        with server(store, args.port) as httpd:
-            print(f"TrainOps http://127.0.0.1:{httpd.server_port} · 本机面板（仅时价可登记），不是后台训练调度器"
+            background_monitor(store, args.interval, credential)
+        with server(store, credential, args.port) as httpd:
+            print(f"TrainOps http://127.0.0.1:{httpd.server_port} · 本机面板（时价与 Token 可登记），不是后台训练调度器"
                   + (f" · 每 {args.interval} 分钟自动结算" if args.interval is not None else ""), flush=True)
             try:
                 httpd.serve_forever()
@@ -1838,8 +1791,6 @@ def main(argv=None):
     raw = sys.argv[1:] if argv is None else argv
     cli = parser()
     args = cli.parse_args(raw)
-    if args.operation_name == "monitor" and args.brief and not args.once:
-        cli.error("monitor --brief 仅用于 --once；循环模式已有单行结算日志")
     try:
         result = dispatch(args, Store(args.project))
     except (PlanError, OSError, OverflowError) as exc:
@@ -1854,8 +1805,6 @@ def main(argv=None):
             print(json.dumps(compact(result), ensure_ascii=False, allow_nan=False))
     # 默认沿用退出码 0（agent 读 JSON 即可），--strict 让脚本/CI 能直接判断检查结果。
     if args.operation_name == "check" and args.strict and not result["ok"]:
-        return 1
-    if args.operation_name == "monitor" and args.strict and result and result["monitor"]["last_error"]:
         return 1
     return 0
 

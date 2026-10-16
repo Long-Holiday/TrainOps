@@ -34,14 +34,13 @@ def base():
     return plan
 
 
-# 开发机可能在仓库根放了自己的 .env（里面有真 token）：子进程一律把凭据来源指到不存在的文件，
-# 需要 .env 的用例再显式传入临时文件，绝不读到开发者的真 token。
-NO_ENV_FILE = str(ROOT / "tests" / "no-such-env-file")
-
-
 def run_cli(project, *args, success=True, env=None):
-    """跑一次 CLI 子进程，返回 CompletedProcess；success 用来声明期望的退出码是否为 0。"""
-    environment = {**os.environ, "TRAINOPS_ENV": NO_ENV_FILE, "AUTODL_TOKEN": "", **(env or {})}
+    """跑一次 CLI 子进程，返回 CompletedProcess；success 用来声明期望的退出码是否为 0。
+
+    env 只用来把接口地址指到本地假服务（TRAINOPS_API_BASE）：凭据只从面板登记的那份内存里取，
+    子进程读不到任何 token，也就不必再"指开"开发机上的凭据文件。
+    """
+    environment = {**os.environ, **(env or {})}
     result = subprocess.run([sys.executable, str(SCRIPT), "--project", str(project), *args],
                             text=True, capture_output=True, timeout=20, env=environment)
     if (result.returncode == 0) != success:
@@ -826,14 +825,14 @@ class CheckWarningTests(unittest.TestCase):
 
 
 class WalletAPITests(unittest.TestCase):
-    """余额接口用本地假服务验证：成功、各类失败、以及 token 绝不外泄。"""
+    """余额接口：凭据只进请求头，各类失败被翻译成可读文案，账本除 monitor 段外一个字节都不动。"""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.project = Path(self.temp.name)
         self.store = ops.Store(self.project)
-        ops.Store(self.project).create(ops.demo_plan(NOW))
+        self.store.create(ops.demo_plan(NOW))
         self.requests = []
         tests = self
 
@@ -860,51 +859,39 @@ class WalletAPITests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
-        self.env = {"AUTODL_TOKEN": "secret-token-value",
-                    "TRAINOPS_API_BASE": f"http://127.0.0.1:{self.server.server_port}",
-                    "TRAINOPS_ENV": NO_ENV_FILE}
 
-    def invoke(self, *args, success=True, env=None):
-        return run_cli(self.project, *args, success=success, env={**self.env, **(env or {})})
+    def settle(self, token="secret-token-value"):
+        """结算只从面板登记的那份内存凭据取 token；测试直接传进来，不经过任何文件或环境变量。"""
+        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": f"http://127.0.0.1:{self.server.server_port}"}):
+            return ops.cycle(self.store, token=token)
 
-    def command(self, *args, success=True, env=None):
-        result = self.invoke(*args, success=success, env=env)
-        return json.loads(result.stdout) if success and result.stdout.startswith("{") else result
-
-    def test_fetch_stores_balance_and_never_leaks_token(self):
-        result = self.command("wallet", "fetch")
-        self.assertTrue(result["saved"])
+    def test_balance_request_shape_and_no_token_leak(self):
+        result = self.settle()
         self.assertEqual(self.requests[0]["path"], "/api/v1/dev/wallet/balance")
         self.assertEqual(self.requests[0]["auth"], "secret-token-value", "必须用原始 token，不能加 Bearer 前缀")
-        self.assertEqual(self.requests[0]["body"], b"")
+        self.assertEqual(self.requests[0]["body"], b"", "只读接口不该带请求体")
         wallet = self.store.read()["wallet"]
-        self.assertEqual(wallet["assets"], 128.5)
-        self.assertEqual(wallet["voucher"], 20.0)
+        self.assertEqual((wallet["assets"], wallet["voucher"]), (128.5, 20.0))
         self.assertIsNotNone(wallet["observed_at"])
-        for leak in (result, self.project.joinpath(".trainops/plan.json").read_text(encoding="utf-8")):
-            self.assertNotIn("secret-token-value", json.dumps(leak, ensure_ascii=False))
+        for leak in (result, self.store.path.read_text(encoding="utf-8")):
+            self.assertNotIn("secret-token-value", json.dumps(leak, ensure_ascii=False, default=str))
 
-    def test_dry_run_reports_without_writing(self):
-        before = self.store.path.read_bytes()
-        result = self.command("wallet", "fetch", "--dry-run")
-        self.assertFalse(result["saved"])
-        self.assertEqual(result["wallet"]["assets"], 128.5)
-        self.assertEqual(before, self.store.path.read_bytes())
-
-    def test_failures_are_reported_and_leave_plan_byte_identical(self):
+    def test_payload_failures_are_reported_and_leave_the_ledger_alone(self):
         cases = ((401, json.dumps({"code": "Fail", "msg": "token 无效"}), "HTTP 401"),
                  (200, json.dumps({"code": "Fail", "msg": "余额查询失败", "request_id": "req-1"}), "余额查询失败"),
                  (200, "not json at all", "JSON"),
                  (200, json.dumps({"code": "Success", "data": {}}), "assets"),
                  (200, json.dumps({"code": "Success", "data": {"assets": 12.345}}), "整数"))
-        before = self.store.path.read_bytes()
+        before = self.store.read()
         for status, body, expected in cases:
             with self.subTest(status=status, body=body[:40]):
                 self.handler.status, self.handler.body = status, body
-                result = self.invoke("wallet", "fetch", success=False)
-                self.assertIn(expected, result.stderr)
-                self.assertNotIn("secret-token-value", result.stderr + result.stdout)
-                self.assertEqual(before, self.store.path.read_bytes(), "失败时计划必须逐字节不变")
+                result = self.settle()
+                self.assertIn(expected, result["monitor"]["last_error"])
+        after = self.store.read()
+        for key in ("name", "instances", "flows", "tasks", "wallet"):
+            self.assertEqual(after[key], before[key], f"取数失败只能动 monitor 段，不能动 {key}")
+        self.assertNotIn("secret-token-value", json.dumps(after, ensure_ascii=False))
 
     def test_connection_errors_are_translated_not_raised_raw(self):
         def boom(*args, **kwargs):
@@ -918,76 +905,28 @@ class WalletAPITests(unittest.TestCase):
             ops.opener = original
 
     def test_unreachable_api_does_not_block_local_edits(self):
-        # 接口不可达时：退出码非 0、计划逐字节不变，本地命令照常可用
-        before = self.store.path.read_bytes()
-        result = self.command("wallet", "fetch", success=False,
-                              env={"TRAINOPS_API_BASE": "http://127.0.0.1:9"})
-        self.assertTrue(result.stderr.startswith("TrainOps: "), result.stderr)
-        self.assertNotIn("secret-token-value", result.stderr)
-        self.assertEqual(before, self.store.path.read_bytes())
-        self.command("wallet", "set", "--assets", "12.5", "--voucher", "3")
-        self.command("flow", "set", "F01", "--name", "改名")
-        self.assertIn("改名", self.command("show").stdout)
+        # 接口不可达时：失败被记进计划，本地命令照常可用
+        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": "http://127.0.0.1:9"}):
+            result = ops.cycle(self.store, token="secret-token-value")
+        self.assertTrue(result["monitor"]["last_error"], "连不上接口必须记进 last_error")
+        self.assertNotIn("secret-token-value", json.dumps(result["monitor"], ensure_ascii=False))
+        run_cli(self.project, "wallet", "set", "--assets", "12.5", "--voucher", "3")
+        run_cli(self.project, "flow", "set", "F01", "--name", "改名")
+        self.assertIn("改名", run_cli(self.project, "show").stdout)
 
     def test_wallet_set_manual_path(self):
-        self.command("wallet", "set", "--assets", "12.5", "--voucher", "3")
+        run_cli(self.project, "wallet", "set", "--assets", "12.5", "--voucher", "3")
         wallet = self.store.read()["wallet"]
         self.assertEqual((wallet["assets"], wallet["voucher"]), (12.5, 3))
         self.assertIsNotNone(wallet["observed_at"])
         # 不带任何字段时拒绝：既不改数据，也不假装成功
-        self.command("wallet", "set", success=False)
+        run_cli(self.project, "wallet", "set", success=False)
         self.assertEqual(self.store.read()["wallet"]["voucher"], 3)
-        self.command("wallet", "set", "--assets", "none")
+        run_cli(self.project, "wallet", "set", "--assets", "none")
         self.assertIsNone(self.store.read()["wallet"]["assets"])
         self.assertEqual(self.store.read()["wallet"]["voucher"], 3)
-        self.command("wallet", "set", "--assets", "1", "--voucher", "none")
+        run_cli(self.project, "wallet", "set", "--assets", "1", "--voucher", "none")
         self.assertIsNone(self.store.read()["wallet"]["voucher"])
-
-    def test_missing_token_is_explained_not_crashed(self):
-        env = {"AUTODL_TOKEN": "", "TRAINOPS_ENV": str(self.project / "missing.env")}
-        result = self.command("wallet", "fetch", success=False, env=env)
-        self.assertIn("AUTODL_TOKEN", result.stderr)
-        self.assertIn(".env", result.stderr, "报错要直接说清 token 该放哪")
-        self.assertEqual(self.requests, [], "没有 token 就不该发出请求")
-
-    def test_env_file_token_permissions_and_precedence(self):
-        path = self.project / "env-file"
-        path.write_text("# 注释与空行都要忽略\n\nexport AUTODL_TOKEN='from-env-file'\nAUTODL_API=nope\n",
-                        encoding="utf-8")
-        os.chmod(path, 0o644)
-        env = {"AUTODL_TOKEN": "", "TRAINOPS_ENV": str(path)}
-        self.command("wallet", "fetch", env=env)
-        self.assertEqual(self.requests[-1]["auth"], "from-env-file", "成对引号要剥掉，整行注释要忽略")
-        # 权限过松只提醒一次，不阻断
-        self.assertIn("chmod 600", self.invoke("wallet", "fetch", env=env).stderr)
-        os.chmod(path, 0o600)
-        self.assertNotIn("chmod 600", self.invoke("wallet", "fetch", env=env).stderr)
-        # 环境变量优先于 .env；--token 优先级最高；两者都不进计划文件
-        env["AUTODL_TOKEN"] = "from-environ"
-        self.command("wallet", "fetch", env=env)
-        self.assertEqual(self.requests[-1]["auth"], "from-environ")
-        self.command("wallet", "fetch", "--token", "explicit-token", env=env)
-        self.assertEqual(self.requests[-1]["auth"], "explicit-token")
-        plan_text = self.store.path.read_text(encoding="utf-8")
-        for secret in ("from-env-file", "from-environ", "explicit-token"):
-            self.assertNotIn(secret, plan_text)
-
-    def test_env_file_is_parsed_without_stripping_inline_comments(self):
-        # token 里可能带 #：只有整行注释才算注释，行内的 # 必须原样保留
-        path = self.project / "tricky.env"
-        path.write_text('AUTODL_TOKEN=abc#def\n', encoding="utf-8")
-        self.assertEqual(ops.load_env(path)["AUTODL_TOKEN"], "abc#def")
-        self.assertEqual(ops.load_env(self.project / "nope.env"), {})
-        broken = self.project / "broken.env"
-        broken.write_bytes(b"AUTODL_TOKEN=\xff\xfe\n")
-        with self.assertRaises(ops.PlanError):
-            ops.load_env(broken)
-        # 别的键写了也不生效：解析层照收，取 token 时只认 AUTODL_TOKEN
-        only = self.project / "only.env"
-        only.write_text("SOME_OTHER_TOKEN=xxx\n", encoding="utf-8")
-        with mock.patch.dict(os.environ, {"AUTODL_TOKEN": "", "TRAINOPS_ENV": str(only)}):
-            with self.assertRaises(ops.PlanError):
-                ops.resolve_token()
 
 
 class BriefTests(unittest.TestCase):
@@ -1011,15 +950,15 @@ class BriefTests(unittest.TestCase):
             ["task", "add", "--flow", "F01", "--name", "任务"],
             ["instance", "add", "--name", "GPU", "--autodl-id", "id-a", "--ssh-alias", "gpu-a"],
             ["instance", "set", "I01", "--status", "on"], ["flow", "add", "--name", "流程"],
-            ["flow", "set", "F01", "--name", "改名"], ["wallet", "fetch"],
-            ["wallet", "set", "--assets", "0"], ["monitor", "--once"],
+            ["flow", "set", "F01", "--name", "改名"],
+            ["wallet", "set", "--assets", "0"],
         ]
         for command in commands:
             with self.subTest(command=command):
                 self.assertTrue(self.parse(*command, "--brief").brief)
 
     def test_invalid_modes_fail_before_any_project_access(self):
-        for command in (("show", "--brief", "--json"), ("monitor", "--brief")):
+        for command in (("show", "--brief", "--json"), ("check", "--brief")):
             result = run_cli(self.project / "不存在", *command, success=False)
             self.assertEqual(result.returncode, 2)
             self.assertFalse((self.project / "不存在").exists(), "非法组合不得读写项目或联网")
@@ -1231,17 +1170,13 @@ class BriefTests(unittest.TestCase):
         self.assertIn("任务（共 6 条）", result.stdout)
         self.assertIn("省略 3 条", result.stdout)
 
-    def test_wallet_brief_preserves_zero_clear_and_dry_run(self):
+    def test_wallet_brief_preserves_zero_and_clear(self):
         self.setup_plan()
         result = run_cli(self.project, "wallet", "set", "--assets", "0", "--voucher", "10", "--brief")
         self.assertIn("余额: ¥0.00", result.stdout, "真实零余额必须显示，与未知不同")
         self.assertIn("不计入可用时长", result.stdout)
         result = run_cli(self.project, "wallet", "set", "--assets", "none", "--brief")
         self.assertIn("余额: 未登记", result.stdout)
-        args = self.parse("wallet", "fetch", "--dry-run", "--brief")
-        text = ops.brief_receipt(args, {"wallet": {"assets": 12, "voucher": 0}, "saved": False})
-        self.assertIn("未保存", text)
-        self.assertNotIn("rev", text)
 
     def test_hundred_tasks_brief_is_small_and_read_only(self):
         args = ["init", "--name", "百任务"]
@@ -1290,7 +1225,11 @@ class BriefTests(unittest.TestCase):
 
 
 class MonitorTests(unittest.TestCase):
-    """自动结算：联网在文件锁之外，失败只记录不退出，结论与结算时间写回计划。"""
+    """结算（cycle）：联网在文件锁之外，失败只记录不退出，结论与结算时间写回计划。
+
+    cycle 是面板进程与测试共用的那一个函数：Token 由调用方从面板登记的内存凭据里现取，
+    测试直接传参——凭据没有文件、也没有环境变量，这里不需要任何"指开"。
+    """
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -1328,27 +1267,27 @@ class MonitorTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
-        self.env = {"AUTODL_TOKEN": "settle-token",
-                    "TRAINOPS_API_BASE": f"http://127.0.0.1:{self.server.server_port}"}
+        self.token = "settle-token"
 
-    def command(self, *args, success=True, env=None):
-        return run_json(self.project, *args, success=success, env={**self.env, **(env or {})})
+    def run_json(self, *args, success=True):
+        return run_json(self.project, *args, success=success)
 
-    def parse(self, *args):
-        return ops.parser().parse_args(["-p", str(self.project), "monitor", *args])
+    def settle(self, **kwargs):
+        """在测试进程里跑一轮结算；接口地址由本用例的假服务说了算。"""
+        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": self.api_base()}):
+            return ops.cycle(self.store, token=self.token, **kwargs)
 
-    def in_process(self):
-        """测试进程里直接跑 cycle()/run_monitor() 时，凭据与接口地址也得由本用例说了算。"""
-        return mock.patch.dict(os.environ, {**self.env, "TRAINOPS_ENV": NO_ENV_FILE})
+    def api_base(self):
+        return f"http://127.0.0.1:{self.server.server_port}"
 
     def monitor(self):
         return self.store.read()["monitor"]
 
     def test_once_settles_balance_and_writes_conclusion(self):
-        result = self.command("monitor", "--once", "--interval", "15")
+        result = self.settle(interval=15)
         self.assertEqual(result["monitor"]["interval_minutes"], 15)
         self.assertEqual(result["wallet"]["assets"], 52.0)
-        self.assertEqual(self.requests[0]["auth"], "settle-token")
+        self.assertEqual(self.requests[0]["auth"], "settle-token", "必须用原始 token，不能加 Bearer 前缀")
         monitor = self.monitor()
         self.assertEqual(monitor["last_error"], "")
         self.assertTrue(monitor["token_ready"])
@@ -1360,16 +1299,17 @@ class MonitorTests(unittest.TestCase):
         # show 与面板读的就是这份结论，且明确标出结算时间
         self.assertFalse(result["settlement"]["live"])
         self.assertIn("自动结算于", result["settlement"]["text"])
-        self.assertIn("自动结算于", self.command("show").stdout)
-        # token 绝不外泄：计划文件、stdout、stderr 里都不许出现
-        for leak in (result, self.command("show"), self.store.path.read_text(encoding="utf-8")):
+        shown = self.run_json("show")
+        self.assertIn("自动结算于", shown.stdout)
+        # token 绝不外泄：结算回执、stdout、计划文件里都不许出现
+        for leak in (result, shown, self.store.path.read_text(encoding="utf-8")):
             self.assertNotIn("settle-token", json.dumps(leak, ensure_ascii=False, default=str))
 
     def test_failure_is_recorded_without_killing_the_schedule(self):
-        self.command("monitor", "--once")
+        self.settle()
         good = self.store.read()
         self.handler_status(401, json.dumps({"code": "Fail", "msg": "token 无效"}))
-        result = self.command("monitor", "--once")
+        result = self.settle()
         self.assertIn("HTTP 401", result["monitor"]["last_error"])
         after = self.store.read()
         monitor = after["monitor"]
@@ -1379,65 +1319,38 @@ class MonitorTests(unittest.TestCase):
         self.assertGreater(after["revision"], good["revision"])
         for key in ("instances", "flows", "tasks", "wallet"):
             self.assertEqual(after[key], good[key], f"失败只能动 monitor 段，不能动 {key}")
-        # show 把失败标出来，但结论仍然可读；--strict 让 cron 能告警
-        self.assertIn("上次结算失败", self.command("show").stdout)
-        self.command("monitor", "--once", "--strict", success=False)
-
-    def test_brief_once_keeps_strict_errors_and_token_private(self):
-        result = self.command("monitor", "--once", "--strict", "--brief")
-        self.assertIn("已保存", result.stdout)
-        self.assertIn("余额 ¥52.00", result.stdout)
-        self.assertIn("自动结算于", result.stdout)
-        self.assertIn("不代表远端训练已巡检", result.stdout)
-        self.assertNotIn("plan_hash", result.stdout)
-        self.handler_status(401, json.dumps({"code": "Fail"}))
-        result = self.command("monitor", "--once", "--strict", "--brief", success=False)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("HTTP 401", result.stdout)
-        self.assertIn("已保存", result.stdout)
-        self.assertNotIn("settle-token", result.stdout + result.stderr)
-        result = self.command("monitor", "--once", "--brief")
-        self.assertEqual(result.returncode, 0, "非 strict 的结算失败仍退出 0")
-        count = len(self.requests)
-        result = self.command("monitor", "--once", "--strict", "--brief", env={"AUTODL_TOKEN": ""})
-        self.assertIn("未配置 Token", result.stdout)
-        self.assertEqual(count, len(self.requests), "无 Token 不联网且不算失败")
-
-    def test_brief_network_error_keeps_strict_exit_code(self):
-        result = self.command("monitor", "--once", "--strict", "--brief", success=False,
-                              env={"TRAINOPS_API_BASE": "http://127.0.0.1:9"})
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("结算错误:", result.stdout)
-        self.assertNotIn("settle-token", result.stdout + result.stderr)
+        # 结论仍然可读，失败被标出来；下一轮成功即恢复正常
+        self.assertIn("上次结算失败", self.run_json("show").stdout)
+        self.handler_status(200, json.dumps({"code": "Success", "data": {"assets": 52000, "voucher_balance": 8000}}))
+        self.assertEqual(self.settle()["monitor"]["last_error"], "")
 
     def handler_status(self, status, body):
         handler = self.server.RequestHandlerClass
         handler.status, handler.body = status, body
 
     def test_unreachable_api_keeps_process_alive_and_plan_intact(self):
-        self.command("monitor", "--once", env={"TRAINOPS_API_BASE": "http://127.0.0.1:9"})
+        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": "http://127.0.0.1:9"}):
+            ops.cycle(self.store, token=self.token)
         # 具体文案随环境而异（直连是"无法连接"，经代理是 HTTP 5xx），只要求失败被记下
         self.assertTrue(self.monitor()["last_error"], "连不上接口必须记进 last_error")
         self.assertEqual(self.store.read()["wallet"]["assets"], 128.5, "连不上时钱包保持原值")
         # 本地命令照常可用，计划结构没被破坏
-        self.command("flow", "set", "F01", "--name", "改名")
-        self.assertIn("改名", self.command("show").stdout)
+        run_cli(self.project, "flow", "set", "F01", "--name", "改名")
+        self.assertIn("改名", run_cli(self.project, "show").stdout)
 
     def test_missing_token_is_not_a_failure(self):
-        env = {"AUTODL_TOKEN": "", "TRAINOPS_ENV": str(self.project / "missing.env")}
-        result = self.command("monitor", "--once", env=env)
+        result = ops.cycle(self.store, token=None)
         self.assertEqual(self.requests, [], "没有 token 就不该发请求")
-        # 没配 token 不是故障：compact() 会省掉空的 last_error，这里按"没有错误"读
+        # 没登记 Token 不是故障：compact() 会省掉空的 last_error，这里按"没有错误"读
         self.assertEqual(result["monitor"].get("last_error", ""), "")
         self.assertFalse(result["monitor"]["token_ready"])
         self.assertEqual(self.monitor()["last_error"], "", "计划里也不该留下错误")
         self.assertIn("未配置 Token", result["settlement"]["text"])
-        # 结论仍然算得出来（用计划里已有的余额），--strict 也不会因此一直红
+        # 结论仍然算得出来（用计划里已有的余额），也不会一直报错
         self.assertIsNotNone(result["monitor"]["estimate"])
-        self.command("monitor", "--once", "--strict", env=env)
 
     def test_stale_settlement_falls_back_to_live_values(self):
-        self.command("monitor", "--once", "--interval", "1")
+        self.settle(interval=1)
         plan = self.store.read()
         plan["monitor"]["estimate"]["computed_at"] = ops.stamp(NOW - timedelta(minutes=10))
         view = ops.settlement(plan, NOW)
@@ -1450,52 +1363,18 @@ class MonitorTests(unittest.TestCase):
         view = ops.settlement(plan, NOW)
         self.assertTrue(view["changed"])
         self.assertIn("结算后计划有变更", view["text"])
-        # 结算进程自己更新 last_run 不算"计划有变更"，否则会一直误报
+        # 结算自己更新 last_run 不算"计划有变更"，否则会一直误报
         plan["monitor"]["last_run"] = ops.stamp(NOW + timedelta(minutes=1))
         self.assertTrue(ops.settlement(plan, NOW)["changed"], "任务改动才是真改动")
         clean = self.store.read()
         clean["monitor"]["last_run"] = ops.stamp(NOW + timedelta(minutes=1))
         self.assertFalse(ops.settlement(clean, NOW)["changed"])
 
-    def test_interval_bounds_and_expiry_are_enforced(self):
+    def test_interval_bounds_are_enforced_on_serve(self):
+        """结算周期现在只由面板进程的 --interval 决定，越界要在解析阶段就挡下。"""
         for value in ("0", "1441", "abc", "-5"):
-            with self.subTest(interval=value):
-                result = run_cli(self.project, "monitor", "--once", "--interval", value,
-                                 success=False, env=self.env)
-                self.assertIn("结算周期", result.stderr)
-        for value in ("2026-10-14 10:00", "soon"):
-            with self.subTest(expires=value):
-                result = run_cli(self.project, "monitor", "--once", "--expires-at", value,
-                                 success=False, env=self.env)
-                self.assertIn("expires-at", result.stderr)
-
-    def test_loop_sleeps_one_interval_and_stops_at_expiry(self):
-        class Stop(Exception):
-            pass
-
-        slept = []
-
-        def fake_sleep(seconds):
-            slept.append(seconds)
-            raise Stop
-
-        soon = ops.stamp(ops.utcnow() + timedelta(minutes=1))
-        with self.in_process():
-            # 下一轮会越过 --expires-at：跑完这一轮就退出，不再睡
-            args = self.parse("--interval", "15", "--expires-at", soon)
-            self.assertIsNone(ops.run_monitor(self.store, args, sleep=slept.append, monotonic=lambda: 0.0))
-            self.assertEqual(slept, [], "快到 --expires-at 就不该再睡")
-            self.assertEqual(self.monitor()["expires_at"], soon)
-            # 没有到期时间：睡满一个周期（扣掉本轮联网耗时），周期按计划里的值走
-            args = self.parse("--interval", "15")
-            with self.assertRaises(Stop):
-                ops.run_monitor(self.store, args, sleep=fake_sleep, monotonic=lambda: 0.0)
-            self.assertEqual(slept, [15 * 60])
-            # --expires-at none 清空到期时间，循环继续
-            args = self.parse("--expires-at", "none")
-            with self.assertRaises(Stop):
-                ops.run_monitor(self.store, args, sleep=fake_sleep, monotonic=lambda: 0.0)
-            self.assertIsNone(self.monitor()["expires_at"])
+            with self.subTest(interval=value), self.assertRaises(SystemExit):
+                ops.parser().parse_args(["-p", str(self.project), "serve", "--interval", value])
 
     def test_cycle_does_not_hold_the_lock_while_online(self):
         """联网在锁外：慢接口期间本地写照常完成，两边的改动都留得住。"""
@@ -1503,11 +1382,11 @@ class MonitorTests(unittest.TestCase):
         self.arrived = threading.Event()  # 假接口收到请求
         self.slow = threading.Event()     # 由本用例放行，让接口一直卡着
         thread = threading.Thread(target=lambda: report.update(
-            ops.cycle(self.store, interval=60, token="settle-token")), daemon=True)
-        with self.in_process():
+            ops.cycle(self.store, interval=60, token=self.token)), daemon=True)
+        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": self.api_base()}):
             thread.start()
             self.assertTrue(self.arrived.wait(5), "假接口没被调用")
-            self.command("flow", "set", "F01", "--name", "并发改名")  # 联网还没返回就写入
+            run_cli(self.project, "flow", "set", "F01", "--name", "并发改名")  # 联网还没返回就写入
             self.slow.set()
             thread.join(10)
         self.assertFalse(thread.is_alive())
@@ -1543,7 +1422,8 @@ class HTTPTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = ops.Store(self.temp.name)
         self.store.create(ops.demo_plan(NOW))
-        self.server = ops.server(self.store, 0)
+        self.credential = ops.Credential()
+        self.server = ops.server(self.store, self.credential, 0)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -1568,6 +1448,8 @@ class HTTPTests(unittest.TestCase):
             plan = json.load(response)
             self.assertEqual(len(plan["tasks"]), 7)
             self.assertIn("estimate", plan["tasks"][0])
+            self.assertEqual(plan["credentials"], {"configured": False, "set_at": None},
+                             "面板刚起来时没有凭据，状态要照实说")
 
     def test_arbitrary_paths_and_writes_rejected(self):
         for path in ("/.trainops/plan.json", "/../README.md", "/favicon.ico"):
@@ -1595,7 +1477,7 @@ class HTTPTests(unittest.TestCase):
         return OPEN(Request(self.url + path, data=data, headers=head, method=method))
 
     def test_price_is_registered_through_the_store(self):
-        """面板是时价的唯一入口：写进去的必须是"标价"，不是一次对机器的观测。"""
+        """面板登记时价：写进去的必须是"标价"，不是一次对机器的观测。"""
         before = self.store.read()
         with self.post({"id": "I01", "price": 2.5}) as response:
             self.assertEqual(response.status, 200)
@@ -1652,7 +1534,73 @@ class HTTPTests(unittest.TestCase):
             self.post(b"{not json")
         self.assertEqual(error.exception.code, 400)
 
-    def test_only_price_is_writable(self):
+    def token_post(self, payload, **kwargs):
+        """面板登记 Token 的请求形状：接口地址指到死端口，用例不真的联网。"""
+        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": "http://127.0.0.1:9"}):
+            return self.post(payload, path=ops.TOKEN_PATH, **kwargs)
+
+    def test_token_lives_in_memory_only(self):
+        """面板登记的 Token 只进服务端内存：计划文件、响应、输出里都不留痕。"""
+        before = self.store.read()
+        token = "secret-token-value"
+        with self.token_post({"token": token}) as response:
+            self.assertEqual(response.status, 200)
+            plan = json.load(response)
+        self.assertTrue(plan["credentials"]["configured"])
+        self.assertIsNotNone(plan["credentials"]["set_at"])
+        self.assertEqual(self.credential.get(), token)
+        self.assertNotIn(token, json.dumps(plan, ensure_ascii=False), "响应里不能回显凭据")
+        after = self.store.read()
+        for key in ("name", "instances", "flows", "tasks", "wallet"):
+            self.assertEqual(after[key], before[key], f"登记 Token 不能动 {key}")
+        self.assertNotIn(token, self.store.path.read_text(encoding="utf-8"), "Token 绝不能进计划文件")
+        # 接口连不上不算登记失败：凭据照样登记，失败照实写进结算记录，下一轮自己会重试
+        self.assertTrue(plan["monitor"]["last_error"], "连不上接口要留下原因")
+        # 面板每轮读到的就是这份状态，值本身不出现在 /api/plan 里
+        with OPEN(self.url + "/api/plan") as response:
+            listed = json.load(response)
+        self.assertEqual(listed["credentials"], plan["credentials"])
+        self.assertNotIn(token, json.dumps(listed, ensure_ascii=False))
+        # null 表示清除：状态回到未登记，内存里也不再留着
+        with self.token_post({"token": None}) as response:
+            cleared = json.load(response)
+        self.assertEqual(cleared["credentials"], {"configured": False, "set_at": None})
+        self.assertIsNone(self.credential.get())
+
+    def test_bad_token_requests_never_register_anything(self):
+        before = self.store.path.read_bytes()
+        for payload in ({"token": ""}, {"token": "   "}, {"token": 123}, {"token": "x" * 600},
+                        {"token": "line1\nline2"}, {"token": "a\rb"}, {"token": "tab\there"},
+                        {}, {"token": "abc", "note": "顺手改点别的"}, {"token": None, "x": 1}, [], "abc"):
+            with self.subTest(payload=str(payload)[:40]), self.assertRaises(HTTPError) as error:
+                self.token_post(payload)
+            self.assertEqual(error.exception.code, 400)
+            self.assertEqual(before, self.store.path.read_bytes(), "被拒绝的登记不能留下半个文件")
+        self.assertIsNone(self.credential.get(), "被拒绝的请求不能改内存里的凭据")
+
+    def test_token_endpoint_takes_the_same_three_gates(self):
+        for ctype in ("text/plain", "application/x-www-form-urlencoded"):
+            with self.subTest(ctype=ctype), self.assertRaises(HTTPError) as error:
+                self.token_post({"token": "abc"}, ctype=ctype)
+            self.assertEqual(error.exception.code, 415)
+        with self.assertRaises(HTTPError) as error:
+            self.token_post({"token": "abc"}, origin="https://evil.example")
+        self.assertEqual(error.exception.code, 403, "跨站页面不能借面板塞凭据")
+        with self.assertRaises(HTTPError) as error:
+            self.token_post({"token": "abc"}, headers={"Host": "external.example"})
+        self.assertEqual(error.exception.code, 403)
+        with self.assertRaises(HTTPError) as error:
+            self.token_post(b"{" + b"x" * 5000)
+        self.assertEqual(error.exception.code, 413)
+        with self.assertRaises(HTTPError) as error:
+            self.token_post(b"{not json")
+        self.assertEqual(error.exception.code, 400)
+        self.assertIsNone(self.credential.get(), "这几道关被拒的请求都不能登记凭据")
+        with self.token_post({"token": "abc"}, origin=self.url) as response:
+            self.assertEqual(response.status, 200, "面板自己发出的同源请求要放行")
+        self.assertEqual(self.credential.get(), "abc")
+
+    def test_only_the_two_panel_endpoints_are_writable(self):
         for method in ("PUT", "PATCH", "DELETE"):
             with self.subTest(method=method), self.assertRaises(HTTPError) as error:
                 self.post({"id": "I01", "price": 1}, method=method)
@@ -1660,11 +1608,14 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as error:  # 时价接口本身不读
             OPEN(self.url + "/api/instance-price")
         self.assertEqual(error.exception.code, 404)
+        with self.assertRaises(HTTPError) as error:  # Token 只登记，不读回
+            OPEN(self.url + "/api/token")
+        self.assertEqual(error.exception.code, 404)
         with self.assertRaises(HTTPError) as error:  # 已知读取路径上写入 = 方法不允许
             self.post({"id": "I01", "price": 1}, path="/api/plan")
         self.assertEqual(error.exception.code, 405)
         with self.assertRaises(HTTPError) as error:
-            self.post({"id": "I01", "price": 1}, path="/api/nope")
+            self.post({"token": "abc"}, path="/api/nope")
         self.assertEqual(error.exception.code, 404)
 
     def test_corruption_is_reported_not_hidden(self):

@@ -1,56 +1,51 @@
 # TrainOps
 
-给任意 agent 按需热插拔的**多实例训练管理能力**：本地持久化维护项目计划表、支持多并行训练流程与跨流程任务依赖、提供带总进度竖线的流程甘特图 Web 面板，并精简 agent CLI 操作以减少上下文占用与幻觉。
+面向 **Antigravity CLI** 的插件形式的**多实例训练管理能力**：本地持久化维护项目计划表、支持多并行训练流程与跨流程任务依赖、提供带总进度竖线的流程甘特图 Web 面板，并精简 agent CLI 操作以减少上下文占用与幻觉。
 
 - **多实例并行**：一次实验可指定多个 AutoDL GPU 实例并行推进不同流程，单实例独占防冲突。
 - **规律编号与依赖**：实例 `I01`、流程 `F01`、任务 `F01-T01` 编号稳定，支持同流程自动串联与跨流程依赖。
 - **甘特图 Web 面板**：每个流程以紧凑连续甘特图展示各节点子进度与大致完成时间，并用**红色竖线标出当前甘特图的总流程进度**；面板上点实例卡的「时价」即可登记当前档位的费率（唯一的写操作）。
 - **自主优化调度**：agent 以目标、验收和硬约束为准，可按依赖、资源、成本与实验结果自主重排、拆并任务和调整实例分配，不机械照搬任务顺序；改变目标、放弃必需实验或增加未授权费用时先确认。
 - **极简 Agent 操作**：单次命令完成建表/批量更新，只填核心字段（状态、进度、耗时、依赖），免填冗余记录，避免上下文过长产生幻觉。
-- **一份技能，多家 agent 插件**：仓库本身就是插件目录（Agent Plugins 1.0.0 + Agent Skills），Claude Code、Codex、Antigravity、Gemini CLI 用原生命令装，其余 agent 一条软链即可；各家清单只是指针，没有第二份会漂移的规则。
+- **只做 Antigravity CLI 插件**：仓库根就是插件根（`plugin.json` 清单 + `rules/` 规则入口 + `skills/trainops/` 能力契约），一条 `agy plugin install` 装完即用；不提供别家 agent 的清单，也不维护第二份会漂移的规则。
 - **无卡准备再训练**：通过外部 `autodl_mcp` 先无卡开机，完成项目/环境了解、配置与代码调整；准备就绪后关机，再按需正常开机或持续请求 GPU，验证就绪后正式训练，减少 GPU 空等。
-- **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；`monitor` 定时结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」。
+- **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；面板进程按周期结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」，开发者 Token 在面板上登记。
 - **零第三方依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）。
 
-## 1. 安装到各 Agent
+## 1. 安装到 Antigravity CLI
 
-本仓库本身就是插件目录，同时满足两套公开标准：**Agent Plugins 1.0.0**（根目录 `plugin.json` + `skills/`）与 **Agent Skills**（`skills/trainops/SKILL.md`）。技能只有一份，各家清单和下面的入口文件都只是**指向它**——不存在第二份会漂移的规则。按你的 agent 选一种装法。
+本插件**只服务 Antigravity CLI**，仓库根就是插件根：根目录 `plugin.json`（清单）+ `rules/trainops.md`（规则入口：开工顺序与三条不变量）+ `skills/trainops/`（完整能力契约）。规则只做指针，细则只有 `SKILL.md` 一份——不存在第二份会漂移的规则。
 
-### 1.1 有插件机制的：用原生命令装
-
-| Agent | 安装命令 | 说明 |
-|---|---|---|
-| **Claude Code** | `/plugin marketplace add <仓库路径>` 然后 `/plugin install trainops@trainops`；已发布到 GitHub 时可一条命令：`/plugin install trainops --marketplace Long-Holiday/TrainOps` | 装的是仓库副本（`~/.claude/plugins/cache/trainops/trainops/<版本>/`），改完仓库要 `claude plugin update trainops` 重新同步 |
-| **Codex CLI** | `codex plugin marketplace add <仓库路径>` 然后 `codex plugin add trainops@trainops` | 复制到 `$CODEX_HOME/plugins/cache/trainops/`；装完要新开一个会话才生效 |
-| **Antigravity CLI** | `agy plugin install <仓库路径>/antigravity` | 复制到 `~/.gemini/config/plugins/trainops/`；技能经 `antigravity/skills` 软链一并复制 |
-| **Gemini CLI** | `gemini extensions link <仓库路径>` | 读仓库根的 `gemini-extension.json` 与 `GEMINI.md`（薄入口，指向技能） |
-
-Claude Code、Codex、Antigravity 三者已用官方校验器实测（`claude plugin validate` / `codex plugin list` / `agy plugin validate`）；Gemini CLI 本机未安装，扩展清单按官方格式写但**未实测**。Codex 与 Antigravity 都能直接读本仓库的 `.claude-plugin/marketplace.json`，不需要第二份市场清单。
-
-### 1.2 只有技能目录的：软链一次，覆盖多家
-
-`.agents/skills/` 是跨 agent 的共享技能目录，Windsurf/Cascade、Cursor、Copilot、Gemini CLI、Cline、opencode、Amp 等都会扫（各家的目录以各自官方文档为准）；它们也有自己的目录，按需选一行：
+### 1.1 装成插件（推荐）
 
 ```bash
-ln -s <仓库路径>/skills/trainops ~/.agents/skills/trainops            # 用户级，所有工作区生效
-ln -s <仓库路径>/skills/trainops <实验项目>/.devin/skills/trainops     # Windsurf/Cascade 项目级（.windsurf/skills/ 同样读）
-ln -s <仓库路径>/skills/trainops <实验项目>/.github/skills/trainops    # Copilot 项目级
-ln -s <仓库路径>/skills/trainops ~/.claude/skills/trainops            # Claude Code 不用插件时
+agy plugin install <仓库路径>     # 整个插件根复制到 ~/.gemini/config/plugins/trainops/
+agy plugin list                  # 确认识别到 trainops（skills 1 · rules 1）
 ```
 
-**用软链，别复制**：脚本靠自身路径回推仓库根来读 `.env` 与 `references/`，软链能保住这条路；复制出来的副本会丢掉凭据（见 1.4）。Windows 上 `git` 若没开符号链接，链会落成普通文件，改用 `mklink /D` 或干脆走 1.3。
+装的是插件根的**副本**：改完仓库要再 `agy plugin install <仓库路径>` 同步一次；不想敲命令就在 CLI 里打开 `/plugin` → 「+ Install from local directory...」选同一个目录。开关与卸载按目录名走：`agy plugin disable trainops` / `enable` / `uninstall trainops`。
 
-### 1.3 通用兜底：任何能读文件、能执行命令的 agent
+### 1.2 不装插件：把技能挂进 Antigravity 的技能目录
 
-把下面的提示词复制给 agent（把两处路径换成你自己的）：
+Antigravity 也直接扫技能目录（全局 `~/.gemini/config/skills/<名称>/`，项目内 `.agents/skills/<名称>/`），挂一次就能用：
+
+```bash
+ln -s <仓库路径>/skills/trainops ~/.gemini/config/skills/trainops        # 全局，所有工作区生效
+ln -s <仓库路径>/skills/trainops <实验项目>/.agents/skills/trainops       # 只在这个项目里生效
+```
+
+**用软链，别复制**：脚本靠自身位置回推 `references/` 与面板页面，软链能保住这条路（凭据不跟仓库走，见 1.4）。Windows 上 `git` 若没开符号链接，链会落成普通文件，改用 `mklink /D`，或者干脆走 1.3。
+
+### 1.3 连目录都不想挂：直接指路
+
+在 Antigravity 会话里说一句即可（把两处路径换成你自己的）：
 
 > 启用 TrainOps：读取 `<仓库路径>/skills/trainops/SKILL.md`，保留原有角色。实验项目目录为 `<实验项目路径>`。当前仅加载能力，不创建计划、不启动进程；收到任务后按 SKILL.md 的开工顺序执行：先起甘特图面板（`serve`）并报出地址，再走无卡准备，之后才按授权申请有卡开机。以目标、验收标准和明确硬约束为准，自主优化调度，不必机械照搬我列出的步骤或顺序；常规优化直接同步计划并简述理由，改变目标、放弃必需实验或增加未授权费用时先确认。其他参考按需读取。
 
 ### 1.4 两个容易踩的坑
 
-- **凭据在哪**：Token 从**仓库根的 `.env`** 读。有插件机制的 agent 基本都是**复制**插件（Claude Code 到 `~/.claude/plugins/cache/`、Codex 到 `$CODEX_HOME/plugins/cache/`、Antigravity 到 `~/.gemini/config/plugins/`，Gemini CLI 的 `extensions link` 是软链不受影响）：从本地目录安装会连 `.env` 一起复制（介意多留一份凭据，就用 `TRAINOPS_ENV=<仓库路径>/.env` 或环境变量 `AUTODL_TOKEN` 指回仓库），从 GitHub 等远程源安装则没有 `.env`，必须用这两种方式之一。没配 token 时本地命令照常可用，只有联网的 `wallet fetch` / `monitor` 会提示怎么配。
-- **两个版本号**：各清单里的 `version` 是**插件版本**（0.1.0），`trainops.py --version` 打的是**计划文件 schema 版本**（3）。前者变了不影响账本，后者变了要先备份并核对文件。
-
+- **凭据在哪**：开发者 Token **只在面板上填，并且只存在面板进程的内存里**（表头「Token」按钮，见 §5）。不读环境变量、不读任何文件，CLI 也没有 `--token`——凭据从不跟着仓库走。这一点在装成插件时尤其要紧：Antigravity 会把整个插件根复制到 `~/.gemini/config/plugins/trainops/`，写进仓库的任何东西都会跟着这份副本走，重装一次就换掉。面板进程一退（重启、换端口重开都算）就要重新填；没填时本地命令照常可用，只是余额和「够不够跑完」缺结论。
+- **两个版本号**：清单 `plugin.json` 里的 `version` 是**插件版本**（0.1.0），`trainops.py --version` 打的是**计划文件 schema 版本**（3）。前者变了不影响账本，后者变了要先备份并核对文件。
 
 ## 2. 预览甘特图演示面板
 
@@ -60,9 +55,9 @@ python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --por
 
 浏览器打开 **http://127.0.0.1:8765** 查看各流程甘特图、任务子进度、流程总进度红线与余额结算结论。演示计划自带一份结算记录（数据是编造的演示值），所以开箱就能看到结算徽标；它超过 2 个周期（60 分钟）后自动回退为实时值并标注原因——这是设计好的降级，不是故障。
 
-面板上唯一能改的是**时价**：点实例卡右上角的「时价」，填当前档位的费率（无卡开机填无卡费率，有卡填 GPU 时价），保存后顶部的「现价可跑 X 小时」立刻重算；点「清空时价」则整块结论消失——缺数据就缺结论，不会显示成 0。
+面板上能改的只有两处，其余一律是只读的：**时价**——点实例卡右上角的「时价」，填当前档位的费率（无卡开机填无卡费率，有卡填 GPU 时价），保存后顶部的「现价可跑 X 小时」立刻重算；点「清空时价」则整块结论消失——缺数据就缺结论，不会显示成 0。**Token**——点表头的「Token」填开发者 Token，只存在这个面板进程的内存里，登记后当场结算一轮（见 §5）。
 
-演示目录不要启动自动结算：`serve --interval` / `monitor` 会真的写入 `examples/demo-project/.trainops/plan.json`（那是版本库里的快照），需要真实结算时用自己的实验项目目录。
+演示目录不要启动自动结算：`serve --interval` 会真的写入 `examples/demo-project/.trainops/plan.json`（那是版本库里的快照），需要真实结算时用自己的实验项目目录。
 
 ## 3. 精简 CLI 用法
 
@@ -109,9 +104,9 @@ $CLI batch --task "F01:评估:-:30:F01-T01"
 
 ### 低上下文工作方式
 
-`--brief` 为显式选项，不改变默认完整文本/JSON 或脚本退出码：show 只看当前行动，写命令只看版本、编号和更新结果，monitor --once 只看一份结算结论。每组最多 3 条，长文本标 `…`，同时报告总数/省略数；历史任务仍保留在账本。完整问题看 check，完整任务看 show。
+`--brief` 为显式选项，不改变默认完整文本/JSON 或脚本退出码：show 只看当前行动，写命令只看版本、编号和更新结果。每组最多 3 条，长文本标 `…`，同时报告总数/省略数；历史任务仍保留在账本。完整问题看 check，完整任务看 show。
 
-brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒不会撤销已保存修改；纯状态/进度/巡检更新成功后不必机械再跑 check + show。脚本门禁仍用 check --strict。详细参数和批量语法见 [CLI 参考](skills/trainops/references/cli.md)，配置见 [AutoDL 参考](skills/trainops/references/autodl.md)，异常见 [恢复协议](skills/trainops/references/protocol.md)，目标 agent 按需读取即可，不必加载本 README 或开发用 CLAUDE.md。
+brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒不会撤销已保存修改；纯状态/进度/巡检更新成功后不必机械再跑 check + show。脚本门禁仍用 check --strict。详细参数和批量语法见 [CLI 参考](skills/trainops/references/cli.md)，配置见 [AutoDL 参考](skills/trainops/references/autodl.md)，异常见 [恢复协议](skills/trainops/references/protocol.md)，按需读取即可，不必加载本 README。
 
 ## 4. 命令速查
 
@@ -128,10 +123,8 @@ brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒�
 | `batch [--instance ...] [--flow ...] [--task ...] [--set ...]` | 单次命令批量追加实例/流程/任务或批量更新任务进度与状态（`--set "F01-T01:done:100:备注"`） |
 | `instance set I01 --disk "data:40/50,fs:5/200"` | 登记各盘用量（GB）；`--disk` 逐盘合并，`data:none` 清空该盘 |
 | `instance set I01 --mode no-gpu`（或 `gpu` / `none`） | 登记开机模式：无卡准备（含持续请求等待 GPU）记 `no-gpu`，正式有卡开机记 `gpu`，核实不了记 `none`（未观测）。时价不在 CLI，见下方「余额与可用时长」 |
-| `wallet fetch [--token ...] [--dry-run]` | 手动拉一次账户余额并写入计划（只读接口，不下发实例指令、不触发计费）；失败时退出码非 0 且计划文件不变。定时刷新余额用 `monitor` |
-| `wallet set --assets 128.50 [--voucher 20]` | 无 token / 断网时手工登记余额（`none` 清空；无参数会被拒绝） |
-| `monitor [--interval 30] [--once] [--expires-at ISO\|none] [--token ...] [--timeout 20] [--strict]` | **定时结算**：每轮刷新余额并重算「剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」，结论连同结算时间写进计划；默认前台循环，`--once` 跑一轮即退出（cron），`--strict` 在最近一次结算有错时返回非 0 |
-| `serve --port 8765 [--interval 30]` | 启动本地甘特图 Web 面板（仅监听 `127.0.0.1`）；面板上**唯一能写的是实例时价**，其余路径与写动词一律拒绝；带 `--interval` 时同一进程内再跑一个结算线程 |
+| `wallet set --assets 128.50 [--voucher 20]` | 面板没开或要人工核对时手工登记余额（`none` 清空；无参数会被拒绝）。余额没有 CLI 自动拉取：结算由面板进程负责 |
+| `serve --port 8765 [--interval 30]` | 启动本地甘特图 Web 面板（仅监听 `127.0.0.1`）；面板上**能写的只有实例时价与开发者 Token**，其余路径与写动词一律拒绝；带 `--interval` 时同一进程内再跑一个结算线程 |
 
 几个容易被忽略的约束：同一实例同时只允许一个 `running` 任务（`local` 不占 GPU，可并行）；依赖未完成的任务不能被标记为 `running`；实例上仍有任务运行时不能把该实例标为 `off` / `unreachable`。
 
@@ -168,39 +161,28 @@ ln -sfn "$TB" /root/tf-logs/<项目名>     # 内置 TensorBoard 免启动即可
 
 ### 余额与可用时长
 
-Token 放在 **TrainOps 仓库根目录的 `.env`**（模板见 [.env.example](.env.example)，`chmod 600`）：
+Token 在**面板**上登记，不在 CLI：打开 `serve` 后点表头的「Token」，粘贴控制台 → 设置 → 开发者Token。它只存在面板进程的内存里——不落盘、不进计划文件、不进日志或异常文本，面板重启要重新填。
 
 ```bash
-cp .env.example .env && chmod 600 .env   # 填入 AUTODL_TOKEN=...（控制台 → 设置 → 开发者Token）
-$CLI wallet fetch                        # 只读接口，token 不进计划文件、不进输出、不进异常文本
 $CLI show                                # 预算行：余额、可跑小时、计划剩余 GPU 小时与花费、够不够
+$CLI wallet set --assets 128.50          # 面板没开或要人工核对时手工登记余额
 ```
 
-时价在**面板**上登记，不在 CLI：打开 `serve` 后点实例卡右上角的「时价」按钮。无卡开机（含持续请求等待 GPU）登记的是无卡费率，GPU 模式开机后登记的是 GPU 时价——两个档位各存各的，切模式不会互相覆盖；开机模式本身由 agent 用 `instance set I01 --mode ...` 登记。
-
-优先级为 `--token` > 环境变量 `AUTODL_TOKEN` > `.env`（`TRAINOPS_ENV` 可把 `.env` 指到别处）；文件缺失不算错误，没配 token 时本地命令照常可用，只有联网命令会提示怎么配。
+时价也只在面板上登记：点实例卡右上角的「时价」按钮。无卡开机（含持续请求等待 GPU）登记的是无卡费率，GPU 模式开机后登记的是 GPU 时价——两个档位各存各的，切模式不会互相覆盖；开机模式本身由 agent 用 `instance set I01 --mode ...` 登记。
 
 可用时长只按现金余额 `assets` 计算，代金券单独展示；任一开机实例缺当前档位的费率或任一任务完成时间待估时，对应结论**不显示**而不是给出残缺数字。面板顶部只呈现这些算得出的结论：余额、代金券、可跑小时、"够不够跑完"，外加一块结算记录（文案由服务端写好，面板不做任何计算）。
 
 ### 自动结算（余额与剩余计划开销定时重算）
 
-按需选一种方式让它定期跑（三种都是同一个 `cycle()`：联网在文件锁之外，落盘只写一次）：
+结算**只由面板进程做**，没有第二个常驻结算进程：起面板时带 `--interval`，它就每 N 分钟刷新一次余额并重算结论；在面板上登记 Token 的那一刻也会立刻结算一轮。
 
 ```bash
-$CLI monitor                        # ① 前台循环，每 --interval 分钟结算一轮，Ctrl+C 退出
-$CLI monitor --once --brief         # ② 跑一轮即退出：交给 cron / 系统定时器 / agent 巡检
-$CLI serve --interval 30 --port 8765  # ③ 面板进程内顺带结算，一个进程管两件事
+$CLI serve --interval 30 --port 8765   # 一个进程管两件事：看板 + 结算
 ```
 
-```cron
-*/30 * * * * cd /你的路径/TrainOps && python3 skills/trainops/scripts/trainops.py -p /你的路径/my-experiment monitor --once --strict
-```
+面板在跑，结算就在跑；它一退，余额就不再刷新：超过 2 个周期没有新结算就回退为实时值并说明原因，**同一屏不会出现两套互相矛盾的数字**。结算失败（断网、Token 失效）只记进计划的 `last_error`，不打断结算，面板进程下一轮自己重试；`check` 会把它当成提醒报出来。面板重启后 Token 要重新登记，否则结算写着"未配置 Token"继续跑——不报错，只是少给余额结论。
 
-monitor --brief 仅与 --once 同用；--strict 保留原退出码语义。monitor 只结算余额，不检查远端训练、不自动关机；真实 SSH 巡检和用户约定汇报仍须执行，正常时简报，不每轮重复贴计划。serve 与 monitor 均为前台进程，后台运行/日志由调用方管理，不会自动后台化或登记 PID。
-
-每轮把结论写进计划：`余额能跑多久`、`跑完剩余计划还需多少 GPU 小时`、`预估花费`、`余额够不够`，外加结算时刻。`show` 与面板直接读这份结论并标注"自动结算于 X"；超过 2 个周期没有新结算就回退为实时值并说明原因，**同一屏不会出现两套互相矛盾的数字**。结算失败（断网、token 失效）只记进计划的 `last_error`，不打断循环也不改动其余数据，`check` 会把它当成提醒报出来，`--strict` 让 cron 能据此告警。
-
-`--expires-at ISO` 用于给循环加个自动退出时间（避免留下遗忘的守护进程），`--expires-at none` 清空；手动改计划后想立刻刷新结论用 `monitor --once`，不要用 `wallet fetch` —— 后者只更新余额，不动结算记录。
+面板是前台进程，后台运行/日志由调用方管理，不会自动后台化或登记 PID。
 
 ## 6. 测试
 
@@ -209,5 +191,98 @@ python3 -m unittest discover -s tests -v   # 计划账本 / CLI / 并发写 / �
 node tests/test_web.cjs                    # 面板渲染：甘特几何、滚动保持、余额与结算块、逾期提示、XSS 转义
 ```
 
-测试进程一律把 `.env` 指向不存在的路径，绝不会读到开发机上的真 token。清单测试会在各 agent CLI（`claude` / `codex` / `agy`）存在时调用它们的官方校验器复验一遍，未安装则跳过（`codex` 用临时 `CODEX_HOME`，不碰你本机的配置）。
+测试进程不碰网络：需要余额接口的用例把 `TRAINOPS_API_BASE` 指到本地假服务，凭据直接传参（没有任何文件或环境变量可读，也就没有"别读到开发机真 token"这回事）。装了 `agy` 时，清单测试会调它的官方校验器（`agy plugin validate --strict`）复验一遍，并用临时 `HOME` 真装一次插件、核对技能与规则都到位——两条都不会碰你本机的 Antigravity 配置，`agy` 没装则跳过。
+
+## 7. 改这个仓库
+
+这一节给维护者：怎么跑、数据怎么流、哪些约束不能破。用它的 agent 不需要读。
+
+### 硬约束
+
+- **零第三方依赖**：只用 Python 标准库；测试用 Node 内置模块（没有 `package.json`，不装 npm 包）。
+- **写计划只有两条入口**：CLI，以及面板的时价接口（`POST /api/instance-price`，只能改时价）。两条都走 `Store.change()`；`$PROJECT/.trainops/plan.json` 是唯一事实来源，禁止用 Edit/Write 直接改。面板另有一个 `POST /api/token`，只把开发者 Token 写进面板进程内存——不经过 `Store`，也不落任何文件。
+- **缺数据就缺结论**：算不出的数字（缺费率、缺耗时、缺余额）一律不显示，绝不用 0 顶替或自行估算。这条口径同时约束 CLI 文本、`/api/plan` 与面板三处。
+
+### 常用命令
+
+```bash
+python3 -m unittest discover -s tests -v      # Python 测试（约 30 秒）
+node tests/test_web.cjs                       # 面板渲染测试（无 npm 依赖）
+
+# 跑单个用例 / 单个类
+python3 -m unittest discover -s tests -k wallet
+python3 -m unittest tests.test_trainops.BudgetTests.test_hours_use_cash_only_and_skip_unknown_pieces -v
+python3 -m unittest tests.test_plugin -v      # 插件清单（装了 agy 时顺带跑官方校验器）
+
+# 演示面板（自带演示计划与结算记录，不连服务器）
+python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --port 8765
+```
+
+CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--version` 打当前 schema 版本）。两个容易踩的坑：
+
+- 改了 `demo_plan()` 就要重新生成仓库里的演示快照，否则 `RepoSnapshotTests` 失败：
+  `python3 skills/trainops/scripts/trainops.py -p examples/demo-project demo --force`
+- 别在 `examples/demo-project` 上跑 `serve --interval`：结算会真的改写版本库里的那份快照。
+
+### 架构
+
+数据流是单向的：`plan.json` → CLI（`Store` → `forecast`/`budget`/`settlement`）→ `show` 文本或 `/api/plan` JSON → 面板只渲染。
+
+`skills/trainops/scripts/trainops.py`（全部逻辑，单文件）：
+
+- `Store`：唯一写入口。`fcntl.flock` 排他锁 + 临时文件 `os.replace` + 文件与目录 fsync；所有读改写都走 `store.change(operation)`。
+- `validate()`：读取与写入两侧都跑，账本不变量集中在这里——编号与计数器一致性、`TRANSITIONS` 状态机、依赖闭环（Kahn）、`done` ⇒ 进度 100、同一 GPU 实例同时只能有一个 `running`。校验失败只报错，**从不静默修复**；schema 版本不符直接拒绝读（开发阶段无迁移，提示"备份并核对文件"）。
+- `forecast()`：排程的唯一事实来源。每个 GPU 实例一条车道，`estimate.start/finish` 由依赖 + 车道 + `not_before` 推出；`running` 任务靠 `progress_at` 采样外推，进度 100% 或已超期即降级为"待估"。
+- `budget()` / `estimate_view()` / `settlement()`：共用一套口径。可用时长只按现金余额 `assets` 算，代金券单独展示；费率按开机模式取——无卡（`mode=no-gpu`，含持续请求等待 GPU）按 `no_gpu_price`，有卡按 `price`，模式未观测时按 `price`（宁可高估花费），费率缺失则整块不下结论。结算结论超过 2 个周期未更新就回退为实时值并说明原因，同一屏不出现两套数字。
+- `plan_fingerprint()`：用参与计算的字段做哈希，判断"结算之后计划有没有变过"。不要改用 `revision`——结算每轮都自增它，会永远显示"有变更"。
+- `Credential`：开发者 Token 只活在这里——面板是唯一入口，值只存在面板进程内存，进程一退就没了，重开面板要重填。它不落盘、不进计划、不进日志，`status()` 只外露"配没配、什么时候配的"。
+- `cycle()`：一轮结算，token 由调用方从 `Credential` 现取（没有环境变量、没有文件、没有 `--token`）。联网在文件锁**之外**，落盘只走一次 `store.change()`；失败只写 `monitor.last_error`，不打断结算、不动其余数据。
+- `Handler`：可写的只有两个端点——`POST /api/instance-price` 与 `POST /api/token`；其余路径与写动词一律 404/405。Host 白名单只放 127.0.0.1/localhost（防 DNS rebinding），另加 Origin 同源与 `application/json` 两道关。`/api/plan` 与登记响应都带 `credentials` 块，但只有布尔与登记时间，没有值。
+- 唯一的外部调用是 AutoDL 只读余额接口（POST 无请求体、拒绝重定向以免转发 `Authorization`）。返回值是千分之一元整数，单位对不上就报错，而不是写错 1000 倍。
+
+`skills/trainops/web/index.html`（单文件面板，无构建步骤）：
+
+- **零运行时开销**：只用静态 CSS，不引外部字体/图片/图标库/JS 库/canvas；唯一的动画是 `prefers-reduced-motion` 守卫下运行中状态的脉冲点。改完必须跑 `node tests/test_web.cjs`。
+- **面板不做业务计算**：金额、结算整句文案、甘特条几何全部由服务端在 `/api/plan` 里算好，前端只负责打点。条形几何以服务端 `estimate` 为准是硬要求（有测试盯着时间轴、ETA 文案与总进度线三者一致）。
+- **视觉口径是"调度台"**：颜色只归状态与结论（执行中/已完成/阻塞/失败、余额够不够），交互与表头一律墨色——想给按钮或标题加彩色之前，先问一句它是不是在报告状态。板块做成凹的（内嵌 + 比纸面更深的底），投影只留给弹窗。方格纸只画在甘特轨道与时间轴里。总进度线与甘特子进度线都用墨色（`--ink`），红色因此只表示失败。
+- **`.gantt-lane` 的左右 margin 必须继续用 `--pad`**：`laneLeft()` 与条形的百分比坐标同源于它，改动这个值会让条形与时间轴错位（`test_web.cjs` 盯不到这一处）。
+- DOM 一律 `createElement` + `textContent`：计划文件里的文本是不可信输入（`test_web.cjs` 有 XSS 用例）。
+- 每 10 秒轮询 `/api/plan`，`document.hidden` 时跳过；重绘必须保留各流程甘特的横向滚动位置。
+- **两个弹窗**（时价、Token）都挂在 `#modal`（不在重绘范围内），否则轮询会冲掉正在输入的值。
+
+### 文档也是产品
+
+`SKILL.md` 是热插拔入口（外部 agent 读的那份）、`rules/trainops.md` 是 Antigravity 的规则入口、`references/protocol.md` 是异常与恢复的按需参考、`README.md`（本文件）面向用户。CLI 行为变了，这几处要同步。
+
+外部 agent 反复踩过的两条默认路线，改入口时别丢（`test_plugin.SkillTests.test_entry_keeps_task_startup_order` 盯着）：
+
+- **收到任务就要起面板**：`serve --port 8765 --interval 30`（一个进程顺带结算，也是唯一的结算方式）。
+- **无卡准备是默认**：先 `power_on_no_gpu` 准备再申请有卡，只有用户明确要求持续请求或已核实无需准备才直接 `power_on`。
+
+`SKILL.md` 有 1800 字符硬预算（`test_trainops` 的入口用例），新约束要挤进这个预算，别靠加长入口来写第二份细则。
+
+### 插件打包
+
+一份技能、一份清单，只有 Antigravity 一家：
+
+| 文件 | 作用 |
+|---|---|
+| `plugin.json` | 插件清单：`$schema` 指向 Antigravity 的 schema，`name` 决定装到 `~/.gemini/config/plugins/<name>/`，`version` 是插件版本 |
+| `rules/trainops.md` | 规则入口（≤40 行）：只做指针 + 三条不变量，细则留在 `SKILL.md` 与 `references/` |
+| `skills/trainops/` | 技能本体；不要移动这一层——脚本靠 `parents[3]` 回推插件根 |
+
+三条不能破的规矩：
+
+- **不要移动 `skills/trainops/`**：脚本靠 `parents[3]` 回推插件根，`references/` 与 `web/index.html` 也按自身位置找（`test_plugin` 有深度守卫）。入口文件里不写绝对路径。
+- **入口文件只做指针**（≤40 行）：细则一律留在 `SKILL.md` 与 `references/`，同一份约束写两处必然漂移。
+- **别再加别家的清单**（`.claude-plugin/`、`.codex-plugin/`、`gemini-extension.json`、根 `AGENTS.md` 等）：本插件只服务 Antigravity CLI，`test_plugin.ManifestTests.test_only_antigravity_packaging_exists` 会直接判失败。
+
+### 约定
+
+- 全仓库中文：文档、CLI 输出、`PlanError` 文案（写成可直接执行的建议）、测试断言消息、commit message（中文摘要 + 按子系统分条的 `-` 列表）。
+- 失败必须原子：被拒绝的编辑不留下半个文件（有测试逐字节比对计划文件）。
+- Token 只进请求头：绝不写进计划文件、stdout/stderr 或异常文本。它**只有面板一个入口**（`POST /api/token`），只存在面板进程内存里——不要给它加环境变量、配置文件或 CLI 参数（插件被复制/远程安装后，跟着仓库走的凭据文件都会丢）。
+- 计划表只记核心字段（状态、进度、实例、依赖、耗时）；命令、日志路径、commit 一律不进计划。
+- 新增测试沿用既有约定：不碰网络也不碰开发机上的凭据——需要余额接口的用例把 `TRAINOPS_API_BASE` 指到本地假服务，Token 直接作为参数传给 `cycle()`；需要 `agy` 的用例用临时 `HOME`。
+
 

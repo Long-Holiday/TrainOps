@@ -7,8 +7,3 @@ __pycache__/
 !examples/demo-project/.trainops/
 examples/demo-project/.trainops/*
 !examples/demo-project/.trainops/plan.json
-
-# 凭据：.env 只放本机，模板 .env.example 进版本库
-.env
-.env.*
-!.env.example

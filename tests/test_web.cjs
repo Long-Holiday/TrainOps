@@ -46,12 +46,11 @@ const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // 这里现生成一份新鲜的演示计划，断言与仓库快照的年龄无关。
 const project = fs.mkdtempSync(path.join(os.tmpdir(), 'trainops-web-'));
 process.on('exit', () => fs.rmSync(project, {recursive: true, force: true}));
-// 与 Python 测试同一约定：测试进程绝不读开发机上的 .env（真 token）。
-const env = {...process.env, TRAINOPS_ENV: path.join(project, 'missing.env'), AUTODL_TOKEN: ''};
-execFileSync('python3', [cli, '--project', project, 'demo'], {encoding: 'utf8', env});
+// 凭据只从面板登记进服务端内存：子进程读不到任何 token，这里不必再"指开"凭据文件。
+execFileSync('python3', [cli, '--project', project, 'demo'], {encoding: 'utf8'});
 const data = JSON.parse(execFileSync('python3', [cli, '--project', project, 'show', '--json'],
-  {encoding: 'utf8', env}));
-const nodes = Object.fromEntries(['title','updated','instances','summary','flows','error','refresh','theme','modal']
+  {encoding: 'utf8'}));
+const nodes = Object.fromEntries(['title','updated','instances','summary','flows','error','refresh','theme','token','modal']
   .map(id => [id, new Element('div')]));
 let failed = false;
 const calls = [];              // 面板发出的每个请求，用来断言时价登记真的走了 POST
@@ -190,6 +189,48 @@ async function main() {
   await nodes.refresh.fire('click');
   assert.equal(byClass(nodes.instances, 'price')[1].textContent, '¥1.58/h');
   console.log('PASS: no-GPU instances register the no-GPU rate instead of a GPU price');
+
+  // Token 只从面板登记、只进服务端内存：请求形状、状态文案，客户端一律不留副本
+  assert.ok(html.includes('Token 只存本进程内存'), '页脚要说清 Token 存在哪，免得人去找凭据文件');
+  data.credentials = {configured:false,set_at:null};
+  await nodes.refresh.fire('click');
+  assert.ok(nodes.token.classList.contains('unset'), '没登记 Token 时按钮要转警示态');
+  nodes.token.fire('click');
+  assert.match(dialogNode().textContent, /登记开发者 Token/);
+  assert.match(dialogNode().textContent, /只存在这个面板进程的内存里/);
+  assert.equal(dialogInput().type, 'password', 'Token 不能在屏幕上回显');
+  assert.equal(dialogInput().value, '', '弹窗不回填：客户端不留副本');
+  const beforeToken = calls.length;
+  dialogButton('保存').fire('click');
+  assert.equal(calls.length, beforeToken, '空输入不该发请求');
+  assert.match(dialogNode().textContent, /还没填 Token/);
+  postResult = {ok:true, json: async () => ({...data, credentials:{configured:true,set_at:'2026-10-15T09:00:00+00:00'}})};
+  dialogInput().value = 'secret-token-value';
+  dialogButton('保存').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  const tokenPost = calls.filter(call => call.options.method === 'POST').pop();
+  assert.equal(tokenPost.url, '/api/token');
+  assert.equal(tokenPost.options.body, '{"token":"secret-token-value"}');
+  assert.equal(nodes.modal.classList.contains('hidden'), true, '登记成功后关窗');
+  assert.equal(nodes.modal.children.length, 0, '关窗后输入框连同里面的值一起消失');
+  assert.ok(!nodes.token.classList.contains('unset'), '登记后按钮回到常态');
+  const page = [nodes.title,nodes.updated,nodes.summary,nodes.instances,nodes.flows,nodes.error,nodes.modal];
+  assert.ok(!page.some(node => node.textContent.includes('secret-token-value')),
+    '凭据不能留在页面任何位置');
+  // 被拒绝时留在弹窗里：这是服务端说的实话，不是客户端编的
+  postResult = {ok:false, json: async () => ({error:'Token 超过 512 字符，请核对是否粘错了内容'})};
+  nodes.token.fire('click');
+  dialogInput().value = 'x'.repeat(600);
+  dialogButton('保存').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(dialogNode().textContent, /登记失败：Token 超过 512 字符/);
+  assert.equal(nodes.modal.classList.contains('hidden'), false, '被拒绝时不能关窗');
+  postResult = null;
+  dialogButton('清除 Token').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call.options.method === 'POST').pop().options.body, '{"token":null}',
+    '清除要发 null，不是空串');
+  console.log('PASS: developer token is registered from the panel and never kept client-side');
 
   // 余额只有一块：金额、代金券标注、按当前开机时价的可跑时长、计划花费与充足结论
   const budgetChips = byClass(nodes.summary, 'budget');
