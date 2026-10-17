@@ -152,6 +152,74 @@ class SkillTests(unittest.TestCase):
                        "关机止付", "Run ID", "extra_metrics", "Run 记录"):
             self.assertIn(phrase, reference)
 
+    def test_execution_chains_are_linked_from_skill_and_entry(self):
+        for path in (SKILL, ROOT / "rules/trainops.md"):
+            body = path.read_text(encoding="utf-8")
+            for phrase in ("references/execution.md", "trainpilot", "lark-cli", "远端拉取"):
+                self.assertIn(phrase, body)
+
+    def test_notifications_are_independent_of_experiment_logging(self):
+        reference = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
+        for phrase in ("MCP `trainpilot`", "不在屏幕前", "迭代分析", "日志是否持续更新",
+                       "重大节点立即额外通知", "代码同步完成", "恢复运行", "关机完成",
+                       "会话生命周期", "不得声称已建立持续监控", "不阻断安全处置"):
+            self.assertIn(phrase, reference)
+        body = SKILL.read_text(encoding="utf-8")
+        self.assertIn('CronExpression="0,30 * * * *"', body)
+        self.assertIn("通过 MCP trainpilot 和对话汇报任务状态", body)
+        logs = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")
+        self.assertIn("不替代 MCP `trainpilot`", logs)
+
+    def test_trainpilot_covers_all_tools_and_explicit_task_binding(self):
+        reference = (SKILL_DIR / "references/trainpilot.md").read_text(encoding="utf-8")
+        body = SKILL.read_text(encoding="utf-8")
+        for tool in ("get_task_status", "report", "poll_instruction", "ack_instruction", "ack_plan"):
+            self.assertIn(tool, reference)
+            self.assertIn(tool, body)
+        for phrase in ("instructions", "每次显式传 `task_id`", "没有 `task_id` 参数",
+                       "服务端默认值", "新尝试不串用旧邮箱", "Task not found", "不读取其凭据文件"):
+            self.assertIn(phrase, reference)
+        self.assertIn("references/trainpilot.md", body)
+
+    def test_trainpilot_alerts_require_decision_and_verified_ack(self):
+        reference = (SKILL_DIR / "references/trainpilot.md").read_text(encoding="utf-8")
+        for phrase in ("先 `report(event_type=\"alert\")`", "has_instruction=true",
+                       "长轮询超时不是恢复许可", "不重复上报 alert", "payload['solution']",
+                       "instruction_id/action", "ACK 后必须 `report(event_type=\"failed\")`",
+                       "5 次是上限", "先关机止付", "COMPLETED/FAILED 时停止轮询"):
+            self.assertIn(phrase, reference)
+        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
+        self.assertIn("不表示可跳过指令直接修复", protocol)
+
+    def test_trainpilot_plans_and_delivery_are_not_fire_and_forget(self):
+        reference = (SKILL_DIR / "references/trainpilot.md").read_text(encoding="utf-8")
+        for phrase in ("检查每次 report 的 `next_task_plans`", "按返回的 plan_id 去重",
+                       "告警未解决前", "保留 pending", "不重复已完成动作", "不等于已送达",
+                       "`completed` / `failed` 仅记录终态", "随即重报同一终态"):
+            self.assertIn(phrase, reference)
+        execution = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
+        self.assertIn("trainpilot.md", execution)
+        self.assertNotIn("依据实际工具返回判断通知成功", execution)
+
+    def test_local_sync_preserves_version_control_boundaries(self):
+        reference = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
+        steps = ("1. **核实目标与工作区**", "2. **本地修改与验证**",
+                 "3. **提交并推送**", "4. **远端拉取并核对**", "5. **可恢复启动**")
+        self.assertEqual(sorted(reference.index(step) for step in steps),
+                         [reference.index(step) for step in steps])
+        for phrase in ("不在服务器直接修改受版本管理的代码", "不强制推送", "不覆盖用户未提交工作",
+                       "先取得授权", "source /etc/network_turbo", "实际启动命令", "不向 `plan` 塞"):
+            self.assertIn(phrase, reference)
+
+    def test_completion_and_cancellation_cleanup_keeps_panel(self):
+        reference = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
+        for phrase in ("任务完成或用户取消", "定时巡检、资源等待唤醒", "cancel_job",
+                       "不等于关机", "共享巡检", "不清理其他任务的调度", "清理失败",
+                       "实例最终状态", "真实位置", "任务面板可以保留", "不强制清空计划"):
+            self.assertIn(phrase, reference)
+        for name in ("protocol.md", "autodl.md"):
+            self.assertIn("execution.md", (SKILL_DIR / "references" / name).read_text(encoding="utf-8"))
+
     def test_experiment_logging_reads_before_write(self):
         body = SKILL.read_text(encoding="utf-8")
         reference = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")

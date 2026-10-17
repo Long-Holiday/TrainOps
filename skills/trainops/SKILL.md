@@ -15,6 +15,10 @@ description: AutoDL 多实例训练计划、任务流程图、结算与飞书实
 4. **无卡准备**：默认 `power_on_no_gpu`，仅 **0.5 核 CPU、2GB 内存、无 GPU**；做轻量项目理解、配置与代码调整，限制并发/内存，重型编译、数据处理和模型加载移到授权且资源充足的环境或有卡阶段，不把资源不足误判为环境故障。准备就绪后按授权优先 `switch_mode` 转有卡（内部先关机并确认），不支持时分步关机再开机；用户要求持续请求或已核实无需准备才直接 `power_on`。不交付空等 GPU，不支持无卡则说明限制。细则见 [AutoDL](references/autodl.md)。
 5. **训练与记录**：核实 GPU 就绪后训练；**先读后写**：写入实验日志前先 `experiment show`，只回顾最近的相关 Run（同任务最近一条、同流程/基线最近一次，通常 1–3 条，不必全量）与 pending，确认续跑、重跑还是新尝试。再以 `experiment start` 登记 Run；主指标外用 `extra_metrics` 记录多个真实指标，自动扩展数字列；恢复用 update，不重复 start，不静默覆盖旧证据。
 
+## 训练执行链路
+
+开工、改代码、巡检及完成/取消时必读[执行与通知闭环](references/execution.md)：**MCP `trainpilot` 即时通知**让用户不在屏幕前也能获取训练状况，`lark-cli` 只做实验日志与迭代分析，两者互不替代；必读[TrainPilot MCP 监督闭环](references/trainpilot.md)，按实时 instructions 使用全部五个工具（`get_task_status`、`report`、`poll_instruction`、`ack_instruction`、`ack_plan`），异常先告警并取得指令再修复，每次 report 检查下一任务计划；本地修改并验证、保留修改记录后提交推送，远端拉取并核对版本再执行，不在服务器直接修改受版本管理的代码。完成或取消后清理本任务创建且不再需要的定时巡检和资源等待任务，通过 `trainpilot` 与对话汇报结果位置与实例最终状态，**任务面板可以保留**。这些操作由 agent 调用现有工具完成，不新增常驻服务或改变 CLI。
+
 ## 自主调度
 
 目标是**缩短假设到有效结果的迭代时间**，不是占满 GPU。围绕验收标准和预算、资源、先后顺序等硬约束，按真实依赖、成本、耗时与结果自主优化调度：优先关键假设、解锁依赖和高风险验证；每轮复盘，重排、拆并任务、调整实例，用 CLI 同步并简述原因，无需逐项请示。
@@ -30,7 +34,7 @@ description: AutoDL 多实例训练计划、任务流程图、结算与飞书实
 - 唯一事实来源是项目 `.agent/experiment.yaml` 的 `plan` 段，只经 CLI/面板时价修改；禁止直接 Edit/Write JSON/YAML，恢复先核实、不盲目重启。
 - 编号固定：`I01`、`F01`、`F01-T01`。计划只记任务名、实例、耗时、依赖、状态/进度；命令、日志、commit 留远端。
 - 同一 GPU 单任务，`local` 可并行；依赖未完成不得启动，done 前核实进程退出与产物。关机须用户授权，最终关机还须无后续复用；无卡转有卡的中间关机按开工顺序与协议执行。
-- 故障先报现象与证据，再定位、自愈（一次改一个变量，不重复动作），最多 5 次；仍无法继续即先关机止付（已预授权），记 `failed`/`blocked` 而非 done，随后报告等决策。见 [协议](references/protocol.md)。
+- 故障先报现象与证据；TrainPilot 可用时先 alert → poll_instruction 获得修复指令，再定位、自愈（一次改一个变量，不重复动作），最多 5 次；仍无法继续即先关机止付（已预授权），记 `failed`/`blocked` 而非 done，随后报告等决策。见 [协议](references/protocol.md)。
 - 系统盘放代码/环境，`/root/autodl-tmp` 放数据/checkpoint/TensorBoard，`/root/autodl-fs` 放长期产物与跨实例交接；后者所有实例共享，分目录防覆盖。数据盘不随镜像保存，释放即丢，释放前先转存。
 - 缺进度、耗时、费率或余额保留待估，不猜数、不补 0；可用时长只算现金，代金券另列。`--mode` 记开机模式，费率与 Token 只在面板登记，Token 只存面板进程内存。
 
@@ -38,5 +42,5 @@ description: AutoDL 多实例训练计划、任务流程图、结算与飞书实
 
 - `show --brief` → 核实后 `set <任务> --status running` → `--progress 40`（真实观测）或 `--checked` → 核实后 done；写命令带 `--brief`。
 - 结构编辑回执附检查：修 issues、判读 warnings，不撤销已保存编辑；纯状态更新不必再跑 check + show。摘要有省略，按需 show/check 看全量。批量追加/改派/状态/依赖修改默认 `batch --from-json -`，一次原子提交，依赖清空用 `deps: []`；先用 `--dry-run` 可无落盘检查。读取回执 aliases 映射，key 仅本次有效，后续用系统编号。单项仍用 set；旧简写 `batch --dep "任务=依赖列表"` 保留，只有简写新增会推断自动串联，独立任务用 `-` 显式留空。
-- **固定巡检调度**：训练进入 running 后，立即通过宿主调度器登记整点与半点（:00 与 :30）的例行唤醒任务（Antigravity CLI 为 `schedule(CronExpression="0,30 * * * *", Prompt="执行整点/半点 SSH 训练巡检，在trainpilot飞书和对话中汇报", IsDaemon=false)`）；不可仅依赖开机缺货退避唤醒顺带巡检，确保任何阶段均有绝对时钟对齐的固定周期通报。用户另定巡检周期则遵从；`--checked` 只记巡检，未记或超 1 小时即未巡检。
+- **固定巡检调度**：训练进入 running 后，立即通过宿主调度器登记整点与半点（:00 与 :30）的例行唤醒任务（Antigravity CLI 为 `schedule(CronExpression="0,30 * * * *", Prompt="执行整点/半点 SSH 训练巡检，通过 MCP trainpilot 和对话汇报任务状态，另用实验日志 CLI 记录真实变化；按 execution.md 执行", IsDaemon=false)`）；不可仅依赖开机缺货退避唤醒顺带巡检，确保任何阶段均有绝对时钟对齐的固定周期通报。用户另定巡检周期则遵从；`--checked` 只记巡检，未记或超 1 小时即未巡检。
 - 巡检及完成/失败后先 `experiment show` 读取当前 Run、最近记录与 pending，再 `experiment update`，以 `experiment sync` 补录；恢复/更新不新建重复 Run，不覆盖旧证据；飞书失败不阻断训练与止付。

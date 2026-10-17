@@ -12,6 +12,7 @@
 - **无卡准备再训练**：通过外部 `autodl_mcp` 先无卡开机，完成项目/环境了解、配置与代码调整；准备就绪后关机，再按需正常开机或持续请求 GPU，验证就绪后正式训练，减少 GPU 空等。
 - **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；面板进程按周期结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」，开发者 Token 在面板上登记。
 - **飞书实验日志**：agent 巡检同时用 `lark-cli` 维护多维表格；复用用户指定/项目已有表，未指定则自动创建。项目配置、计划账本与 Run 历史统一存实验项目 `.agent/experiment.yaml`，不覆盖人工决策。见[实验日志](skills/trainops/references/experiments.md)。
+- **执行与通知闭环**：MCP `trainpilot` 在固定巡检和重大节点即时推送训练状态，独立于 `lark-cli` 实验日志；按实时协议使用全部五个 MCP 工具完成状态检查、上报、异常决策、执行回执和下一任务计划确认（见[TrainPilot 接入](skills/trainops/references/trainpilot.md)）；代码本地修改验证、提交推送后远端拉取核对；完成/取消清理本任务不再需要的巡检与资源等待任务，汇报结果位置和实例最终状态，面板可保留。见[执行与通知闭环](skills/trainops/references/execution.md)。
 - **零第三方 Python 依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）；飞书同步另需已安装并授权的 `lark-cli`。
 
 ## 1. 安装到 Antigravity CLI
