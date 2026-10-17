@@ -1,6 +1,6 @@
 """`.agent/experiment.yaml` 的唯一读写入口。"""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -113,17 +113,21 @@ class Store:
             document["plan"] = plan
             self.write_document(document)
 
-    def create(self, plan, force=False):
-        with self.lock():
+    def create(self, plan, force=False, dry_run=False):
+        # 预览不碰 lock()，否则即使不保存也会创建目录和锁文件。
+        with nullcontext() if dry_run else self.lock():
             if self.path.exists():
                 if not force:
                     raise PlanError("计划已存在，不会覆盖；请使用原计划、指定另一个目录，或对演示数据用 demo --force")
                 document = self.read_document()
             else:
                 document = new_document(plan)
-            plan["revision"] = 1
+            plan["revision"] = 0 if dry_run else 1
             document["plan"] = plan
-            self.write_document(document)
+            if dry_run:
+                validate_document(document)
+            else:
+                self.write_document(document)
         return plan
 
     def update(self, operation):
@@ -134,14 +138,19 @@ class Store:
             self.write_document(document)
             return result
 
-    def change(self, operation):
-        with self.lock():
+    def change(self, operation, dry_run=False):
+        """预览只读原子快照，不保留编号；真实提交仍在同一把锁里重新读写。"""
+        with nullcontext() if dry_run else self.lock():
             document = self.read_document()
             plan = document["plan"]
             # 先自增再执行：操作里读 plan["revision"] 得到的必须是这次落盘后的编号
             # （结算快照要记 revision，用来判断"结算之后计划有没有变过"）。
-            plan["revision"] += 1
+            if not dry_run:
+                plan["revision"] += 1
             result = operation(plan)
-            plan["updated_at"] = stamp()
-            self.write_document(document)
+            if dry_run:
+                validate_document(document)
+            else:
+                plan["updated_at"] = stamp()
+                self.write_document(document)
             return {"revision": plan["revision"], "item": result}

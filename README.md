@@ -65,7 +65,39 @@ python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --por
 
 设 `CLI="python3 skills/trainops/scripts/trainops.py -p /你的路径/my-experiment"`。
 
-### 一次命令创建完整计划并做结构性检查
+### JSON 建表与批量修改（agent 首选）
+
+无需拼接冒号字段或预先计算任务编号，直接从 stdin 提交结构化输入：
+
+```bash
+$CLI init --from-json - <<'JSON'
+{
+  "name": "基线实验",
+  "instances": [{"key": "gpu", "name": "训练机", "autodl_id": "实例ID", "ssh_alias": "gpu-a"}],
+  "flows": [{"key": "base", "name": "基线"}],
+  "tasks": [
+    {"key": "prepare", "flow": "base", "name": "准备数据", "instance": "local", "minutes": 10},
+    {"key": "train", "flow": "base", "name": "训练", "instance": "gpu", "minutes": 120, "deps": ["prepare"]},
+    {"key": "eval", "flow": "base", "name": "评估", "instance": "gpu", "minutes": null, "deps": ["train"]}
+  ]
+}
+JSON
+
+# 核实训练完成后一次修改状态、预计耗时及巡检记录
+$CLI batch --from-json - --brief <<'JSON'
+{"updates": [{"id": "F01-T02", "status": "done"}, {"id": "F01-T03", "minutes": 15, "checked": true}]}
+JSON
+```
+
+- init 顶层为 `name/instances/flows/tasks`；batch 为 `instances/flows/tasks/updates`，可以一次追加并更新新/旧任务。updates 用 `id` 定位，支持名称、状态、进度、实例、耗时、依赖、开始限制、备注与巡检标记。
+- `key` 仅本次请求有效，回执 `aliases`（batch 为 `item.aliases`）返回系统编号映射，后续用真实编号。允许依赖后面的任务或跨流程任务；名称可以含冒号。**JSON 不自动串联**，新增省略 deps 或写 `[]` 都是无依赖，更新 `deps: []` 表示清空。
+- 更新省略字段保持原值；`instance/minutes/progress/not_before` 可用 `null` 清空或表示待估。数字使用 JSON 数字，不使用 `?`/`-`/`none`。同任务每批最多一项更新；运行中保护、状态机与真实观测要求不变。
+- `--from-json /路径/输入.json` 也可用，不与原简写字段混用。加 `--dry-run` 只校验和预览，不创建目录/锁/计划文件、不改变 revision；回执含 `dry_run` 和 `proposed_revision`，编号不保留。正式提交时去掉该参数。
+- 真实 batch 持锁读取最新账本、按最终拓扑校验、一次原子提交；硬错误不保存，成功只推进一次 revision，保留 config/experiments 和面板费率。不直接 Edit/Write 账本，Token 入口不变。
+
+完整字段、空值和前向引用规则见 [JSON 用法](skills/trainops/references/cli.md#json-建表与批量修改agent-首选)。少量手动修改仍可用以下简写。
+
+### 简写一次创建完整计划（兼容）
 
 ```bash
 $CLI init --name "双实例对照实验" \
@@ -99,7 +131,7 @@ $CLI batch --task "F03:消融补充:I02:40" --set "F01-T02:done" --set "F02-T01:
 $CLI batch --dep "F03-T04=F02-T06" --dep "F03-T07=F03-T03" --brief
 ```
 
-**任务写法**：`流程ID:任务名[:实例[:耗时[:依赖]]]`。中间字段不确定时用 `-` 占位跳过，例如只想登记“F01 上耗时 30 分钟的评估、依赖 F01-T01”：
+**简写任务写法**（只有该模式会推断自动串联）：`流程ID:任务名[:实例[:耗时[:依赖]]]`。中间字段不确定时用 `-` 占位跳过，例如只想登记“F01 上耗时 30 分钟的评估、依赖 F01-T01”：
 
 ```bash
 $CLI batch --task "F01:评估:-:30:F01-T01"
@@ -119,6 +151,7 @@ brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒�
 
 | 命令 | 说明 |
 |---|---|
+| `init --from-json <path|-> [--dry-run]` / `batch --from-json <path|-> [--dry-run]` | agent 首选；具名字段、临时别名及前向依赖，新增/更新原子提交；dry-run 不落盘、不保留编号 |
 | `init --name ... [--instance ...] [--flow ...] [--task ...]` | 新建计划，支持一次传入全部实例、流程和任务（仅同流程同实例默认串联，可显式留空依赖以并行）；已有计划时拒绝覆盖 |
 | `demo [--force]` | 在空目录生成演示计划，不涉及任何远程操作；`--force` 用于重置演示目录或已被改动的计划 |
 | `check [--strict]` | 结构性检查：返回问题（阻断性）与提醒（如 pending 任务耗时待估、依赖间时间空隙过大）两组结果；`--strict` 在存在问题时不返回 0 退出码，便于脚本或 CI 拦截 |
@@ -262,6 +295,7 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 | `trainops_graph.py` | `forecast()`、`layout()`、`budget()`、`settlement()`、`snapshot()`、`check_structure()` |
 | `trainops_web.py` | 本机面板 `Handler`、`Credential`、AutoDL 余额与结算线程 |
 | `trainops_experiments.py` | 实验配置、Run 历史与飞书同步 |
+| `trainops_json.py` | 严格结构化输入、请求内别名与两阶段批量应用（不直接读写账本） |
 | `trainops_specs.py` / `trainops_cli.py` | CLI 简写解析与 argparse 命令树 |
 | `trainops_brief.py` | CLI 的 brief 文本输出 |
 

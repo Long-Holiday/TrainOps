@@ -9,7 +9,7 @@ description: AutoDL 多实例训练计划、任务流程图、结算与飞书实
 
 ## 开工顺序
 
-1. **计划**：`show --brief`；已有计划先核实、不覆盖；无计划按目标、验收与授权范围创建，耗时待估、真实依赖不猜。用法见 [CLI](references/cli.md)。
+1. **计划**：`show --brief`；已有计划先核实、不覆盖；无计划按目标、验收与授权范围创建，默认 `init --from-json -` 一次提交；用请求内 key 引用流程/实例/任务，不预算编号。耗时待估用 null、真实依赖不猜；JSON 不隐含串联。用法见 [CLI](references/cli.md)。
 2. **面板**：随即以 harness 的后台常驻任务起 `$CLI serve --port 8765 --interval 30`（别用 `&` 或前台），报出地址。端口占用先核实项目；非本项目则换端口，不杀其他面板。结算由该进程负责，不另起 monitor。
 3. **日志初始化**：主动执行 `$CLI experiment init`，按[实验日志](references/experiments.md)复用指定/已有表，未指定则自动创建“<项目名> · 实验日志”Base 和“Run 记录”首表。检查并报告真实目标和字段核验结果，不能只描述步骤或等用户提醒；失败保留待补状态，不阻断后续工作。
 4. **无卡准备**：默认 `power_on_no_gpu`，仅 **0.5 核 CPU、2GB 内存、无 GPU**；做轻量项目理解、配置与代码调整，限制并发/内存，重型编译、数据处理和模型加载移到授权且资源充足的环境或有卡阶段，不把资源不足误判为环境故障。准备就绪后按授权优先 `switch_mode` 转有卡（内部先关机并确认），不支持时分步关机再开机；用户要求持续请求或已核实无需准备才直接 `power_on`。不交付空等 GPU，不支持无卡则说明限制。细则见 [AutoDL](references/autodl.md)。
@@ -37,6 +37,6 @@ description: AutoDL 多实例训练计划、任务流程图、结算与飞书实
 ## 日常闭环
 
 - `show --brief` → 核实后 `set <任务> --status running` → `--progress 40`（真实观测）或 `--checked` → 核实后 done；写命令带 `--brief`。
-- 结构编辑回执附检查：修 issues、判读 warnings，不撤销已保存编辑；纯状态更新不必再跑 check + show。摘要有省略，按需 show/check 看全量。多条依赖变更用 `batch --dep "任务=依赖列表"` 一次提交；回执会标出自动串联边，独立任务建表时用 `-` 显式留空。
+- 结构编辑回执附检查：修 issues、判读 warnings，不撤销已保存编辑；纯状态更新不必再跑 check + show。摘要有省略，按需 show/check 看全量。批量追加/改派/状态/依赖修改默认 `batch --from-json -`，一次原子提交，依赖清空用 `deps: []`；先用 `--dry-run` 可无落盘检查。读取回执 aliases 映射，key 仅本次有效，后续用系统编号。单项仍用 set；旧简写 `batch --dep "任务=依赖列表"` 保留，只有简写新增会推断自动串联，独立任务用 `-` 显式留空。
 - 默认每 30 分钟 SSH 巡检（用户另定则遵从）；`--checked` 只记巡检，未记或超 1 小时即未巡检。
 - 巡检及完成/失败后先 `experiment show` 读取当前 Run、最近记录与 pending，再 `experiment update`，以 `experiment sync` 补录；恢复/更新不新建重复 Run，不覆盖旧证据；飞书失败不阻断训练与止付。

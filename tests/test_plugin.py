@@ -123,6 +123,15 @@ class SkillTests(unittest.TestCase):
         self.assertIn("后台常驻任务", body, "入口必须要求面板以后台常驻任务起")
         self.assertIn("别用 `&` 或前台", body, "入口必须排除 shell 的 `&` 与前台两种起法")
 
+    def test_agent_prefers_structured_plan_input(self):
+        body = SKILL.read_text(encoding="utf-8")
+        reference = (SKILL_DIR / "references/cli.md").read_text(encoding="utf-8")
+        for phrase in ("init --from-json -", "batch --from-json -", "--dry-run", "deps: []"):
+            self.assertIn(phrase, body)
+        for phrase in ("aliases", "JSON 不自动串联", "两阶段", "前向引用", "不创建目录"):
+            self.assertIn(phrase, reference if phrase != "两阶段" else
+                          (SKILL_DIR / "scripts/trainops_json.py").read_text(encoding="utf-8"))
+
     def test_entry_pins_failure_escalation(self):
         """故障口径：自愈有上限，第 5 次后先关机止付。
 

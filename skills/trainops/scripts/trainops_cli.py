@@ -27,7 +27,7 @@ def parser():
     retry = actions.add_parser("sync", help="补同步指定或全部 Run；相同内容不写入")
     retry.add_argument("run_id", nargs="?")
     init = commands.add_parser("init", help="新建计划（可同时批量传入实例、流程、任务）")
-    init.add_argument("--name", required=True)
+    init.add_argument("--name")
     init.add_argument("--instance", action="append", default=[], help="名称:autodl_id:ssh_alias")
     init.add_argument("--flow", action="append", default=[], help="流程名称")
     init.add_argument("--task", action="append", default=[], help="F01:任务名[:实例[:分钟数[:依赖]]]")
@@ -38,6 +38,9 @@ def parser():
     batch.add_argument("--set", dest="updates", action="append", default=[], help="F01-T01:状态[:进度[:备注]]")
     batch.add_argument("--dep", dest="dep_updates", action="append", default=[],
                        help="任务ID=依赖列表（逗号分隔；右侧为空/none/- 清空），可重复")
+    for target in (init, batch):
+        target.add_argument("--from-json", metavar="PATH|-", help="结构化 JSON；- 从标准输入读取，不与简写字段混用")
+        target.add_argument("--dry-run", action="store_true", help="仅校验和预览，不写文件；编号不保留")
     demo = commands.add_parser("demo", help="在空目录生成演示计划，无远程操作")
     demo.add_argument("--force", action="store_true", help="覆盖已有计划（仅演示数据，慎用）")
     check = commands.add_parser("check", help="执行结构性检查（依赖拓扑、实例分配与耗时就绪情况）")

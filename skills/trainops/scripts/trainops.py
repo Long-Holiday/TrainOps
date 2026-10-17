@@ -10,6 +10,7 @@ No instance commands, no model API.
 - trainops_graph  排程、依赖图、预算与结算
 - trainops_web    本机面板、Token、AutoDL 余额
 - trainops_experiments  实验配置、Run 历史与飞书同步
+- trainops_json   结构化 JSON 计划输入与别名
 - trainops_specs  CLI 简写解析
 - trainops_brief  CLI 文本输出
 - trainops_cli    argparse 命令树
@@ -61,6 +62,7 @@ from trainops_brief import (
     disk_text, instance_line,
 )
 from trainops_cli import add_task_args, parser
+from trainops_json import apply_request, read_request, structural_request
 
 
 def stamp(value=None):
@@ -192,16 +194,31 @@ def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=(), dep_up
 def dispatch(args, store):
     if args.operation_name == "experiment":
         return experiment_dispatch(args, store)
+    payload = None
+    dry_run = getattr(args, "dry_run", False)
+    if args.operation_name in ("init", "batch"):
+        if args.from_json is not None:
+            if (args.instance or args.flow or args.task or getattr(args, "name", None) is not None
+                    or getattr(args, "updates", []) or getattr(args, "dep_updates", [])):
+                raise PlanError("--from-json 不与 --name/--instance/--flow/--task/--set/--dep 混用")
+            payload = read_request(args.from_json, args.operation_name)
+        elif args.operation_name == "init" and args.name is None:
+            raise PlanError("init 需要 --name 或 --from-json")
     if args.operation_name == "init":
-        plan = new_plan(args.name)
-        added = apply_batch_specs(plan, args.instance, args.flow, args.task)
-        report = check_structure(plan) if args.brief else None
-        created = store.create(plan)
+        plan = new_plan(payload["name"] if payload is not None else args.name)
+        added = (apply_request(plan, payload, set_task) if payload is not None else
+                 apply_batch_specs(plan, args.instance, args.flow, args.task))
+        report = check_structure(plan) if args.brief or dry_run else None
+        created = store.create(plan, dry_run=dry_run)
         result = {"revision": created["revision"], "name": created["name"],
                   "instances": [i["id"] for i in created["instances"]],
                   "flows": [f["id"] for f in created["flows"]],
                   "tasks": [t["id"] for t in created["tasks"]],
                   "inferred": added["inferred"]}
+        if payload is not None:
+            result["aliases"] = added["aliases"]
+        if dry_run:
+            result.update(dry_run=True, proposed_revision=1)
         if report is not None:
             result["check"] = report
         return result
@@ -268,6 +285,8 @@ def dispatch(args, store):
 
     def operation(plan):
         if args.operation_name == "batch":
+            if payload is not None:
+                return apply_request(plan, payload, set_task)
             if not (args.instance or args.flow or args.task or args.updates or args.dep_updates):
                 raise PlanError("batch 至少需要提供 --instance、--flow、--task、--set 或 --dep 之一")
             return apply_batch_specs(plan, args.instance, args.flow, args.task, args.updates,
@@ -323,11 +342,14 @@ def dispatch(args, store):
     def checked_operation(plan):
         nonlocal report
         item = operation(plan)
-        if getattr(args, "brief", False) and structural_edit(args):
+        structural = structural_request(payload) if payload is not None else structural_edit(args)
+        if dry_run or (getattr(args, "brief", False) and structural):
             report = check_structure(plan)
         return item
 
-    result = store.change(checked_operation)
+    result = store.change(checked_operation, dry_run=dry_run)
+    if dry_run:
+        result.update(dry_run=True, proposed_revision=result["revision"] + 1)
     if report is not None:
         result["check"] = report
     return result

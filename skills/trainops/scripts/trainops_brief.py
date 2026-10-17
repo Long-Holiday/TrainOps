@@ -169,7 +169,10 @@ def brief_plan(plan, now=None):
 
 def brief_receipt(args, result):
     operation = args.operation_name
-    lines = [f"已保存 · rev {result['revision']}"]
+    preview = result.get("dry_run", False)
+    lines = ([f"预览 · 当前 rev {result['revision']} → 提交后 rev {result['proposed_revision']}（未保存）",
+              "编号仅为预览，不保留；实际提交前可能变化"] if preview else
+             [f"已保存 · rev {result['revision']}"])
     if operation == "wallet":
         wallet = result.get("wallet", result.get("item"))
         for key, label in (("assets", "余额"), ("voucher", "代金券（不计入可用时长）")):
@@ -187,6 +190,8 @@ def brief_receipt(args, result):
             elif key == "inferred":
                 entries = [f"{e['id']}←{','.join(e['deps'])}" for e in entries]
             lines.extend(brief_group(label, entries))
+        mappings = [f"{key}={value}" for group in item.get("aliases", {}).values() for key, value in group.items()]
+        lines.extend(brief_group("别名映射", mappings))
         if item.get("inferred"):
             lines.append("自动串联只表示同流程同实例的默认顺序；独立任务用 - 显式留空")
     else:
@@ -210,7 +215,8 @@ def brief_receipt(args, result):
         lines.append(f"{item['id']}: " + " | ".join(fields or [brief_text(item.get("name", "已更新"))]))
     if "check" in result:
         report = result["check"]
-        lines.append(f"结构检查: {len(report['issues'])} 个问题，{len(report['warnings'])} 个提醒（已保存）")
+        saved = "预览，未保存" if preview else "已保存"
+        lines.append(f"结构检查: {len(report['issues'])} 个问题，{len(report['warnings'])} 个提醒（{saved}）")
         lines.extend(brief_group("结构问题", report["issues"]))
         lines.extend(brief_group("提醒", report["warnings"]))
     if operation in ("init", "batch") or "check" in result:
