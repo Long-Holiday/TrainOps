@@ -77,6 +77,13 @@ const context = vm.createContext({
 async function main() {
   assert.ok(!html.includes('id="search"'), 'Task search input should be removed');
   assert.ok(!html.includes('<details'), 'Task details dropdown should be removed');
+  // DOM 桩不做排版：同时锁定完整名称所需的 CSS，避免文本在 DOM 中完整但仍被省略。
+  const taskNameCSS = html.match(/\.task-name\s*\{([^}]+)\}/)[1];
+  assert.match(taskNameCSS, /white-space:\s*normal/, '任务名称必须允许换行');
+  assert.match(taskNameCSS, /overflow-wrap:\s*anywhere/, '连续英文/下划线名称也必须能换行');
+  assert.ok(!/text-overflow:\s*ellipsis|overflow:\s*hidden/.test(taskNameCSS), '任务名称不能裁剪或省略');
+  const taskTopCSS = html.match(/\.task-top\s*\{([^}]+)\}/)[1];
+  assert.match(taskTopCSS, /flex-wrap:\s*wrap/, '窄屏状态必须能换行，不能挤掉名称');
   // DOM 桩看不到层叠：id 选择器的 display:flex 会压过 .hidden，空弹窗就成了全屏遮罩
   assert.ok(html.includes('#modal.hidden'), '关闭态必须有 #modal.hidden 压过 #modal 的 display:flex');
   // 同理：.notice 与 .hidden 同为一条类选择器，靠后写的赢，空错误条会整条盖在读数条上方
@@ -295,6 +302,18 @@ async function main() {
   nodes.theme.fire('click');
   assert.equal(context.document.documentElement.dataset.theme, 'light');
   console.log('PASS: theme toggle');
+
+  const savedLongTaskName = data.tasks[0].name;
+  const longName = 'v7_no_feedback_no_relation_no_composition_no_structure消融实验完整任务名称';
+  data.tasks[0].name = longName;
+  await nodes.refresh.fire('click');
+  const longTitle = byClass(nodes.flows, 'task-title')[0];
+  assert.equal(byClass(longTitle, 'task-name')[0].textContent, longName, '长任务名称必须原样保留');
+  assert.equal(byClass(longTitle, 'copy')[0].textContent, data.tasks[0].id, '名称换行不影响任务编号');
+  assert.equal(byClass(byClass(nodes.flows, 'gantt-row')[0], 'status').length, 1, '名称换行不移除任务状态');
+  data.tasks[0].name = savedLongTaskName;
+  await nodes.refresh.fire('click');
+  console.log('PASS: long task names remain complete with wrapping styles');
 
   // 几何与进度全部听服务端：前端不再从 estimate 重排一遍，改 payload 里的 bar 必须原样落到页面上
   const savedBar = data.tasks[2].bar;

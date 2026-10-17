@@ -191,9 +191,10 @@ button.token.unset:hover { border-style:solid; }
 .done .dot,.on .dot { background:var(--done); box-shadow:0 0 0 3px var(--done-tint); }
 .blocked .dot,.starting .dot { background:var(--blocked); box-shadow:0 0 0 3px var(--blocked-tint); }
 .failed .dot,.unreachable .dot { background:var(--failed); box-shadow:0 0 0 3px var(--failed-tint); }
-.task-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.task-title { display:flex; align-items:center; gap:8px; min-width:0; }
-.task-name { font-weight:600; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* 长名称完整换行；窄屏状态另起一行，避免编号和状态挤掉名称。 */
+.task-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.task-title { display:flex; align-items:flex-start; gap:8px; min-width:0; flex:1 1 180px; }
+.task-name { min-width:0; font-weight:600; font-size:15px; white-space:normal; overflow-wrap:anywhere; }
 .tags { font-size:12.5px; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
 .empty { padding:24px 16px; color:var(--secondary); font-size:13px; font-family:var(--mono); text-align:center; }
 .page-foot { margin-top:10px; padding-top:14px; border-top:1px solid var(--rule); font-family:var(--mono); font-size:11.5px; color:var(--secondary); letter-spacing:.01em; }
