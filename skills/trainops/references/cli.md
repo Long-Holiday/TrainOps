@@ -2,6 +2,8 @@
 
 仅首次建表、批量编辑或查参数时读取；日常遵循 [入口](../SKILL.md)。设 `CLI="python3 <技能目录>/scripts/trainops.py -p <实验项目目录>"`。
 
+实验记录与飞书：`experiment init/show/start/update/sync`，目标表、Run 字段、JSON 参数及补录见[实验日志](experiments.md)。普通 `set/batch` 不隐式同步飞书。
+
 ## 调度决策
 
 用户交办的是目标与约束，不要求照抄任务描述或机械按列举顺序执行。agent 应持续判断更好的推进方式；以下调整在既有授权内可自主决定，无需逐项请示：

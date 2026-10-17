@@ -10,7 +10,8 @@
 - **只做 Antigravity CLI 插件**：仓库根就是插件根（`plugin.json` 清单 + `rules/` 规则入口 + `skills/trainops/` 能力契约），一条 `agy plugin install` 装完即用；不提供别家 agent 的清单，也不维护第二份会漂移的规则。
 - **无卡准备再训练**：通过外部 `autodl_mcp` 先无卡开机，完成项目/环境了解、配置与代码调整；准备就绪后关机，再按需正常开机或持续请求 GPU，验证就绪后正式训练，减少 GPU 空等。
 - **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；面板进程按周期结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」，开发者 Token 在面板上登记。
-- **零第三方依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）。
+- **飞书实验日志**：agent 巡检同时用 `lark-cli` 维护多维表格；复用用户指定/项目已有表，未指定则自动创建。项目配置存实验项目 `.agent/experiment.yaml`，运行历史与待补录独立留存，不覆盖人工决策。见[实验日志](skills/trainops/references/experiments.md)。
+- **零第三方 Python 依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）；飞书同步另需已安装并授权的 `lark-cli`。
 
 ## 1. 安装到 Antigravity CLI
 
@@ -212,7 +213,7 @@ node tests/test_web.cjs                    # 面板渲染：服务端几何原�
 ### 硬约束
 
 - **零第三方依赖**：只用 Python 标准库；测试用 Node 内置模块（没有 `package.json`，不装 npm 包）。
-- **写计划只有两条入口**：CLI，以及面板的时价接口（`POST /api/instance-price`，只能改时价）。两条都走 `Store.change()`；`$PROJECT/.trainops/plan.json` 是唯一事实来源，禁止用 Edit/Write 直接改。面板另有一个 `POST /api/token`，只把开发者 Token 写进面板进程内存——不经过 `Store`，也不落任何文件。
+- **写计划只有两条入口**：CLI，以及面板的时价接口（`POST /api/instance-price`，只能改时价）。两条都走 `Store.change()`；计划账本 `$PROJECT/.trainops/plan.json` 是唯一事实来源，禁止用 Edit/Write 直接改。面板另有一个 `POST /api/token`，只把开发者 Token 写进面板进程内存——不经过 `Store`，也不落任何文件。
 - **缺数据就缺结论**：算不出的数字（缺费率、缺耗时、缺余额）一律不显示，绝不用 0 顶替或自行估算。这条口径同时约束 CLI 文本、`/api/plan` 与面板三处。
 
 ### 常用命令
@@ -251,7 +252,9 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 - `Credential`：开发者 Token 只活在这里——面板是唯一入口，值只存在面板进程内存，进程一退就没了，重开面板要重填。它不落盘、不进计划、不进日志，`status()` 只外露"配没配、什么时候配的"。
 - `cycle()`：一轮结算，token 由调用方从 `Credential` 现取（没有环境变量、没有文件、没有 `--token`）。联网在文件锁**之外**，落盘只走一次 `store.change()`；失败只写 `monitor.last_error`，不打断结算、不动其余数据。
 - `Handler`：可写的只有两个端点——`POST /api/instance-price` 与 `POST /api/token`；其余路径与写动词一律 404/405。Host 白名单只放 127.0.0.1/localhost（防 DNS rebinding），另加 Origin 同源与 `application/json` 两道关。`/api/plan` 与登记响应都带 `credentials` 块，但只有布尔与登记时间，没有值。
-- 唯一的外部调用是 AutoDL 只读余额接口（POST 无请求体、拒绝重定向以免转发 `Authorization`）。返回值是千分之一元整数，单位对不上就报错，而不是写错 1000 倍。
+- AutoDL 外部调用是只读余额接口（POST 无请求体、拒绝重定向以免转发 `Authorization`）。返回值是千分之一元整数，单位对不上就报错，而不是写错 1000 倍。
+
+实验日志另由 `ExperimentLog` / `experiment` 命令维护：`.agent/experiment.yaml` 保存非敏感配置（JSON 兼容 YAML 1.2，不支持任意 YAML）；`.trainops/experiments/state.json` 保存 Run 和同步状态。项目路径复用 `Store.root`，独立文件锁与原子写，飞书通过参数数组调用 `lark-cli`，网络期间不持计划或数据锁。同项目同步串行；按 Run ID 精确查询去重、内容指纹去重写、版本差异保留补录。普通计划命令和余额结算不触发飞书。首次建表前落结果不确定标记，成功后立即保存目标；出错不另建表。测试使用 mock/临时假 CLI，不访问真实授权或飞书。
 
 `skills/trainops/web/index.html`（单文件面板，无构建步骤）：
 

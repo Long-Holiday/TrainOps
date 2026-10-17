@@ -6,7 +6,7 @@
 
 三条不变量在任何情况下都成立：
 
-1. `$PROJECT/.trainops/plan.json` 是唯一事实来源，只经 CLI 修改（时价例外：在 `serve` 面板的实例卡上登记）。
+1. 计划账本 `$PROJECT/.trainops/plan.json` 是唯一事实来源，只经 CLI 修改（时价例外：在 `serve` 面板的实例卡上登记）。
 2. 缺数据就缺结论：算不出的数字不显示，不补 0。
 3. 自主优化排程不必逐项请示；改变目标、放弃实验或增加费用前先确认。
 
@@ -15,3 +15,5 @@ CLI 与 `-p`（指向**实验项目目录**，不是插件根）：
 ```bash
 python3 "<插件根>/skills/trainops/scripts/trainops.py" -p <实验项目目录> show --brief
 ```
+
+实验日志随实际任务初始化并在巡检、完成/失败后维护：通过 `lark-cli` 复用用户指定/项目已有表，均未指定则自动创建；非敏感配置存实验项目 `.agent/experiment.yaml`，Run 与待同步记录独立于计划。飞书失败不阻断训练或止付，详见[实验日志](../skills/trainops/references/experiments.md)。

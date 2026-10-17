@@ -133,6 +133,16 @@ class SkillTests(unittest.TestCase):
         self.assertIn("最多 5 次", body, "入口必须写死自愈次数上限")
         self.assertIn("关机止付", body, "入口必须写明第 5 次仍无法继续就先关机")
 
+    def test_entry_keeps_experiment_logging_in_monitoring_loop(self):
+        body = SKILL.read_text(encoding="utf-8")
+        for phrase in ("references/experiments.md", "experiment init", "experiment start",
+                       "experiment update", "experiment sync", "未指定则自动创建", "飞书失败不阻断"):
+            self.assertIn(phrase, body)
+        reference = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")
+        for phrase in (".agent/experiment.yaml", "lark-cli", "人工决策", "JSON 兼容 YAML 1.2",
+                       "关机止付", "Run ID"):
+            self.assertIn(phrase, reference)
+
     def test_frontmatter_matches_directory_and_limits(self):
         meta = frontmatter(SKILL)
         self.assertEqual(meta["name"], SKILL_DIR.name, "技能名必须与目录名一致，否则客户端找不到")

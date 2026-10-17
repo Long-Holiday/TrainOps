@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Local training plan ledger. The only outbound call is the read-only AutoDL wallet lookup,
-using the developer token a human registers in the local panel (kept in panel memory only);
-no instance commands, no model API."""
+"""Local training plan ledger and experiment index. AutoDL wallet credentials stay in
+panel memory; experiment indexing uses the separately authenticated lark-cli.
+No instance commands, no model API."""
 
 import argparse
+import copy
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -15,9 +16,11 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import tempfile
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -1668,11 +1671,469 @@ def add_task_args(target, is_set=False):
         target.add_argument("--note")
 
 
+# 实验日志与计划分开保存；飞书只是索引，不参与调度与余额结算。
+EXPERIMENT_FIELDS = {
+    "run_id": ("Run ID", "text"), "project": ("项目", "text"),
+    "flow": ("流程", "text"), "task": ("任务", "text"), "instance": ("实例", "text"),
+    "intent": ("实验意图", "text"), "change": ("关键改动", "text"),
+    "baseline": ("对照 Run", "text"), "status": ("运行状态", "text"),
+    "started_at": ("开始时间", "text"), "finished_at": ("结束时间", "text"),
+    "metric_name": ("主指标名", "text"), "metric_value": ("主指标值", "number"),
+    "direction": ("指标方向", "text"), "dataset_version": ("数据版本", "text"),
+    "eval_protocol": ("评测协议", "text"), "seed": ("Seed", "text"),
+    "git_commit": ("Git Commit", "text"), "config_path": ("配置引用", "text"),
+    "artifacts": ("产物与日志", "text"), "evidence": ("评测依据", "text"),
+    "error": ("故障摘要", "text"), "suggestion": ("Agent 建议", "text"),
+    "next_step": ("下一步", "text"),
+}
+RUN_STATUSES = ("running", "done", "failed", "blocked", "cancelled")
+RUN_TEXT = {"intent", "change", "baseline", "metric_name", "dataset_version", "eval_protocol",
+            "seed", "git_commit", "config_path", "artifacts", "evidence", "error", "suggestion", "next_step"}
+RUN_UPDATE = RUN_TEXT | {"status", "metric_value", "direction", "checked_at"}
+
+
+def reject_json_constant(value):
+    raise ValueError("JSON 不接受非有限数字")
+
+
+def experiment_object(text):
+    try:
+        value = json.loads(text, parse_constant=reject_json_constant)
+    except (ValueError, TypeError) as exc:
+        raise PlanError("实验数据必须是 JSON 对象") from exc
+    if not isinstance(value, dict):
+        raise PlanError("实验数据必须是 JSON 对象")
+    return value
+
+
+def reject_experiment_secrets(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in {"token", "accesstoken", "refreshtoken", "appsecret", "clientsecret",
+                              "autodltoken", "authorization", "password", "privatekey", "devicecode"}:
+                raise PlanError("实验配置与记录不接受凭据；飞书认证由 lark-cli 管理，AutoDL Token 只走面板")
+            reject_experiment_secrets(item)
+    elif isinstance(value, list):
+        for item in value:
+            reject_experiment_secrets(item)
+
+
+def validate_experiment_config(config):
+    reject_experiment_secrets(config)
+    if not isinstance(config, dict) or config.get("schema_version") != 1:
+        raise PlanError("实验配置 schema_version 必须为 1，未覆盖原文件")
+    if not isinstance(config.get("project"), str) or not config["project"].strip():
+        raise PlanError("实验配置缺少项目名")
+    target = config.get("lark", {})
+    if not isinstance(target, dict):
+        raise PlanError("lark 配置必须为对象")
+    for key in ("base_token", "table_id", "url"):
+        if key in target and (not isinstance(target[key], str) or not target[key].strip()):
+            raise PlanError(f"lark.{key} 必须是非空字符串")
+    mapping = target.get("fields", {})
+    if not isinstance(mapping, dict) or any(key not in EXPERIMENT_FIELDS or not isinstance(val, str)
+                                           or not val.strip() for key, val in mapping.items()):
+        raise PlanError("字段映射只能将已知实验字段映射为非空的真实字段名或 ID")
+    names = [mapping.get(key, name) for key, (name, _) in EXPERIMENT_FIELDS.items()]
+    if len(names) != len(set(names)) or "人工决策" in names:
+        raise PlanError("字段映射不能重复或映射到人工决策列")
+    defaults = config.get("defaults", {})
+    validate_run_patch(defaults, defaults_only=True)
+    return config
+
+
+def validate_run_patch(patch, defaults_only=False):
+    reject_experiment_secrets(patch)
+    allowed = {"metric_name", "direction", "dataset_version", "eval_protocol"} if defaults_only else RUN_UPDATE
+    if not isinstance(patch, dict) or set(patch) - allowed:
+        raise PlanError("实验记录含未知或不可修改字段")
+    for key, value in patch.items():
+        if key in RUN_TEXT and value is not None and (not isinstance(value, str) or len(value) > 8000):
+            raise PlanError(f"{key} 必须为简短文本或 null（最多 8000 字符）")
+        if key == "status" and value not in RUN_STATUSES:
+            raise PlanError("实验状态必须是 running/done/failed/blocked/cancelled")
+        if key == "direction" and value not in (None, "max", "min"):
+            raise PlanError("指标方向必须为 max/min 或 null，不可猜测")
+        if key == "metric_value" and value is not None and (isinstance(value, bool)
+                or not isinstance(value, (int, float)) or not math.isfinite(value)):
+            raise PlanError("主指标必须是有限数字或 null")
+        if key == "checked_at" and value is not None:
+            try:
+                parsed = datetime.fromisoformat(value)
+                if parsed.tzinfo is None:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                raise PlanError("checked_at 必须是带时区的 ISO 时间") from None
+
+
+class LarkNotStarted(PlanError):
+    """CLI 进程根本未启动，确定没有创建远端资源。"""
+
+
+class ExperimentLog:
+    def __init__(self, store):
+        self.store = store
+        self.directory = store.directory / "experiments"
+        self.config_path = store.root / ".agent" / "experiment.yaml"
+        self.state_path = self.directory / "state.json"
+
+    @contextmanager
+    def lock(self, name="data"):
+        if fcntl is None:
+            raise PlanError("实验日志需要 POSIX 文件锁")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with (self.directory / f"{name}.lock").open("a", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | (fcntl.LOCK_NB if name == "sync" else 0))
+            except BlockingIOError:
+                raise PlanError("实验同步已在进行，请稍后补录") from None
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def read_json(self, path, default=None):
+        try:
+            result = json.loads(path.read_text(encoding="utf-8"), parse_constant=reject_json_constant)
+        except FileNotFoundError:
+            if default is not None:
+                return copy.deepcopy(default)
+            raise PlanError("尚无实验配置，请先 experiment init") from None
+        except (ValueError, UnicodeError):
+            raise PlanError(f"{path.name} 损坏或不是 JSON 兼容 YAML；未覆盖原文件") from None
+        if not isinstance(result, dict):
+            raise PlanError(f"{path.name} 必须为对象；未覆盖原文件")
+        return result
+
+    def write_json(self, path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix=".experiment-", suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(value, handle, ensure_ascii=False, indent=2, allow_nan=False)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            sync_directory(path.parent)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def config(self):
+        return validate_experiment_config(self.read_json(self.config_path))
+
+    def state(self):
+        state = self.read_json(self.state_path, {"schema_version": 1, "runs": {}})
+        if state.get("schema_version") != 1 or not isinstance(state.get("runs"), dict):
+            raise PlanError("实验运行记录格式错误；未覆盖")
+        for run_id, record in state["runs"].items():
+            if (not isinstance(record, dict) or record.get("run_id") != run_id
+                    or isinstance(record.get("version"), bool)
+                    or not isinstance(record.get("version"), int) or record["version"] < 1
+                    or not isinstance(record.get("sync", {}), dict)
+                    or record.get("status") not in RUN_STATUSES
+                    or not all(key in record for key in ("task_id", "started_at", "finished_at"))):
+                raise PlanError("实验运行记录损坏；未覆盖")
+            validate_run_patch({key: record[key] for key in RUN_UPDATE if key in record})
+        return state
+
+    def call(self, command, **options):
+        argv = ["lark-cli", "base", command, "--as", "user", "--format", "json"]
+        for key, value in options.items():
+            argv.extend(["--" + key.replace("_", "-"),
+                         json.dumps(value, ensure_ascii=False, allow_nan=False) if isinstance(value, (dict, list)) else str(value)])
+        try:
+            process = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        except FileNotFoundError:
+            raise LarkNotStarted("未找到 lark-cli；请安装并完成用户授权后补同步") from None
+        except (subprocess.TimeoutExpired, OSError, UnicodeError):
+            raise PlanError("lark-cli 超时或无法执行；远端结果可能不确定，请先核实后补同步") from None
+        # 不输出/保存 stderr 或 error JSON：可能含鉴权链接、凭据或用户数据。
+        if process.returncode:
+            raise PlanError(f"lark-cli 调用失败（退出码 {process.returncode}）；请检查授权、权限或网络后补同步")
+        try:
+            result = json.loads(process.stdout)
+        except (ValueError, TypeError):
+            raise PlanError("lark-cli 返回非 JSON；远端结果可能不确定，请先核实") from None
+        if not isinstance(result, dict) or result.get("ok") is False or result.get("code", 0) not in (0, "0"):
+            raise PlanError("lark-cli 返回失败；请核实授权、权限与目标表，不会另建表")
+        data = result.get("data", result)
+        if not isinstance(data, dict):
+            raise PlanError("lark-cli 返回数据格式不支持")
+        return data
+
+    def fields(self, config):
+        target = config["lark"]
+        if not target.get("base_token") or not target.get("table_id"):
+            raise PlanError("实验表尚未确定；请 experiment init --url 指定真实表链接")
+        actual = []
+        offset = 0
+        while True:
+            result = self.call("+field-list", base_token=target["base_token"], table_id=target["table_id"],
+                               offset=offset, limit=200)
+            page = result.get("fields", result.get("items"))
+            if not isinstance(page, list):
+                raise PlanError("无法识别字段列表，未写入飞书")
+            actual.extend(page)
+            if not result.get("has_more"):
+                break
+            if not page:
+                raise PlanError("字段分页无进展，未写入飞书")
+            offset += len(page)
+        mapping = target.get("fields", {})
+        for key, (name, kind) in EXPERIMENT_FIELDS.items():
+            wanted = mapping.get(key, name)
+            matches = [field for field in actual if wanted in
+                       (field.get("name"), field.get("id"), field.get("field_name"), field.get("field_id"))]
+            if len(matches) != 1 or matches[0].get("type") not in (kind, 1 if kind == "text" else 2):
+                raise PlanError(f"实验字段 {key} 缺失或类型不兼容，请核对字段映射；不会修改原表")
+            if matches[0].get("name", matches[0].get("field_name")) == "人工决策":
+                raise PlanError("字段映射不能指向人工决策列，包括它的字段 ID")
+
+    def init(self, url=None, settings=None):
+        plan = self.store.read()
+        settings = settings or {}
+        if set(settings) - {"project", "defaults", "lark", "settings"}:
+            raise PlanError("init 只接受 project/defaults/lark/settings 配置")
+        with self.lock("sync"):
+            with self.lock():
+                config = self.config() if self.config_path.exists() else {
+                    "schema_version": 1, "project": plan["name"], "lark": {}, "defaults": {}}
+                for key, value in settings.items():
+                    if isinstance(value, dict) and isinstance(config.get(key), dict):
+                        config[key].update(value)
+                    else:
+                        config[key] = value
+                validate_experiment_config(config)
+            if url:
+                result = self.call("+url-resolve", url=url)
+                config["lark"].update({key: result[key] for key in ("base_token", "table_id") if result.get(key)})
+                if not result.get("base_token") or not result.get("table_id"):
+                    raise PlanError("链接未解析出 Base 和数据表，请提供含 table ID 的链接；不会猜选或新建")
+                config["lark"]["url"] = url
+            elif not config["lark"].get("base_token"):
+                if config["lark"].get("table_id") or config["lark"].get("url"):
+                    raise PlanError("表配置不完整；请用 init --url 解析目标，不会另建表")
+                with self.lock():
+                    state = self.state()
+                    if state.get("creation_uncertain"):
+                        raise PlanError("上次建表结果不确定；请在飞书核实并用 init --url 绑定，禁止盲目重建")
+                    self.write_json(self.config_path, config)
+                    state["creation_uncertain"] = True
+                    self.write_json(self.state_path, state)
+                try:
+                    result = self.call("+base-create", name=f"{config['project']} · 实验日志", table_name="实验日志",
+                                       fields=[{"name": name, "type": kind} for name, kind in EXPERIMENT_FIELDS.values()]
+                                       + [{"name": "人工决策", "type": "text"}])
+                except LarkNotStarted:
+                    with self.lock():
+                        state = self.state()
+                        state.pop("creation_uncertain", None)
+                        self.write_json(self.state_path, state)
+                    raise
+                base = result.get("base", result)
+                base_token = base.get("base_token") or result.get("base_token") or base.get("app_token")
+                table = result.get("table", {})
+                table_id = result.get("table_id") or base.get("table_id") or table.get("table_id") or table.get("id")
+                if not base_token:
+                    raise PlanError("创建结果缺少 Base ID；请核实飞书后用 init --url 绑定")
+                config["lark"].update({"base_token": base_token})
+                if table_id:
+                    config["lark"]["table_id"] = table_id
+                remote_url = base.get("url") or result.get("url")
+                if remote_url:
+                    config["lark"]["url"] = remote_url
+                # 即使字段核验失败也保留刚创建的目标，防止下一次重复建表。
+                with self.lock():
+                    self.write_json(self.config_path, validate_experiment_config(config))
+                if not table_id:
+                    raise PlanError("已保存 Base ID，但创建结果缺少表 ID；请用 init --url 绑定，不会重复建表")
+            self.fields(config)
+            with self.lock():
+                self.write_json(self.config_path, validate_experiment_config(config))
+                state = self.state()
+                state.pop("creation_uncertain", None)
+                self.write_json(self.state_path, state)
+            return {"config": config, "verified": True}
+
+    def run(self, task_id=None, run_id=None, patch=None):
+        patch = patch or {}
+        validate_run_patch(patch)
+        plan = self.store.read()
+        with self.lock():
+            config = self.config() if self.config_path.exists() else {"defaults": {}}
+            state = self.state()
+            if task_id is not None:
+                task = find(plan, "tasks", task_id)
+                active = [r for r in state["runs"].values() if r["task_id"] == task_id
+                          and r["status"] in ("running", "blocked")]
+                if run_id and run_id in state["runs"]:
+                    existing = state["runs"][run_id]
+                    if existing["task_id"] != task_id:
+                        raise PlanError("Run ID 已被另一任务使用")
+                    return copy.deepcopy(existing)
+                if active:
+                    raise PlanError(f"任务已有活动 Run {active[0]['run_id']}；恢复请 update，重跑先结束旧 Run")
+                run_id = run_id or uuid.uuid4().hex
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+                    raise PlanError("Run ID 只能使用 1–100 位字母、数字、下划线或连字符")
+                record = {"run_id": run_id, "task_id": task_id, "instance": task["instance"],
+                          "flow": task["flow"], "task": task["name"], "status": "running",
+                          "started_at": stamp(), "finished_at": None,
+                          "version": 0, **config.get("defaults", {})}
+                state["runs"][run_id] = record
+            else:
+                if run_id not in state["runs"]:
+                    raise PlanError("找不到 Run，请先 start 或核实 ID")
+                record = state["runs"][run_id]
+                if record["status"] in ("done", "failed", "cancelled") and patch.get("status") in ("running", "blocked"):
+                    raise PlanError("已结束 Run 不能重新启动；重跑应新建 Run")
+            record.update(patch)
+            if record.get("metric_value") is not None and (not record.get("metric_name") or not record.get("evidence")):
+                raise PlanError("主指标需要 metric_name 与可信评测 evidence；不从训练 loss 推测")
+            if record["status"] in ("done", "failed", "cancelled") and not record["finished_at"]:
+                record["finished_at"] = stamp()
+            record["checked_at"] = patch.get("checked_at") or stamp()
+            record["version"] += 1
+            self.write_json(self.state_path, state)
+            return copy.deepcopy(record)
+
+    def projection(self, config, record):
+        values = {key: record.get(key) for key in EXPERIMENT_FIELDS}
+        values["project"] = config["project"]
+        values["task"] = f"{record['task_id']} · {record['task']}"
+        mapping = config["lark"].get("fields", {})
+        return {mapping.get(key, name): values[key] for key, (name, _) in EXPERIMENT_FIELDS.items()}
+
+    def sync(self, run_id=None):
+        reports = []
+        with self.lock("sync"):
+            with self.lock():
+                config = self.config()
+                state = self.state()
+                if run_id is not None and run_id not in state["runs"]:
+                    raise PlanError("找不到 Run")
+                records = copy.deepcopy([r for key, r in state["runs"].items() if run_id is None or key == run_id])
+            try:
+                self.fields(config)
+            except PlanError as exc:
+                with self.lock():
+                    latest = self.state()
+                    for record in records:
+                        latest["runs"][record["run_id"]]["sync"] = {"error": str(exc)}
+                    self.write_json(self.state_path, latest)
+                return {"ok": False, "error": str(exc), "runs": [
+                    {"run_id": record["run_id"], "status": "pending"} for record in records]}
+            target = {key: config["lark"][key] for key in ("base_token", "table_id")}
+            for record in records:
+                payload = self.projection(config, record)
+                fingerprint = hashlib.sha256(json.dumps([target, payload], sort_keys=True, ensure_ascii=False,
+                                                        allow_nan=False).encode()).hexdigest()
+                previous = record.get("sync", {})
+                if previous.get("fingerprint") == fingerprint and not previous.get("error"):
+                    reports.append({"run_id": record["run_id"], "status": "unchanged"})
+                    continue
+                outcome = {"target": target, "sent_version": record["version"]}
+                try:
+                    found = []
+                    offset = 0
+                    while True:
+                        result = self.call("+record-list", **target, offset=offset, limit=200,
+                                           filter_json={"logic": "and", "conditions": [[config["lark"].get("fields", {}).get(
+                                               "run_id", "Run ID"), "==", record["run_id"]]]})
+                        page = result.get("records", result.get("items"))
+                        if not isinstance(page, list):
+                            raise PlanError("无法识别记录列表，未创建记录")
+                        found.extend(page)
+                        if len(found) > 1:
+                            raise PlanError("同一 Run ID 存在多条飞书记录，请人工处理冲突")
+                        if not result.get("has_more"):
+                            break
+                        if not page:
+                            raise PlanError("记录分页无进展，未创建记录")
+                        offset += len(page)
+                    options = {**target, "json": payload}
+                    if found:
+                        record_id = found[0].get("record_id") or found[0].get("id")
+                        if not record_id:
+                            raise PlanError("查询结果缺少 record ID，未写入")
+                        options["record_id"] = record_id
+                    result = self.call("+record-upsert", **options)
+                    remote = result.get("record", result)
+                    record_id = remote.get("record_id") or remote.get("id") or options.get("record_id")
+                    if not record_id or result.get("ignored_fields"):
+                        raise PlanError("写入结果缺少 record ID 或字段被忽略，请核实后补录")
+                    outcome.update(record_id=record_id, fingerprint=fingerprint, synced_at=stamp())
+                    status = "synced"
+                except PlanError as exc:
+                    outcome["error"] = str(exc)
+                    status = "pending"
+                with self.lock():
+                    latest = self.state()
+                    current = latest["runs"][record["run_id"]]
+                    current["sync"] = outcome
+                    self.write_json(self.state_path, latest)
+                reports.append({"run_id": record["run_id"], "status": status,
+                                **({"error": outcome["error"]} if "error" in outcome else {})})
+        return {"ok": all(r["status"] != "pending" for r in reports), "runs": reports}
+
+    def show(self):
+        with self.lock():
+            config = self.config() if self.config_path.exists() else None
+            state = self.state()
+            records = copy.deepcopy(state["runs"])
+            for record in records.values():
+                if config is None:
+                    record["pending"] = True
+                    continue
+                digest = hashlib.sha256(json.dumps([
+                    {key: config["lark"].get(key) for key in ("base_token", "table_id")},
+                    self.projection(config, record)], sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+                record["pending"] = record.get("sync", {}).get("fingerprint") != digest or bool(record.get("sync", {}).get("error"))
+            return {"config": config, "runs": records, "creation_uncertain": state.get("creation_uncertain", False)}
+
+
+def experiment_dispatch(args, store):
+    log = ExperimentLog(store)
+    if args.action == "init":
+        return log.init(args.url, experiment_object(args.json))
+    if args.action == "show":
+        return log.show()
+    if args.action == "sync":
+        return log.sync(args.run_id)
+    patch = experiment_object(args.json)
+    record = log.run(task_id=args.task if args.action == "start" else None, run_id=args.run_id, patch=patch)
+    try:
+        result = log.sync(record["run_id"])
+    except PlanError as exc:
+        result = {"ok": False, "error": str(exc)}
+    return {"run": record, "local_saved": True, "sync": result, "ok": result["ok"]}
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--version", action="version", version=f"%(prog)s schema {SCHEMA_VERSION}")
     root.add_argument("-p", "--project", default=".", help="使用项目目录，不是能力包目录")
     commands = root.add_subparsers(dest="operation_name", required=True)
+    experiment = commands.add_parser("experiment", help="实验项目配置、Run 记录与飞书同步")
+    actions = experiment.add_subparsers(dest="action", required=True)
+    setup = actions.add_parser("init", help="复用指定/已有表；未指定则自动创建")
+    setup.add_argument("--url", help="真实飞书表链接（包含 table ID）")
+    setup.add_argument("--json", default="{}", help="合并 project/defaults/lark/settings 非敏感配置")
+    actions.add_parser("show", help="读取项目配置、运行历史和待同步状态")
+    start = actions.add_parser("start", help="登记一次实际运行并尝试同步；重跑新建 Run")
+    start.add_argument("--task", required=True)
+    start.add_argument("--run-id", help="可选稳定 Run ID，恢复同 ID 不重复创建")
+    start.add_argument("--json", default="{}", help="实验意图、改动、评测依据等 JSON 对象")
+    update = actions.add_parser("update", help="增量更新 Run 并尝试同步；不改计划")
+    update.add_argument("run_id")
+    update.add_argument("--json", required=True)
+    retry = actions.add_parser("sync", help="补同步指定或全部 Run；相同内容不写入")
+    retry.add_argument("run_id", nargs="?")
     init = commands.add_parser("init", help="新建计划（可同时批量传入实例、流程、任务）")
     init.add_argument("--name", required=True)
     init.add_argument("--instance", action="append", default=[], help="名称:autodl_id:ssh_alias")
@@ -1768,6 +2229,8 @@ def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=()):
 
 
 def dispatch(args, store):
+    if args.operation_name == "experiment":
+        return experiment_dispatch(args, store)
     if args.operation_name == "init":
         plan = new_plan(args.name)
         apply_batch_specs(plan, args.instance, args.flow, args.task)
@@ -1923,6 +2386,8 @@ def main(argv=None):
             print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         else:
             print(json.dumps(compact(result), ensure_ascii=False, allow_nan=False))
+    if args.operation_name == "experiment" and result is not None and result.get("ok") is False:
+        return 1
     # 默认沿用退出码 0（agent 读 JSON 即可），--strict 让脚本/CI 能直接判断检查结果。
     if args.operation_name == "check" and args.strict and not result["ok"]:
         return 1
