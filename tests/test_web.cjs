@@ -1,4 +1,5 @@
-// Dependency-free DOM smoke tests for continuous Gantt chart & vertical progress line.
+// Dependency-free DOM smoke tests for the continuous Gantt panel: the panel renders the
+// geometry/progress the server computed and does no arithmetic of its own.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -98,19 +99,28 @@ async function main() {
     }
   }
   const progLines = byClass(nodes.flows, 'gantt-progress-line');
-  assert.equal(progLines.length, 7, 'Each task Gantt bar must have a sub-progress line');
-  assert.ok(progLines.some(line => line.style === 'left:18%'), 'F01-T02 sub-progress line should be at 18%');
+  assert.equal(progLines.length, 0, '条形内不再叠一条与填充同值的子进度竖线');
+  assert.equal(byClass(nodes.flows, 'gantt-bar-fill').length, 7, '每个条形的子进度只由填充块表示');
   const badges = byClass(nodes.flows, 'gantt-progress-badge');
   assert.equal(badges.length, 7, 'Each task Gantt bar must display an unobstructed progress badge');
   assert.ok(badges.some(b => b.textContent === '18%'), 'F01-T02 badge shows 18%');
-  const flowTags = byClass(nodes.flows, 'flow-progress-tag');
-  assert.equal(flowTags.length, 3, 'Each flow must render a total flow progress red line tag');
-  assert.ok(flowTags.every(tag => /^总进度 \d+%$/.test(tag.textContent)), 'Red line tag shows total flow progress');
+  // 总进度只保留表头进度条一处：甘特图里的总进度竖线与标签整块删掉（此前三处重复显示同一个数）
+  assert.equal(byClass(nodes.flows, 'flow-progress-line').length, 0, '甘特图里不再画总进度竖线');
+  assert.equal(byClass(nodes.flows, 'flow-progress-tag').length, 0, '竖线的标签一起删掉');
+  assert.equal(byClass(nodes.flows, 'flow-meter').length, 3, '每个流程表头只留一条总进度条');
   assert.equal(nodes.instances.children.length, 2);
   assert.match(nodes.summary.textContent, /3 条流程 \/ 7 个任务/);
   assert.match(nodes.flows.textContent, /F03-T02/);
   assert.match(nodes.flows.textContent, /待估/);
-  console.log('PASS: Continuous Gantt charts / no task details / unobstructed badges / total flow progress line');
+  // 表头的完成计数与进度条共用服务端算好的同一分母，前端不参与任何换算
+  assert.match(nodes.flows.textContent, /1\/3 完成/);
+  assert.match(nodes.flows.textContent, /0\/2 完成/);
+  assert.deepEqual(byClass(nodes.flows, 'flow-meter-fill').map(fill => fill.style),
+    ['width:33%', 'width:0%', 'width:0%'], '进度条宽度直接取服务端的流程总进度');
+  // 前端不做业务计算：这几个函数一旦回来，就说明有人又把排程/进度搬进了浏览器
+  for (const gone of ['computeSpans', 'taskProgress', 'ageOf'])
+    assert.ok(!source.includes(gone), `${gone} 属于服务端的活，面板里不该再有第二份`);
+  console.log('PASS: Continuous Gantt charts / single total-progress component / unobstructed badges');
 
   // 面板唯一的写入口：实例卡上的时价按钮 → 弹窗 → POST /api/instance-price
   const priceButtons = byClass(nodes.instances, 'price');
@@ -286,23 +296,38 @@ async function main() {
   assert.equal(context.document.documentElement.dataset.theme, 'light');
   console.log('PASS: theme toggle');
 
-  const barBox = gantt => byClass(gantt, 'gantt-bar').map(bar => {
-    const m = bar.style.match(/left:([\d.]+)%;width:([\d.]+)%/);
-    return {left: Number(m[1]), width: Number(m[2])};
-  });
-
-  // 排程以后端 estimate 为准：后端把节点排到更晚时，条形必须让出空隙，而不是被强行首尾相接
-  const later = new Date(Date.parse(data.tasks[2].estimate.start) + 3 * 3600e3).toISOString();
-  data.tasks[2].estimate.start = later;
-  data.tasks[2].estimate.finish = new Date(Date.parse(later) + 15 * 60000).toISOString();
+  // 几何与进度全部听服务端：前端不再从 estimate 重排一遍，改 payload 里的 bar 必须原样落到页面上
+  const savedBar = data.tasks[2].bar;
+  const savedView = data.flows[0].view;
+  data.tasks[2].bar = {left:55.5, width:20.4, progress:40, unknown:true};
+  data.flows[0].view = {total:7, countable:7, done:5, cancelled:2, open:2, progress:71,
+    known:true, finish:data.tasks[0].estimate.finish, span:savedView.span, ticks:savedView.ticks};
   await nodes.refresh.fire('click');
-  const shifted = barBox(byClass(nodes.flows, 'gantt')[0]);
-  // 阈值取 1%：连续条形因 left/width 各自保留一位小数，最多出现约 0.1% 的舍入缝隙，
-  // 而本用例制造的空隙占整图一半以上，两者不会混淆。
-  const scheduledGap = shifted[2].left - (shifted[1].left + shifted[1].width);
-  assert.ok(scheduledGap > 1,
-    `Server-scheduled start must win over same-flow contiguity (gap=${scheduledGap.toFixed(1)}%)`);
-  console.log('PASS: bar geometry follows the server-side schedule');
+  const shifted = byClass(nodes.flows, 'gantt-bar')[2];
+  assert.equal(shifted.style, 'left:55.5%;width:20.4%', '条形坐标必须原样取服务端的 bar.left/width');
+  assert.ok(shifted.classList.contains('is-unknown'), 'bar.unknown 决定虚线斜纹');
+  assert.equal(byClass(shifted, 'gantt-bar-fill')[0].style, 'width:40%');
+  assert.equal(byClass(shifted, 'gantt-progress-badge')[0].textContent, '40%');
+  // 完成计数与进度条都取自服务端的同一份结论：面板不做分母换算，也不会两个数各说各话
+  assert.match(nodes.flows.textContent, /5\/7 完成 · 已取消 2/);
+  assert.equal(byClass(nodes.flows, 'flow-meter-fill')[0].style, 'width:71%');
+  data.tasks[2].bar = savedBar;
+  data.flows[0].view = savedView;
+  await nodes.refresh.fire('click');
+  console.log('PASS: bar geometry and flow progress are rendered straight from the server payload');
+
+  // 整个流程都被取消（真实计划里常见）：只报这件事，不画进度条，也不写"0/0 完成 · 完成待估"
+  const savedSecond = data.flows[1].view;
+  data.flows[1].view = {total:2, countable:0, done:0, cancelled:2, open:0, progress:null,
+    known:true, finish:null, span:savedSecond.span, ticks:savedSecond.ticks};
+  await nodes.refresh.fire('click');
+  assert.match(nodes.flows.textContent, /已全部取消（2 个任务）/);
+  assert.equal(byClass(nodes.flows, 'flow-meter').length, 2, '没有需要完成的任务时不画进度条');
+  assert.ok(!/0\/0 完成/.test(nodes.flows.textContent), '不给"0/0 完成"这种空计数');
+  data.flows[1].view = savedSecond;
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.flows, 'flow-meter').length, 3);
+  console.log('PASS: a fully cancelled flow reports just that, with no progress meter');
 
   // 每 10 秒重绘一次，但不能把用户正在看的横向滚动位置弹回去
   byClass(nodes.flows, 'gantt-wrap')[0].scrollLeft = 137;

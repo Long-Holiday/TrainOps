@@ -132,7 +132,9 @@ button.token.unset:hover { border-style:solid; }
 .flow-title { display:flex; align-items:center; gap:10px; min-width:0; font-size:17px; font-weight:650; letter-spacing:-.01em; }
 .flow-metrics { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
 .metric { white-space:nowrap; }
-.metric.strong { color:var(--ink); font-weight:700; font-size:13.5px; }
+/* 总进度的标签、进度条、百分比是一件事，所以自成一组的紧凑间距，不跟其它读数一样拉开 14px */
+.meter-group { display:inline-flex; align-items:center; gap:7px; }
+.meter-group .strong { color:var(--ink); font-weight:700; font-size:13.5px; }
 .flow-meter { display:inline-block; width:72px; height:6px; flex-shrink:0; border:1px solid var(--rule-strong); border-radius:3px; background:var(--panel); overflow:hidden; }
 .flow-meter-fill { display:block; height:100%; background:var(--ink); }
 .gantt-wrap { overflow-x:auto; scrollbar-width:thin; scrollbar-color:var(--rule-strong) transparent; }
@@ -144,18 +146,13 @@ button.token.unset:hover { border-style:solid; }
 .gantt-row:hover { background:var(--wash); }
 .gantt-col-info { padding:0 16px; height:46px; border-right:1px solid var(--rule); display:flex; align-items:center; font-size:12px; font-weight:600; letter-spacing:.03em; }
 .gantt-info { padding:11px 16px; border-right:1px solid var(--rule); display:flex; flex-direction:column; justify-content:center; gap:5px; overflow-wrap:anywhere; }
-/* 时间轴：底部刻度线与轨道里的竖线同一套坐标，方格纸只出现在这里 */
-/* 表头分三带：总进度标签在上（top:3px 起，约到 19px）、时间刻度居中（top:30px，约 21–39px）、
-   刻度线贴底的 6px。标签与刻度必须分带——它们都跟着同一条竖线走，同带就会被盖住。 */
+/* 时间轴：底部刻度线与轨道里的方格纸同一套坐标，方格纸只出现在这里 */
 .gantt-axis { position:relative; height:46px; background-image:linear-gradient(90deg,var(--rule-strong) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 6px; background-position:var(--pad) 100%; background-repeat:repeat-x; }
-.gantt-tick { position:absolute; top:30px; transform:translate(-50%,-50%); white-space:nowrap; font-family:var(--mono); font-size:11.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
+/* 轴里只剩刻度这一带文字，所以垂直居中；贴底的 6px 刻度线由上面那条背景画 */
+.gantt-tick { position:absolute; top:50%; transform:translate(-50%,-50%); white-space:nowrap; font-family:var(--mono); font-size:11.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
 .gantt-tick.first { transform:translate(0,-50%); }
 .gantt-tick.last { transform:translate(-100%,-50%); }
-.gantt-track { position:relative; padding:9px 0 8px; display:flex; flex-direction:column; justify-content:center; background-image:linear-gradient(90deg,var(--rule) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 100%; background-position:var(--pad) 0; background-repeat:repeat-x; }
-/* 进度用墨线画（记录仪的笔），不占用任何状态色，红色因此只表示失败 */
-.flow-progress-line { position:absolute; top:0; bottom:0; width:0; border-left:2px solid var(--ink); z-index:7; pointer-events:none; }
-.flow-progress-tag { position:absolute; top:3px; left:6px; background:var(--ink); color:var(--paper); font-family:var(--mono); font-size:11px; font-weight:600; padding:1px 7px; border-radius:4px; white-space:nowrap; line-height:1.3; }
-.flow-progress-line.align-left .flow-progress-tag { left:auto; right:6px; }
+.gantt-track { padding:9px 0 8px; display:flex; flex-direction:column; justify-content:center; background-image:linear-gradient(90deg,var(--rule) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 100%; background-position:var(--pad) 0; background-repeat:repeat-x; }
 /* --pad 是轨道的左右内边距：laneLeft() 与这条 margin 必须同源，否则条形会与时间轴错位 */
 .gantt-lane { position:relative; height:28px; margin:0 var(--pad); }
 /* overflow 保持可见：窄条形上的进度徽标宁可略微外溢，也不被裁掉数字 */
@@ -166,15 +163,17 @@ button.token.unset:hover { border-style:solid; }
 .gantt-bar.failed { border-color:var(--failed); background-color:var(--failed-tint); }
 /* 斜纹只给"完成时间待估"的条形：底色深浅代表状态，斜纹代表这段时长是外推出来的 */
 .gantt-bar.is-unknown { border-style:dashed; background-image:repeating-linear-gradient(135deg,transparent 0 5px,var(--hatch) 5px 6px); }
-.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; background:var(--rule-strong); opacity:.45; pointer-events:none; }
+/* 子进度只画一处：填充块的宽度就是进度，不再叠一条同值的竖细线。
+   满格时四角跟着条形一起圆，否则填充的直角会从圆角里探出来 */
+.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; border-radius:var(--r-mark) 0 0 var(--r-mark); background:var(--rule-strong); opacity:.45; pointer-events:none; }
+.gantt-bar-fill.full { border-radius:var(--r-mark); }
 .gantt-bar.running .gantt-bar-fill { background:var(--running); opacity:.26; }
 .gantt-bar.done .gantt-bar-fill { background:var(--done); opacity:.26; }
 .gantt-bar.blocked .gantt-bar-fill { background:var(--blocked); opacity:.26; }
 .gantt-bar.failed .gantt-bar-fill { background:var(--failed); opacity:.26; }
-.gantt-progress-line { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:var(--ink); z-index:3; pointer-events:none; }
-.gantt-bar-label { position:relative; z-index:4; font-family:var(--mono); font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.gantt-progress-badge { position:relative; z-index:5; background:var(--raise); color:var(--ink); border:1px solid var(--rule-strong); font-family:var(--mono); font-size:11px; font-weight:600; padding:0 6px; border-radius:4px; line-height:1.5; white-space:nowrap; font-variant-numeric:tabular-nums; margin-left:auto; flex-shrink:0; }
-.gantt-eta { margin:7px var(--pad) 0; font-size:12.5px; line-height:1.35; color:var(--secondary); display:flex; gap:12px; flex-wrap:wrap; font-variant-numeric:tabular-nums; position:relative; z-index:2; }
+.gantt-bar-label { position:relative; z-index:1; font-family:var(--mono); font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gantt-progress-badge { position:relative; z-index:2; background:var(--raise); color:var(--ink); border:1px solid var(--rule-strong); font-family:var(--mono); font-size:11px; font-weight:600; padding:0 6px; border-radius:4px; line-height:1.5; white-space:nowrap; font-variant-numeric:tabular-nums; margin-left:auto; flex-shrink:0; }
+.gantt-eta { margin:7px var(--pad) 0; font-size:12.5px; line-height:1.35; color:var(--secondary); display:flex; gap:12px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
 .eta-done { color:var(--done); }
 .eta-failed { color:var(--failed); }
 .eta-cancelled { color:var(--secondary); }
@@ -252,9 +251,10 @@ function when(value) {
   if (!value) return '待估';
   return new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
 }
-/* 甘特图轨道左右各留 --pad 的内边距，红竖线与网格按同一坐标系定位，避免错位。 */
+/* 甘特图轨道左右各留 --pad 的内边距：时间轴刻度按同一坐标系定位，避免与条形错位。
+   ratio 由服务端给出（layout() 的 ticks），这里只把它拼进 calc，不做换算。 */
 function laneLeft(ratio) {
-  return 'left:calc(var(--pad) + (100% - var(--pad) * 2) * ' + (Math.round(ratio * 10000) / 10000) + ')';
+  return 'left:calc(var(--pad) + (100% - var(--pad) * 2) * ' + ratio + ')';
 }
 function status(value) {
   const node = el('span',null,'status ' + value);
@@ -274,15 +274,6 @@ function copy(value) {
 }
 function money(value) {
   return '¥' + Number(value).toFixed(2);
-}
-/* 余额是易腐数据：只显示观测于多久之前，不做倒计时——页面不联网也不该假装实时。 */
-function ageOf(value) {
-  const seconds = (Date.now() - Date.parse(value)) / 1000;
-  if (!Number.isFinite(seconds)) return '';
-  if (seconds < 90) return '刚刚';
-  if (seconds < 5400) return Math.round(seconds / 60) + ' 分钟前';
-  if (seconds < 36 * 3600) return Math.round(seconds / 3600) + ' 小时前';
-  return Math.round(seconds / 86400) + ' 天前';
 }
 /* 登记时价（面板的写入口之一）。无卡开机（含持续请求等待 GPU）没有 GPU 在计费，登记的是另一档
    无卡费率；GPU 模式开机后才登记 GPU 时价。开机模式由 agent 核实后经 CLI 写进计划，面板只读不写。 */
@@ -461,15 +452,15 @@ function openToken() {
   input.focus();
 }
 /* 余额与可用时长：数据缺一项就少显示一项，绝不把缺失当成 0。
-   代金券单独标注——否则"2 元现金 + 500 元代金券"会被读成还能跑很久。 */
+   代金券单独标注——否则"2 元现金 + 500 元代金券"会被读成还能跑很久。
+   「观测于多久之前」由服务端算好（与 CLI 的 age_text 同一份口径），面板不做日期减法。 */
 function budgetNodes(budget) {
   if (!budget || budget.assets === null || budget.assets === undefined) return [];
   const nodes = [];
   const amount = el('span',null,'chip budget');
   amount.append(el('span','余额 '),el('b',money(budget.assets)));
-  const age = budget.observed_at ? ageOf(budget.observed_at) : '';
-  if (age) {
-    amount.append(el('span','观测于 ' + age));
+  if (budget.observed_age) {
+    amount.append(el('span','观测于 ' + budget.observed_age));
     amount.title = '余额观测于 ' + when(budget.observed_at) + '，不是实时数字；面板登记 Token 后会按周期刷新';
   }
   nodes.push(amount);
@@ -503,39 +494,10 @@ function settlementNode(settlement) {
   if (settlement.computed_at) node.title = '自动结算于 ' + when(settlement.computed_at) + '；由面板进程按周期重算';
   return node;
 }
-function taskProgress(task) {
-  if (task.status === 'done') return 100;
-  if (task.progress !== null && task.progress !== undefined) return Math.max(0, Math.min(100, Math.round(Number(task.progress))));
-  return 0;
-}
-/* 条形几何以服务端 estimate 为准：后端排程（依赖、实例车道、not_before）是唯一事实来源，
-   前端只负责打点。仅当服务端还没给出开始时间时，才用同流程前序与依赖结束时间兜底，
-   否则时间轴、ETA 文案与红色总进度线会互相矛盾。 */
-function computeSpans(tasks, refIso) {
-  const baseMs = Date.parse(refIso) || Date.now();
-  const spans = {};
-  const flowEnds = {};
-  for (const task of tasks) {
-    const startIso = task.started_at || (task.estimate && task.estimate.start);
-    const finishIso = task.finished_at || (task.estimate && task.estimate.finish);
-    const depEnds = task.deps.map(d => spans[d] ? spans[d].endMs : 0);
-    const scheduled = startIso ? Date.parse(startIso) : 0;
-    const startMs = scheduled || Math.max(flowEnds[task.flow] || 0, ...depEnds, 0) || baseMs;
-    const prog = taskProgress(task);
-    let durMs = 0;
-    if (startIso && finishIso && Date.parse(finishIso) > Date.parse(startIso)) {
-      durMs = Date.parse(finishIso) - Date.parse(startIso);
-    } else if (task.status === 'running' && prog > 0 && prog < 100 && task.progress_at && task.started_at) {
-      const obsMs = Date.parse(task.progress_at), stMs = Date.parse(task.started_at);
-      if (obsMs > stMs) durMs = (obsMs - stMs) * (100 / prog);
-    }
-    if (!durMs) durMs = Math.max(10, Number(task.duration_minutes) || 30) * 60000;
-    const endMs = startMs + Math.max(5 * 60000, durMs);
-    flowEnds[task.flow] = endMs;
-    spans[task.id] = {startMs, endMs, exact: Boolean(finishIso), progress: prog};
-  }
-  return spans;
-}
+/* 面板不做业务计算：条形几何、流程总进度、时间轴刻度、完成计数都由服务端在
+   /api/plan 里算好（trainops.py 的 layout()/snapshot()），这里只负责打点。
+   以前前端自己重排一遍排程、又把条形宽度求和当成"总进度"——条形在时间上重叠时
+   宽度会重复累加，于是出现"完成 5/7、总进度 100%"这种自相矛盾（见 layout() 注释）。 */
 function render() {
   if (!plan) return;
   /* 重绘会替换掉整个 DOM，先记下各流程当前的横向滚动位置，画完再还原，
@@ -553,16 +515,14 @@ function render() {
     const actions = el('span',null,'instance-actions');
     actions.append(priceButton(item),status(item.status));
     heading.append(label,actions);
-    const tasks = plan.tasks.filter(task => task.instance === item.id);
-    const active = tasks.filter(task => task.status === 'running');
-    const queued = tasks.filter(task => ['pending','blocked'].includes(task.status)).length;
-    node.append(heading,el('p',item.ssh_alias + ' · ' + (active.length ? '运行 ' + active.map(t => t.id).join(',') : '空闲') + ' · 待跑 ' + queued,'muted id'));
+    const running = item.view.running;
+    node.append(heading,el('p',item.ssh_alias + ' · ' + (running.length ? '运行 ' + running.join(',') : '空闲')
+      + ' · 待跑 ' + item.view.queued,'muted id'));
     return node;
   });
   $('instances').replaceChildren(...instanceNodes);
-  const counts = Object.fromEntries(Object.keys(names).map(key => [key,0]));
-  plan.tasks.forEach(task => counts[task.status]++);
-  const summary = [el('span',plan.flows.length + ' 条流程 / ' + plan.tasks.length + ' 个任务','summary-total')];
+  const counts = plan.stats.counts;
+  const summary = [el('span',plan.stats.flows + ' 条流程 / ' + plan.stats.tasks + ' 个任务','summary-total')];
   for (const key of ['running','pending','done','blocked','failed'].filter(k => counts[k] || k === 'running' || k === 'done')) {
     const chip = el('span',null,'chip ' + key);
     chip.append(el('span',null,'dot'),el('span',names[key] + ' '),el('b',counts[key]));
@@ -572,39 +532,34 @@ function render() {
   const settled = settlementNode(plan.settlement);
   if (settled) summary.push(settled);
   $('summary').replaceChildren(...summary);
-  const spans = computeSpans(plan.tasks, plan.generated_at || plan.updated_at);
   const flows = [];
   for (const flow of plan.flows) {
     const all = plan.tasks.filter(task => task.flow === flow.id);
+    const view = flow.view;
     const section = el('section',null,'flow');
     const heading = el('div',null,'flow-header');
     const title = el('h2',null,'flow-title');
     title.append(copy(flow.id),document.createTextNode(flow.name));
     if (!all.length) { heading.append(title); section.append(heading,el('div','暂无任务','empty')); flows.push(section); continue; }
-    const minMs = spans[all[0].id].startMs;
-    const maxMs = spans[all[all.length - 1].id].endMs;
-    const totalMs = Math.max(maxMs - minMs, 5 * 60000);
-    const geom = {};
-    for (const t of all) {
-      const s = spans[t.id];
-      const left = ((s.startMs - minMs) / totalMs) * 100;
-      const right = ((s.endMs - minMs) / totalMs) * 100;
-      geom[t.id] = {left, width: right - left, progress: s.progress, exact: s.exact};
-    }
-    const flowProgress = Math.max(0, Math.min(100, Math.round(all.reduce((s, t) => s + geom[t.id].width * (geom[t.id].progress / 100), 0))));
-    const unfinished = all.filter(task => task.status !== 'done');
-    const hasUnknown = all.some(task => !task.estimate.finish);
-    const dates = all.map(task => task.estimate.finish).filter(Boolean).map(value => new Date(value).getTime());
-    const end = dates.length ? new Date(Math.max(...dates)).toISOString() : null;
+    /* 总进度只画一处：表头这一条进度条。完成计数与它同一个分母（已完成 ÷ 未取消任务），
+       所以两个数字永远一致；已取消的另列一项，把"为什么不是 7"说清楚。
+       整个流程都被取消时没有需要完成的任务，进度无从谈起：只报这件事，不画进度条。 */
     const metrics = el('div',null,'flow-metrics');
-    const meter = el('span',null,'flow-meter');
-    meter.append(css(el('span',null,'flow-meter-fill'),'width:' + flowProgress + '%'));
-    metrics.append(
-      el('span',all.filter(task => task.status === 'done').length + '/' + all.length + ' 完成','metric'),
-      el('span','总进度 ' + flowProgress + '%','metric strong'),
-      meter,
-      el('span',(hasUnknown || !end ? '完成待估' : (unfinished.length ? '预计 ' : '完成 ') + when(end)),'metric')
-    );
+    if (view.countable) {
+      metrics.append(el('span',view.done + '/' + view.countable + ' 完成'
+        + (view.cancelled ? ' · 已取消 ' + view.cancelled : ''),'metric'));
+      const meter = el('span',null,'flow-meter');
+      meter.title = '总进度 ' + view.progress + '%：已完成 ÷ 未取消任务'
+        + (view.cancelled ? '（已取消 ' + view.cancelled + ' 个不计入）' : '');
+      meter.append(css(el('span',null,'flow-meter-fill'),'width:' + view.progress + '%'));
+      const group = el('span',null,'metric meter-group');
+      group.append(el('span','总进度'),meter,el('span',view.progress + '%','strong'));
+      metrics.append(group);
+      metrics.append(el('span',view.known && view.finish
+        ? (view.open ? '预计 ' : '完成 ') + when(view.finish) : '完成待估','metric'));
+    } else {
+      metrics.append(el('span','已全部取消（' + view.cancelled + ' 个任务）','metric'));
+    }
     heading.append(title,metrics);
     section.append(heading);
     const wrap = el('div',null,'gantt-wrap');
@@ -612,18 +567,16 @@ function render() {
     const head = el('div',null,'gantt-head');
     head.append(el('div','任务节点','gantt-col-info'));
     const axis = el('div',null,'gantt-axis');
-    for (const ratio of [0, 0.25, 0.5, 0.75, 1]) {
-      const edge = ratio === 0 ? ' first' : (ratio === 1 ? ' last' : '');
-      axis.append(css(el('span',when(new Date(minMs + totalMs * ratio).toISOString()),'gantt-tick' + edge),laneLeft(ratio)));
+    axis.title = '流程时间轴 ' + when(view.span.start) + ' → ' + when(view.span.end);
+    for (const tick of view.ticks) {
+      const edge = tick.ratio === 0 ? ' first' : (tick.ratio === 1 ? ' last' : '');
+      axis.append(css(el('span',when(tick.at),'gantt-tick' + edge),laneLeft(tick.ratio)));
     }
-    const axisCursor = css(el('div',null,'flow-progress-line' + (flowProgress > 80 ? ' align-left' : '')),laneLeft(flowProgress / 100));
-    axisCursor.append(el('span','总进度 ' + flowProgress + '%','flow-progress-tag'));
-    axis.append(axisCursor);
     head.append(axis);
     gantt.append(head);
     const body = el('div',null,'gantt-body');
     for (const task of all) {
-      const g = geom[task.id];
+      const g = task.bar;
       const row = el('div',null,'gantt-row');
       const info = el('div',null,'gantt-info');
       const top = el('div',null,'task-top');
@@ -636,16 +589,12 @@ function render() {
       if (task.note) meta.append(el('span',task.note));
       info.append(top,meta);
       const track = el('div',null,'gantt-track');
-      track.append(css(el('div',null,'flow-progress-line'),laneLeft(flowProgress / 100)));
       const lane = el('div',null,'gantt-lane');
       const bar = css(
-        el('div',null,'gantt-bar ' + task.status + (g.exact ? '' : ' is-unknown')),
-        'left:' + g.left.toFixed(1) + '%;width:' + g.width.toFixed(1) + '%'
+        el('div',null,'gantt-bar ' + task.status + (g.unknown ? ' is-unknown' : '')),
+        'left:' + g.left + '%;width:' + g.width + '%'
       );
-      bar.append(
-        css(el('div',null,'gantt-bar-fill'),'width:' + g.progress + '%;border-radius:' + (g.progress >= 100 ? '5px' : '5px 0 0 5px')),
-        css(el('div',null,'gantt-progress-line'),'left:' + g.progress + '%')
-      );
+      bar.append(css(el('div',null,'gantt-bar-fill' + (g.progress >= 100 ? ' full' : '')),'width:' + g.progress + '%'));
       if (g.width >= 14) bar.append(el('span',task.id,'gantt-bar-label id'));
       bar.append(el('span',g.progress + '%','gantt-progress-badge'));
       lane.append(bar);

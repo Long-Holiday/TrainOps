@@ -365,7 +365,91 @@ class ForecastTests(unittest.TestCase):
         view = ops.snapshot(plan, NOW)
         self.assertEqual(len(view["tasks"]), 7)
         self.assertTrue(all("estimate" in t for t in view["tasks"]))
+        self.assertTrue(all("bar" in t for t in view["tasks"]))
+        self.assertTrue(all("view" in f for f in view["flows"]))
         self.assertFalse(any("estimate" in t for t in plan["tasks"]))
+        self.assertFalse(any("bar" in t for t in plan["tasks"]))
+
+
+class LayoutTests(unittest.TestCase):
+    """甘特几何与流程总进度都由服务端算好：面板只把 bar/view 摆到页面上。"""
+
+    def setUp(self):
+        self.plan = base()
+
+    def layout(self):
+        ops.validate(self.plan)
+        return ops.layout(self.plan, NOW)
+
+    def finish(self, flow, count, minutes=30, status="done"):
+        """往 flow 里塞 count 个同时起止的任务：它们的时间区间完全重叠，正是旧公式算错的前提。"""
+        for index in range(count):
+            task = ops.add_task(self.plan, flow, f"{status}{index}", "I01", minutes)
+            if status == "done":
+                ops.set_task(self.plan, task["id"], {"status": "running"}, NOW - timedelta(minutes=minutes + 10))
+                ops.set_task(self.plan, task["id"], {"status": "done"}, NOW - timedelta(minutes=10))
+            else:
+                ops.set_task(self.plan, task["id"], {"status": status}, NOW)
+        return task
+
+    def test_total_progress_counts_tasks_not_bar_widths(self):
+        """5 个并行完成 + 2 个取消：旧公式把重叠宽度累加成 187% 再钳到 100%，现在按任务数算。"""
+        self.finish("F01", 5, status="done")
+        self.finish("F01", 2, status="cancelled")
+        bars, views = self.layout()
+        view = views["F01"]
+        self.assertEqual((view["done"], view["countable"], view["cancelled"], view["total"]), (5, 5, 2, 7))
+        self.assertEqual(view["progress"], 100, "取消的不再需要完成，不该把进度压在 100% 以下")
+        widths = sum(bars[task["id"]]["width"] for task in self.plan["tasks"])
+        self.assertGreater(widths, 100, "前提：这些条形在时间上重叠，宽度之和本来就超过 100%")
+
+    def test_progress_denominator_is_the_uncancelled_tasks(self):
+        self.finish("F01", 2, status="done")
+        self.finish("F01", 1, status="cancelled")
+        ops.add_task(self.plan, "F01", "待跑", "I01", 30)
+        _, views = self.layout()
+        self.assertEqual((views["F01"]["done"], views["F01"]["countable"]), (2, 3))
+        self.assertEqual(views["F01"]["progress"], 67)
+
+    def test_everything_cancelled_has_no_progress_at_all(self):
+        self.finish("F02", 2, status="cancelled")
+        _, views = self.layout()
+        self.assertEqual(views["F02"]["countable"], 0)
+        self.assertIsNone(views["F02"]["progress"], "没有需要完成的任务时不下结论，面板也就不画进度条")
+
+    def test_bars_are_contiguous_and_cancelled_tasks_still_get_one(self):
+        ops.add_task(self.plan, "F01", "A", "I01", 60)
+        ops.add_task(self.plan, "F01", "B", "I01", 30, ["F01-T01"])
+        dropped = ops.add_task(self.plan, "F01", "C", "I01", 30, ["F01-T02"])
+        ops.set_task(self.plan, dropped["id"], {"status": "cancelled"}, NOW)
+        bars, _ = self.layout()
+        self.assertEqual(bars["F01-T01"]["left"], 0, "首个条形从轨道左端开始")
+        self.assertEqual(bars["F01-T01"]["progress"], 0)
+        self.assertEqual(round(bars["F01-T01"]["left"] + bars["F01-T01"]["width"], 1), bars["F01-T02"]["left"])
+        self.assertEqual(round(bars["F01-T02"]["left"] + bars["F01-T02"]["width"], 1), bars["F01-T03"]["left"])
+        self.assertTrue(bars["F01-T03"]["unknown"], "已取消的任务没有完成时间，条形走虚线斜纹")
+        self.assertEqual(round(bars["F01-T03"]["width"], 1), 25)
+
+    def test_ticks_cover_the_flow_span(self):
+        ops.add_task(self.plan, "F01", "A", "I01", 60)
+        _, views = self.layout()
+        view = views["F01"]
+        self.assertEqual([tick["ratio"] for tick in view["ticks"]], [0, 0.25, 0.5, 0.75, 1])
+        self.assertEqual(view["ticks"][0]["at"], view["span"]["start"])
+        self.assertEqual(view["ticks"][-1]["at"], view["span"]["end"])
+        self.assertEqual(view["ticks"][2]["at"], ops.stamp(NOW + timedelta(minutes=30)))
+
+    def test_finished_flow_reports_completion_instead_of_pending_estimate(self):
+        """已结束的任务没有"预计完成时间"，不该把整个流程说成"完成待估"。"""
+        task = ops.add_task(self.plan, "F01", "A", "I01", 30)
+        ops.set_task(self.plan, task["id"], {"status": "running"}, NOW)
+        ops.set_task(self.plan, task["id"], {"status": "done"}, NOW + timedelta(minutes=30))
+        dropped = ops.add_task(self.plan, "F01", "B", "I01", 30, ["F01-T01"])
+        ops.set_task(self.plan, dropped["id"], {"status": "cancelled"}, NOW + timedelta(minutes=40))
+        _, views = self.layout()
+        self.assertEqual(views["F01"]["open"], 0)
+        self.assertTrue(views["F01"]["known"])
+        self.assertEqual(views["F01"]["finish"], ops.stamp(NOW + timedelta(minutes=30)))
 
 
 class RepoSnapshotTests(unittest.TestCase):
@@ -1440,7 +1524,9 @@ class HTTPTests(unittest.TestCase):
             page = response.read().decode()
             self.assertIn("TrainOps", page)
             self.assertIn("gantt", page)
-            self.assertIn("progress-line", page)
+            self.assertIn("flow-meter", page)
+            # 总进度只留表头进度条一处：甘特图里的竖线与条形内的子进度细线都已删掉
+            self.assertNotIn("progress-line", page)
             self.assertIn("textContent", page)
             self.assertNotIn("innerHTML", page)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
@@ -1448,6 +1534,12 @@ class HTTPTests(unittest.TestCase):
             plan = json.load(response)
             self.assertEqual(len(plan["tasks"]), 7)
             self.assertIn("estimate", plan["tasks"][0])
+            # 几何、流程结论、计数都由服务端算好下发，面板只负责打点
+            self.assertEqual(sorted(plan["tasks"][0]["bar"]), ["left", "progress", "unknown", "width"])
+            self.assertEqual(sorted(plan["flows"][0]["view"]),
+                             ["cancelled", "countable", "done", "finish", "known", "open",
+                              "progress", "span", "ticks", "total"])
+            self.assertEqual(plan["stats"]["counts"]["done"], 1)
             self.assertEqual(plan["credentials"], {"configured": False, "set_at": None},
                              "面板刚起来时没有凭据，状态要照实说")
 

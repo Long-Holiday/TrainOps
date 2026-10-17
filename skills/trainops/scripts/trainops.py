@@ -53,6 +53,13 @@ DISK_MOUNTS = (("sys", "system", "系统盘"), ("data", "data", "数据盘"), ("
 DISK_PREFIXES = {prefix: (field, label) for prefix, field, label in DISK_MOUNTS}
 DISK_SHORT = {"系统盘": "系统", "数据盘": "数据", "文件存储": "存储"}
 FULL_RATIO = 0.9
+# 甘特几何：条形最短 5 分钟（否则零宽条看不见），没登记耗时就按 30 分钟画，且不低于 10 分钟。
+# 这些以前散在前端 computeSpans() 里，搬进服务端后只有一个口径。
+MIN_BAR = timedelta(minutes=5)
+FALLBACK_TASK_MINUTES = 30
+MIN_TASK_MINUTES = 10
+# 时间轴刻度固定五档：0%、25%、50%、75%、100%，位置由服务端算好，前端只负责打点。
+TICK_RATIOS = (0, 0.25, 0.5, 0.75, 1)
 API_BALANCE_PATH = "/api/v1/dev/wallet/balance"
 # 面板可写的两个端点：登记时价（写计划）与登记 Token（只存进程内存）。其余路径全是只读，写动词一律 405。
 PRICE_PATH = "/api/instance-price"
@@ -576,6 +583,95 @@ def forecast(plan, now=None):
     return results
 
 
+def rounded(value):
+    """四舍五入取整：面板要的是整数百分比，这里统一口径，别让各处各写一套。"""
+    return int(math.floor(value + 0.5))
+
+
+def bar_progress(task):
+    """条形填充比例：done 一律满格，其余取登记过的真实进度；没进度就是 0，不猜。"""
+    if task["status"] == "done":
+        return 100
+    if task["progress"] is None:
+        return 0
+    return max(0, min(100, rounded(task["progress"])))
+
+
+def layout(plan, now=None, estimates=None):
+    """排程 → 甘特几何与流程结论。面板只打点，不再自己排程、加权或计数。
+
+    bar.left/width 是轨道内的百分比，前端直接拼进 style；流程的 progress 是
+    「已完成 ÷ 未取消任务」——取消是不再需要完成，既不进分子也不进分母，
+    因此进度能正常走到 100%，也不会出现"完成数 5/7、进度却 100%"这种自相矛盾。
+    这里以前是前端一段 `Σ 条形宽度 × 进度` 的求和：条形在时间上重叠时宽度会重复
+    累加，5 个各宽 37.5% 的并行任务就能把总进度顶到 187%，再被钳成 100%。
+    """
+    now = now or utcnow()
+    estimates = forecast(plan, now) if estimates is None else estimates
+    bars, views = {}, {}
+    for flow in plan["flows"]:
+        tasks = sorted((task for task in plan["tasks"] if task["flow"] == flow["id"]),
+                       key=lambda task: natural_id(task["id"]))
+        countable = [task for task in tasks if task["status"] != "cancelled"]
+        done = [task for task in tasks if task["status"] == "done"]
+        open_tasks = [task for task in tasks if task["status"] not in TERMINAL]
+        finishes = [date(estimates[task["id"]]["finish"]) for task in tasks
+                    if estimates[task["id"]]["finish"]]
+        view = {"total": len(tasks), "countable": len(countable), "done": len(done),
+                "cancelled": len(tasks) - len(countable), "open": len(open_tasks),
+                # 整个流程都被取消时没有"需要完成"的任务，进度无从谈起：给 null，面板不画进度条。
+                "progress": rounded(100 * len(done) / len(countable)) if countable else None,
+                # known 只看还没结束的任务：已取消/已完成的任务没有完成时间，不代表流程待估。
+                "known": all(estimates[task["id"]]["finish"] for task in open_tasks),
+                "finish": stamp(max(finishes)) if finishes else None,
+                "span": None, "ticks": []}
+        views[flow["id"]] = view
+        if not tasks:
+            continue
+        spans, cursor = {}, None
+        for task in tasks:
+            estimate = estimates[task["id"]]
+            start = date(task["started_at"]) if task["started_at"] else (
+                date(estimate["start"]) if estimate["start"] else None)
+            finish = date(task["finished_at"]) if task["finished_at"] else (
+                date(estimate["finish"]) if estimate["finish"] else None)
+            if start is None:
+                # 服务端没给出开始时间（待执行且排不出、或已结束却没起止）：顺延同流程前序与依赖
+                earlier = [cursor] + [spans[dep]["end"] for dep in task["deps"] if dep in spans]
+                start = max([moment for moment in earlier if moment is not None], default=now)
+            duration = None
+            if finish is not None and finish > start:
+                duration = finish - start
+            elif (task["status"] == "running" and task["progress"] and task["progress_at"]
+                  and task["started_at"] and date(task["progress_at"]) > date(task["started_at"])):
+                sampled = date(task["progress_at"]) - date(task["started_at"])
+                duration = sampled * (100 / task["progress"])
+            if duration is None:
+                duration = timedelta(minutes=max(MIN_TASK_MINUTES,
+                                                 task["duration_minutes"] or FALLBACK_TASK_MINUTES))
+            end = start + max(MIN_BAR, duration)
+            cursor = end
+            # 条形两端都有排程依据才算"不待估"：取消/失败的任务没有完成时间，它的条形是按
+            # 耗时外推画出来的（finish 只在有依据时才是真的），所以走虚线斜纹。
+            spans[task["id"]] = {"start": start, "end": end,
+                                 "known": estimate["start"] is not None and estimate["finish"] is not None}
+        first = min(span["start"] for span in spans.values())
+        last = max(span["end"] for span in spans.values())
+        total = max(last - first, MIN_BAR)
+        for task in tasks:
+            span = spans[task["id"]]
+            bars[task["id"]] = {
+                "left": round((span["start"] - first) / total * 100, 1),
+                "width": round((span["end"] - span["start"]) / total * 100, 1),
+                "progress": bar_progress(task),
+                "unknown": not span["known"],
+            }
+        view["span"] = {"start": stamp(first), "end": stamp(last)}
+        view["ticks"] = [{"ratio": ratio, "at": stamp(first + (last - first) * ratio)}
+                         for ratio in TICK_RATIOS]
+    return bars, views
+
+
 def budget(plan, now=None, estimates=None):
     """余额 × 当前费率 × 剩余计划能推出的全部结论：缺数据就缺结论，绝不用 0 顶替。
 
@@ -595,6 +691,8 @@ def budget(plan, now=None, estimates=None):
             result["voucher"] = round(wallet["voucher"], 2)
         if wallet["observed_at"]:
             result["observed_at"] = wallet["observed_at"]
+            # 观测多久之前是算出来的，不是展示方算的：面板与 CLI 共用 age_text，只有一份口径。
+            result["observed_age"] = age_text(wallet["observed_at"], now)
         awake = [item for item in plan["instances"] if item["status"] in AWAKE]
         # 任一开机实例缺费率，烧钱速度就是残缺的；低估会让人以为还能跑很久，所以宁可不下结论。
         if awake and all(rates[item["id"]] is not None for item in awake):
@@ -702,11 +800,33 @@ def settlement(plan, now=None):
 
 
 def snapshot(plan, now=None):
+    """面板与 show --json 看到的完整视图：账本 + 排程 + 几何 + 预算 + 结算。
+
+    凡是"算出来的"都在这里算完：面板不做业务计算，只把字段摆到页面上。
+    """
     now = now or utcnow()
     estimates = forecast(plan, now)
+    bars, views = layout(plan, now, estimates)
+    counts = {status: 0 for status in STATUSES}
+    running, queued = {}, {}
+    for task in plan["tasks"]:
+        counts[task["status"]] += 1
+        resource = task["instance"]
+        if resource in (None, "local"):
+            continue
+        if task["status"] == "running":
+            running.setdefault(resource, []).append(task["id"])
+        elif task["status"] in ("pending", "blocked"):
+            queued[resource] = queued.get(resource, 0) + 1
     return {**plan, "generated_at": stamp(now), "budget": budget(plan, now, estimates),
             "settlement": settlement(plan, now),
-            "tasks": [{**task, "estimate": estimates[task["id"]]} for task in plan["tasks"]]}
+            "stats": {"flows": len(plan["flows"]), "tasks": len(plan["tasks"]), "counts": counts},
+            "instances": [{**item, "view": {"running": sorted(running.get(item["id"], []), key=natural_id),
+                                            "queued": queued.get(item["id"], 0)}}
+                          for item in plan["instances"]],
+            "flows": [{**flow, "view": views[flow["id"]]} for flow in plan["flows"]],
+            "tasks": [{**task, "estimate": estimates[task["id"]], "bar": bars[task["id"]]}
+                      for task in plan["tasks"]]}
 
 
 def demo_plan(now=None):
