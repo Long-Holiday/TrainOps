@@ -90,6 +90,13 @@ async function main() {
   assert.ok(html.includes('.notice.hidden'), '关闭态必须有 .notice.hidden 压过 .notice 的 display:flex');
   new vm.Script(source, {filename:'index.html'}).runInContext(context);
   await new Promise(resolve => setImmediate(resolve));
+  assert.ok(nodes.diagram.textContent.includes('任务执行队列'), '默认显示执行队列');
+  assert.equal(byClass(nodes.diagram, 'task-node').length, 7, '队列包含全部任务且不重复');
+  assert.ok(nodes.diagram.textContent.includes('不是前置依赖'));
+  const viewButtons = byClass(nodes.diagram, 'diagram-view');
+  assert.equal(viewButtons[0]['aria-pressed'], 'true');
+  viewButtons[1].fire('click');
+  assert.equal(byClass(nodes.diagram, 'diagram-view')[1]['aria-pressed'], 'true');
   const canvases = byClass(nodes.diagram, 'canvas');
   assert.equal(canvases.length, 1, '整份计划只能有一张主图（一块画布）');
   assert.equal(byClass(nodes.diagram, 'canvas-viewport').length, 1, '画布要有可滚动视口');
@@ -490,6 +497,42 @@ async function main() {
   assert.equal(byClass(nodes.diagram, 'task-name')[0].textContent, malicious);
   assert.match(nodes.diagram.textContent, /<img src=x/);
   console.log('PASS: untrusted plan text is not interpreted as HTML');
+
+  const saved = JSON.parse(JSON.stringify(data));
+  // 与 WWTP 同构：15 个无依赖实验，I01 七项，I02 八项（含执行中 v7）。
+  const template = saved.tasks[0];
+  data.tasks = Array.from({length:15}, (_,index) => ({...template,
+    id:'Q' + (index + 1), name:'独立训练 ' + (index + 1), note:'', deps:[],
+    instance:index < 7 ? 'I01' : 'I02', status:index === 7 ? 'running' : 'pending',
+    estimate:{...template.estimate,finish:null,reason:'预计耗时待估',overdue:false,stale:false}}));
+  data.graph = {nodes:data.tasks.map((task,row) => ({id:task.id,row,layer:0,progress:0})),
+    edges:[],columns:1,rows:15};
+  data.queues = {lanes:[{instance:'I01',tasks:data.tasks.slice(0,7).map(t => t.id)},
+    {instance:'I02',tasks:data.tasks.slice(7).map(t => t.id)}],other:[]};
+  vm.runInContext("diagramMode = 'queue'; renderDiagram()",context);
+  assert.equal(byClass(nodes.diagram,'task-node').length,15);
+  assert.equal(byClass(nodes.diagram,'queue-edge').length,13);
+  assert.equal(byClass(nodes.diagram,'canvas-edge').length,0);
+  assert.equal(new Set(byClass(nodes.diagram,'task-node').map(n => n.id)).size,15);
+  assert.ok(byClass(nodes.diagram,'queue-edge').every(edge => edge['aria-label'].includes('非硬依赖')));
+  assert.match(html,/\.queue-edge\s*\{[^}]*dashed/);
+  assert.ok(byClass(nodes.diagram,'queue-node').every(node =>
+    byClass(node,'task-name').length === 1 && byClass(node,'task-meter').length === 1));
+  byClass(nodes.diagram,'diagram-view')[1].fire('click');
+  assert.match(nodes.diagram.textContent,/未登记前置依赖/);
+  assert.equal(byClass(nodes.diagram,'canvas-edge').length,0);
+  assert.equal(byClass(nodes.diagram,'task-node').length,15);
+  data.queues = {lanes:[{instance:'I01',tasks:[]}],other:[{label:'本地任务',tasks:['Q1','Q2']}]};
+  byClass(nodes.diagram,'diagram-view')[0].fire('click');
+  assert.match(nodes.diagram.textContent,/暂无执行中或待执行任务/);
+  assert.equal(byClass(nodes.diagram,'queue-edge').length,0,'本地、未分配或非执行任务不画排队箭头');
+  data.tasks[0].name = malicious;
+  vm.runInContext('renderDiagram()',context);
+  assert.equal(descendants(nodes.diagram,'img').length,0);
+  assert.equal(byClass(nodes.diagram,'task-name')[0].textContent,malicious);
+  Object.assign(data,saved);
+  vm.runInContext("diagramMode = 'dependency'; renderDiagram()",context);
+  console.log('PASS: independent tasks / instance queues / typed connectors / view switching / empty lanes / safe text');
 
   failed = true;
   await nodes.refresh.fire('click');

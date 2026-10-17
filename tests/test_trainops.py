@@ -417,6 +417,73 @@ class ForecastTests(unittest.TestCase):
         self.assertFalse(any("bar" in t for t in plan["tasks"]))
 
 
+class ExecutionQueueTests(unittest.TestCase):
+    def setUp(self):
+        self.plan = base()
+
+    def add(self, flow="F01", instance="I01", minutes=None, deps=None):
+        return ops.add_task(self.plan, flow, "独立实验", instance, minutes,
+                            deps=[] if deps is None else deps)
+
+    def queues(self):
+        return ops.snapshot(self.plan, NOW)["queues"]
+
+    def lane(self, instance="I01"):
+        return next(lane["tasks"] for lane in self.queues()["lanes"]
+                    if lane["instance"] == instance)
+
+    def test_wwtp_independent_experiments_form_two_queues_without_dependencies(self):
+        ops.add_flow(self.plan, "基线")
+        running = self.add(instance="I02", minutes=120)
+        ops.set_task(self.plan, running["id"], {"status": "running"}, NOW)
+        first = [self.add()["id"] for _ in range(6)]
+        first.append(self.add(flow="F02")["id"])
+        second = [running["id"]] + [self.add(flow="F03", instance="I02")["id"] for _ in range(7)]
+        before = copy.deepcopy(self.plan)
+        view = ops.snapshot(self.plan, NOW)
+        self.assertEqual([lane["tasks"] for lane in view["queues"]["lanes"]], [first, second])
+        self.assertEqual(sum(len(lane["tasks"]) - 1 for lane in view["queues"]["lanes"]), 13)
+        self.assertEqual(view["graph"]["edges"], [])
+        self.assertEqual(len({key for lane in view["queues"]["lanes"] for key in lane["tasks"]}), 15)
+        self.assertEqual(self.plan, before, "展示不能改变 deps、状态或 revision")
+        self.assertIsNone(view["tasks"][2]["estimate"]["finish"], "不猜测未知耗时")
+
+    def test_running_task_precedes_lower_numbered_pending(self):
+        pending, running = self.add(), self.add()
+        ops.set_task(self.plan, running["id"], {"status": "running"}, NOW)
+        self.assertEqual(self.lane(), [running["id"], pending["id"]])
+
+    def test_dependency_precedes_number_even_with_unknown_duration(self):
+        first, later = self.add(), self.add(flow="F02")
+        ops.set_task(self.plan, first["id"], {"deps": [later["id"]]}, NOW)
+        self.assertEqual(self.lane(), [later["id"], first["id"]])
+        self.assertIn(later["id"], ops.forecast(self.plan, NOW)[first["id"]]["reason"])
+
+    def test_not_before_and_reassignment_follow_forecast(self):
+        delayed, ready = self.add(minutes=10), self.add(minutes=10)
+        ops.set_task(self.plan, delayed["id"], {"not_before": ops.stamp(NOW + timedelta(hours=1))}, NOW)
+        self.assertEqual(self.lane(), [ready["id"], delayed["id"]])
+        ops.set_task(self.plan, ready["id"], {"instance": "I02"}, NOW)
+        self.assertEqual(self.lane(), [delayed["id"]])
+        self.assertEqual(self.lane("I02"), [ready["id"]])
+
+    def test_local_unassigned_and_inactive_are_not_serialized(self):
+        local, unassigned = self.add(instance="local"), self.add(instance=None)
+        inactive = []
+        for status in ("blocked", "done", "failed", "cancelled"):
+            task = self.add()
+            if status in ("done", "failed"):
+                ops.set_task(self.plan, task["id"], {"status": "running"}, NOW)
+            ops.set_task(self.plan, task["id"], {"status": status}, NOW)
+            inactive.append(task["id"])
+        queues = self.queues()
+        self.assertEqual(self.lane(), [])
+        self.assertEqual([group["tasks"] for group in queues["other"]],
+                         [[local["id"]], [unassigned["id"]], inactive])
+        ops.set_task(self.plan, inactive[0], {"status": "pending"}, NOW)
+        self.assertEqual(self.lane(), [inactive[0]])
+
+
 class LayoutTests(unittest.TestCase):
     """依赖层级与流程总进度由服务端统一下发。"""
 

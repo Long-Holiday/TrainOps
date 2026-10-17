@@ -14,12 +14,12 @@ from trainops_base import *
 from trainops_model import instance_rate, validate
 
 
-def forecast(plan, now=None):
-    """Deterministic dependency-ready scheduling with one lane per GPU instance."""
+def _forecast(plan, now=None):
+    """Return estimates and their shared dependency-ready traversal order."""
     now = now or utcnow()
     tasks = {t["id"]: t for t in plan["tasks"]}
     order = {key: natural_id(key) for key in tasks}
-    results, lanes = {}, {}
+    results, lanes, sequence = {}, {}, []
     active = {t["instance"]: t["id"] for t in tasks.values()
               if t["status"] == "running" and t["instance"] != "local"}
 
@@ -31,6 +31,8 @@ def forecast(plan, now=None):
                                "stale": task["status"] == "running" and (
                                    not task["checked_at"]
                                    or (now - date(task["checked_at"])).total_seconds() > 3600)}
+        if task["status"] in ("running", "pending"):
+            sequence.append(task["id"])
         return end
 
     for task in sorted(tasks.values(), key=lambda t: order[t["id"]]):
@@ -102,7 +104,35 @@ def forecast(plan, now=None):
             if resource != "local":
                 lanes[resource] = end
         pending.remove(key)
-    return results
+    return results, sequence
+
+
+def forecast(plan, now=None):
+    """Deterministic dependency-ready scheduling with one lane per GPU instance."""
+    return _forecast(plan, now)[0]
+
+
+def execution_queues(plan, sequence):
+    """只读候选队列：共享 forecast 的遍历顺序，不把资源排队写成 deps。"""
+    tasks = {task["id"]: task for task in plan["tasks"]}
+    lanes = {item["id"]: [] for item in plan["instances"]}
+    local, unassigned, inactive = [], [], []
+    for key in sequence:
+        resource = tasks[key]["instance"]
+        if resource == "local":
+            local.append(key)
+        elif resource is None:
+            unassigned.append(key)
+        else:
+            lanes[resource].append(key)
+    for task in sorted(plan["tasks"], key=lambda task: natural_id(task["id"])):
+        if task["status"] not in ("running", "pending"):
+            inactive.append(task["id"])
+    return {"lanes": [{"instance": key, "tasks": value} for key, value in lanes.items()],
+            "other": [{"label": label, "tasks": ids} for label, ids in (
+                ("本地任务（不独占 GPU，不表示串行）", local),
+                ("未分配实例（顺序未确定）", unassigned),
+                ("已结束 / 需处理（不在执行队列）", inactive)) if ids]}
 
 
 def rounded(value):
@@ -505,7 +535,7 @@ def snapshot(plan, now=None):
     凡是"算出来的"都在这里算完：面板不做业务计算，只把字段摆到页面上。
     """
     now = now or utcnow()
-    estimates = forecast(plan, now)
+    estimates, sequence = _forecast(plan, now)
     graph, views = layout(plan, now, estimates)
     spend = budget(plan, now, estimates)
     counts = {status: 0 for status in STATUSES}
@@ -527,7 +557,7 @@ def snapshot(plan, now=None):
                           for item in plan["instances"]],
             "flows": [{**flow, "view": views[flow["id"]]}
                       for flow in plan["flows"]],
-            "graph": graph,
+            "graph": graph, "queues": execution_queues(plan, sequence),
             "tasks": [{**task, "estimate": estimates[task["id"]]}
                       for task in plan["tasks"]]}
 

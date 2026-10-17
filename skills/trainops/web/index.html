@@ -104,6 +104,17 @@ button.token.unset,.token.unset { color:var(--blocked); border-color:var(--block
 .flow-progress { color:var(--ink); font-family:var(--mono); font-variant-numeric:tabular-nums; }
 .canvas-viewport { position:relative; max-height:72vh; overflow:auto; border:1px solid var(--line); border-radius:var(--r-panel); background:var(--surface); }
 .canvas { position:relative; }
+.diagram-switch { display:flex; gap:6px; }
+.diagram-view[aria-pressed="true"] { color:var(--ink); border-color:var(--ink); background:var(--raise); }
+.queue-viewport { margin-top:12px; padding:20px 16px; }
+.queue-lane + .queue-lane { margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
+.queue-label { position:sticky; left:0; width:fit-content; max-width:100%; margin:0 0 12px; font:600 13px var(--mono); color:var(--ink); overflow-wrap:anywhere; }
+.queue-row { display:flex; align-items:flex-start; width:max-content; min-width:100%; }
+.task-node.queue-node { width:280px; flex:none; }
+.queue-edge { position:relative; flex:none; width:64px; margin-top:72px; border-top:2px dashed var(--edge); }
+.queue-edge::after { content:""; position:absolute; right:0; top:-5px; border-top:4px solid transparent; border-bottom:4px solid transparent; border-left:7px solid var(--edge); }
+.queue-row .queue-node + .queue-node { margin-left:16px; }
+.queue-reason { margin-top:5px; color:var(--muted); font-size:12px; }
 /* 连线只表达依赖：中性细线，最后一段带箭头；任务节点始终盖在线上方 */
 .canvas-edge { position:absolute; height:0; border-top:1.5px solid var(--edge); transform-origin:0 0; z-index:0; pointer-events:none; }
 .canvas-edge.arrow::after { content:""; position:absolute; right:-1px; top:-5px; border-top:4.5px solid transparent; border-bottom:4.5px solid transparent; border-left:7px solid var(--edge); }
@@ -186,6 +197,7 @@ const $ = id => document.getElementById(id);
 const names = {pending:'待执行',running:'执行中',blocked:'阻塞',done:'已完成',failed:'失败',cancelled:'已取消',unknown:'未观测',off:'已关机',starting:'开机中',on:'开机',unreachable:'不可达'};
 let plan = null;
 let loading = false;
+let diagramMode = 'queue';
 let scrollLeft = 0, scrollTop = 0;   // 画布是原生滚动容器，刷新后保留滚动位置
 const CANVAS_PAD = 64;    // 画布四周留白
 const NODE_W = 280;       // 任务节点宽度
@@ -477,9 +489,107 @@ function renderSummary() {
   if (settled) summary.push(settled);
   $('summary').replaceChildren(...summary);
 }
-/* 面板不做业务计算：依赖层级、节点行列、跨层路点、进度与 ETA 都由服务端下发。
-   这里只把列/行映射成画布坐标，并把相邻层线段画成带箭头的直线。 */
+/* 面板不做业务计算：队列顺序、依赖层级、进度与 ETA 都由服务端下发。
+   两种视图共用任务卡片；资源排队与真实依赖使用不同连线语义。 */
+function taskCard(task, percent, flowById) {
+  const node = el('article',null,'task-node ' + task.status
+    + (task.status === 'running' ? instanceClass(task.instance) : ''));
+  node.id = 'task-' + task.id;
+  const top = el('div',null,'task-top');
+  const titleWrap = el('div',null,'task-title');
+  titleWrap.append(el('span',task.id,'task-id'),el('span',task.name,'task-name'));
+  top.append(titleWrap,status(task.status));
+  const meta = el('div',null,'tags');
+  meta.append(el('span',instanceLabel(task.instance),'instance-tag'));
+  const flow = flowById.get(task.flow);
+  if (flow) meta.append(el('span',flow.id + ' ' + flow.name));
+  if (task.note) meta.append(el('span',task.note));
+  node.append(top,meta);
+  const progress = el('div',null,'task-progress');
+  const meter = el('span',null,'task-meter');
+  meter.append(css(el('span',null,'task-meter-fill'),'width:' + percent + '%'));
+  progress.append(el('span','进度'),meter,el('span',percent + '%','task-progress-value'));
+  node.append(progress);
+  const eta = el('div',null,'task-eta');
+  if (task.status === 'done') {
+    eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
+  } else if (['failed','cancelled'].includes(task.status)) {
+    /* 取消不是失败：红色只留给 failed，取消按“已经停下”的中性口径显示 */
+    eta.append(el('span',when(task.finished_at) + ' 结束',task.status === 'cancelled' ? 'eta-cancelled' : 'eta-failed'));
+  } else if (task.estimate.overdue) {
+    eta.append(el('span','已超过预计完成时间，需重新估计','eta-overdue'));
+  } else {
+    eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估')
+      + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
+  }
+  if (task.estimate.stale) eta.append(el('span','超过 1 小时未巡检','eta-stale'));
+  node.append(eta);
+  return node;
+}
+function diagramSwitch(heading) {
+  const controls = el('div',null,'diagram-switch');
+  controls.setAttribute('aria-label','任务图视图');
+  for (const [mode,label] of [['queue','执行队列'],['dependency','前置依赖']]) {
+    const button = el('button',label,'diagram-view');
+    button.setAttribute('aria-pressed',String(diagramMode === mode));
+    button.addEventListener('click',() => {
+      diagramMode = mode;
+      scrollLeft = 0; scrollTop = 0;
+      renderDiagram();
+    });
+    controls.append(button);
+  }
+  heading.append(controls);
+}
+function renderQueues() {
+  const section = el('section',null,'diagram');
+  const heading = el('div',null,'diagram-header');
+  const title = el('div',null,'diagram-title');
+  title.append(el('h2','任务执行队列'),el('p','按当前实例分配与排程规则展示候选顺序，不代表已在远端启动','diagram-sub'));
+  heading.append(title);
+  diagramSwitch(heading);
+  section.append(heading,flowIndex(),el('p','虚线箭头 = 同实例计划排队，不是前置依赖；未知耗时不影响候选顺序，改派或状态变化后重算。','diagram-hint'));
+  const tasks = new Map(plan.tasks.map(task => [task.id,task]));
+  const flows = new Map(plan.flows.map(flow => [flow.id,flow]));
+  const progress = new Map(plan.graph.nodes.map(node => [node.id,node.progress]));
+  const viewport = el('div',null,'canvas-viewport queue-viewport');
+  viewport.setAttribute('role','group');
+  viewport.setAttribute('aria-label','实例执行队列，可横向滚动');
+  const addLane = (label, ids, connected) => {
+    const lane = el('section',null,'queue-lane');
+    lane.append(el('h3',label,'queue-label'));
+    if (!ids.length) lane.append(el('p','暂无执行中或待执行任务','empty'));
+    const row = el('div',null,'queue-row');
+    for (const [index,id] of ids.entries()) {
+      const task = tasks.get(id);
+      if (connected && index) {
+        const edge = el('span',null,'queue-edge');
+        edge.dataset.source = ids[index - 1]; edge.dataset.target = id;
+        edge.title = ids[index - 1] + ' ⇢ ' + id + '（计划排队，非硬依赖）';
+        edge.setAttribute('role','img'); edge.setAttribute('aria-label',edge.title);
+        row.append(edge);
+      }
+      const node = taskCard(task,progress.get(id),flows);
+      node.classList.add('queue-node');
+      if (task.status === 'pending' && task.estimate.reason) {
+        node.append(el('div',task.estimate.reason,'queue-reason'));
+      }
+      if (task.not_before) node.append(el('div','不早于 ' + when(task.not_before),'queue-reason'));
+      row.append(node);
+    }
+    lane.append(row); viewport.append(lane);
+  };
+  for (const lane of plan.queues.lanes) addLane(instanceLabel(lane.instance),lane.tasks,true);
+  for (const group of plan.queues.other) addLane(group.label,group.tasks,false);
+  if (!plan.tasks.length) viewport.append(el('p','暂无任务','empty'));
+  viewport.addEventListener('scroll',() => { scrollLeft = viewport.scrollLeft; scrollTop = viewport.scrollTop; });
+  section.append(viewport);
+  $('diagram').replaceChildren(section);
+  viewport.scrollLeft = scrollLeft; viewport.scrollTop = scrollTop;
+}
 function renderDiagram() {
+  if (diagramMode === 'queue' && plan.queues) { renderQueues(); return; }
+
   const graph = plan.graph || {nodes:[],edges:[],columns:0,rows:0};
   const taskById = new Map(plan.tasks.map(task => [task.id,task]));
   const flowById = new Map(plan.flows.map(flow => [flow.id,flow]));
@@ -489,6 +599,7 @@ function renderDiagram() {
   title.append(el('h2','任务流程图'));
   title.append(el('p',plan.stats.flows + ' 条流程 · ' + plan.stats.tasks + ' 个任务 · 从左到右为依赖方向','diagram-sub'));
   heading.append(title);
+  diagramSwitch(heading);
   section.append(heading);
   if (!graph.nodes.length) {
     section.append(el('div','暂无任务','empty'));
@@ -497,6 +608,7 @@ function renderDiagram() {
   }
   heading.append(el('span','画布可横向滚动 · 箭头表示前置依赖','diagram-hint'));
   section.append(flowIndex());
+  if (!graph.edges.length) section.append(el('p','未登记前置依赖；独立实验的同机先后安排见执行队列。','diagram-hint'));
   const viewport = el('div',null,'canvas-viewport');
   viewport.setAttribute('role','group');
   viewport.setAttribute('aria-label','任务流程图画布，可横向滚动');
@@ -537,39 +649,9 @@ function renderDiagram() {
   }
   for (const position of graph.nodes) {
     const task = taskById.get(position.id);
-    const node = el('article',null,'task-node canvas-node ' + task.status
-      + (task.status === 'running' ? instanceClass(task.instance) : ''));
-    node.id = 'task-' + task.id;
+    const node = taskCard(task,position.progress,flowById);
+    node.classList.add('canvas-node');
     css(node,'left:' + pointX(position) + 'px;top:' + (CANVAS_PAD + position.row * ROW_PITCH - 8) + 'px');
-    const top = el('div',null,'task-top');
-    const titleWrap = el('div',null,'task-title');
-    titleWrap.append(el('span',task.id,'task-id'),el('span',task.name,'task-name'));
-    top.append(titleWrap,status(task.status));
-    const meta = el('div',null,'tags');
-    meta.append(el('span',instanceLabel(task.instance),'instance-tag'));
-    const flow = flowById.get(task.flow);
-    if (flow) meta.append(el('span',flow.id + ' ' + flow.name));
-    if (task.note) meta.append(el('span',task.note));
-    node.append(top,meta);
-    const progress = el('div',null,'task-progress');
-    const meter = el('span',null,'task-meter');
-    meter.append(css(el('span',null,'task-meter-fill'),'width:' + position.progress + '%'));
-    progress.append(el('span','进度'),meter,el('span',position.progress + '%','task-progress-value'));
-    node.append(progress);
-    const eta = el('div',null,'task-eta');
-    if (task.status === 'done') {
-      eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
-    } else if (['failed','cancelled'].includes(task.status)) {
-      /* 取消不是失败：红色只留给 failed，取消按“已经停下”的中性口径显示 */
-      eta.append(el('span',when(task.finished_at) + ' 结束',task.status === 'cancelled' ? 'eta-cancelled' : 'eta-failed'));
-    } else if (task.estimate.overdue) {
-      eta.append(el('span','已超过预计完成时间，需重新估计','eta-overdue'));
-    } else {
-      eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估')
-        + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
-    }
-    if (task.estimate.stale) eta.append(el('span','超过 1 小时未巡检','eta-stale'));
-    node.append(eta);
     canvas.append(node);
   }
   viewport.append(canvas);
