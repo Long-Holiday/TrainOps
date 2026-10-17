@@ -1,5 +1,5 @@
-// Dependency-free DOM smoke tests for the continuous Gantt panel: the panel renders the
-// geometry/progress the server computed and does no arithmetic of its own.
+// Dependency-free DOM smoke tests for the task flowchart: the server computes grid
+// columns/rows and cross-layer waypoints; the panel renders one pannable canvas.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -51,7 +51,7 @@ process.on('exit', () => fs.rmSync(project, {recursive: true, force: true}));
 execFileSync('python3', [cli, '--project', project, 'demo'], {encoding: 'utf8'});
 const data = JSON.parse(execFileSync('python3', [cli, '--project', project, 'show', '--json'],
   {encoding: 'utf8'}));
-const nodes = Object.fromEntries(['title','updated','instances','summary','flows','error','refresh','theme','token','modal']
+const nodes = Object.fromEntries(['title','updated','instances','summary','diagram','error','refresh','theme','token','modal']
   .map(id => [id, new Element('div')]));
 let failed = false;
 const calls = [];              // 面板发出的每个请求，用来断言时价登记真的走了 POST
@@ -90,44 +90,78 @@ async function main() {
   assert.ok(html.includes('.notice.hidden'), '关闭态必须有 .notice.hidden 压过 .notice 的 display:flex');
   new vm.Script(source, {filename:'index.html'}).runInContext(context);
   await new Promise(resolve => setImmediate(resolve));
-  const gantts = byClass(nodes.flows, 'gantt');
-  assert.equal(gantts.length, 3, 'Each of the 3 flows must render a Gantt chart');
-  assert.equal(byClass(nodes.flows, 'gantt-row').length, 7, 'All 7 tasks must be rendered as Gantt rows');
-  assert.equal(descendants(nodes.flows, 'details').length, 0, 'No details element rendered in Gantt rows');
-  for (const gantt of gantts) {
-    const bars = byClass(gantt, 'gantt-bar').map(bar => {
-      const m = bar.style.match(/left:([\d.]+)%;width:([\d.]+)%/);
-      return {left: Number(m[1]), width: Number(m[2])};
-    });
-    assert.equal(bars[0].left, 0, 'First block in flow starts at 0%');
-    for (let i = 1; i < bars.length; i++) {
-      assert.ok(Math.abs((bars[i - 1].left + bars[i - 1].width) - bars[i].left) < 0.2,
-        'Consecutive blocks in a flow must be contiguous without gaps');
-    }
-  }
-  const progLines = byClass(nodes.flows, 'gantt-progress-line');
-  assert.equal(progLines.length, 0, '条形内不再叠一条与填充同值的子进度竖线');
-  assert.equal(byClass(nodes.flows, 'gantt-bar-fill').length, 7, '每个条形的子进度只由填充块表示');
-  const badges = byClass(nodes.flows, 'gantt-progress-badge');
-  assert.equal(badges.length, 7, 'Each task Gantt bar must display an unobstructed progress badge');
-  assert.ok(badges.some(b => b.textContent === '18%'), 'F01-T02 badge shows 18%');
-  // 总进度只保留表头进度条一处：甘特图里的总进度竖线与标签整块删掉（此前三处重复显示同一个数）
-  assert.equal(byClass(nodes.flows, 'flow-progress-line').length, 0, '甘特图里不再画总进度竖线');
-  assert.equal(byClass(nodes.flows, 'flow-progress-tag').length, 0, '竖线的标签一起删掉');
-  assert.equal(byClass(nodes.flows, 'flow-meter').length, 3, '每个流程表头只留一条总进度条');
+  const canvases = byClass(nodes.diagram, 'canvas');
+  assert.equal(canvases.length, 1, '整份计划只能有一张主图（一块画布）');
+  assert.equal(byClass(nodes.diagram, 'canvas-viewport').length, 1, '画布要有可拖动视口');
+  assert.equal(byClass(nodes.diagram, 'start-node').length, 0, '不显示开始节点');
+  assert.ok(!nodes.diagram.textContent.includes('开始'), '画布上不出现开始节点文案');
+  const taskNodes = byClass(nodes.diagram, 'task-node');
+  assert.equal(taskNodes.length, 7, 'All tasks appear exactly once');
+  assert.equal(descendants(nodes.diagram, 'details').length, 0);
+  assert.ok(taskNodes.every(node => byClass(node, 'task-node').length === 0),
+    '每个任务节点都是叶子，不包含子任务');
+  assert.ok(taskNodes.every(node => descendants(node, 'a').length === 0),
+    '跨流程依赖由主图箭头表达，不再在任务节点里塞外部引用列表');
+  assert.ok(!nodes.diagram.textContent.includes('前置（全部完成）'), '任务节点不再列出子任务/前置清单');
+  assert.ok(taskNodes.every(node => node.classList.contains('canvas-node')), '任务节点按网格绝对定位');
+  const expectedEdges = data.graph.edges;
+  const edges = byClass(nodes.diagram, 'canvas-edge');
+  assert.equal(edges.length, expectedEdges.length + expectedEdges.reduce((n, edge) => n + edge.waypoints.length, 0),
+    '每条依赖按相邻层分段绘制');
+  assert.deepEqual(edges.map(edge => [edge.dataset.source,edge.dataset.target]),
+    expectedEdges.map(edge => [edge.source,edge.target]));
+  assert.ok(!expectedEdges.some(edge => edge.source === 'START'), '不带任何开始节点边');
+  assert.equal(byClass(nodes.diagram, 'canvas-edge')
+    .filter(edge => edge.classList.contains('arrow')).length, expectedEdges.length,
+    '每条依赖只在最后一段画箭头');
+  const nodeCSS = html.match(/\.task-node\s*\{([^}]+)\}/)[1];
+  assert.ok(!/(?:^|;)\s*(?:max-)?height\s*:/.test(nodeCSS), '节点随正文变高，不能固定或限制高度');
+  assert.match(html, /\.canvas-viewport\s*\{[^}]*overflow:hidden/, '画布视口裁切并支持拖动');
+  assert.match(html, /\.canvas-viewport\s*\{[^}]*cursor:grab/, '画布视口显示可拖动光标');
+  assert.match(html, /\.canvas-edge\s*\{[^}]*transform-origin:0 0/, '连线按端点坐标旋转绘制');
+  // 节点按服务端 layer/row 映射到网格：演示数据中 F01-T01 在 (0,0)，F01-T02 在 (1,0)，F02-T01 在 (1,1)
+  assert.equal(taskNodes[0].style, 'left:64px;top:56px', '第一个节点落在网格首格');
+  assert.equal(taskNodes[1].style, 'left:444px;top:56px', '同层节点共享列坐标');
+  assert.equal(taskNodes[2].style, 'left:444px;top:266px', '不同行按 ROW_PITCH 排布');
+  assert.equal(canvases[0].style,
+    'width:1928px;height:548px;transform:translate(0px, 0px)',
+    '画布尺寸与平移量由服务端行列和固定网格间距推出');
+  assert.equal(edges[0].classList.contains('arrow'), true);
+  assert.equal(edges[0].classList.contains('inst-local'), true, '连线颜色跟随源任务所在实例');
+  assert.equal(edges[1].classList.contains('inst-1'), true);
+  // 节点颜色表示容器实例：演示计划里两台实例 + 本机任务各自拿到稳定的颜色类
+  assert.deepEqual(taskNodes.map(node => ['inst-1','inst-2','inst-local','inst-none']
+    .find(cls => node.classList.contains(cls))),
+    ['inst-local','inst-1','inst-2','inst-1','inst-2','inst-local','inst-local'],
+    '节点颜色必须跟随任务所在的容器实例');
+  assert.equal(byClass(nodes.diagram, 'instance-tag').length, 7, '每个任务节点都标出所在实例');
+  assert.equal(byClass(nodes.diagram, 'legend-item').length, 3, '图例列出两台实例与本机');
+  assert.match(byClass(nodes.diagram, 'legend-title')[0].textContent, /颜色 = 容器实例/);
+  assert.ok(byClass(nodes.diagram, 'legend-item').some(item => byClass(item, 'swatch')[0].classList.contains('inst-2')),
+    '图例的色块与节点使用同一套实例色');
+  for (const forbidden of ['getBoundingClientRect', 'ResizeObserver', 'requestAnimationFrame',
+    'infinite', '<canvas', 'gantt-', 'laneLeft', 'innerHTML'])
+    assert.ok(!html.includes(forbidden), `流程图不能包含 ${forbidden}`);
+  assert.ok(!/<(?:script|link)[^>]+(?:src|href)=["']https?:/.test(html), 'No external assets');
+  const values = byClass(nodes.diagram, 'task-progress-value');
+  assert.equal(values.length, 7);
+  assert.ok(values.some(node => node.textContent === '18%'));
+  assert.equal(byClass(nodes.diagram, 'task-meter-fill').length, 7);
+  assert.equal(byClass(nodes.diagram, 'flow-meter').length, 3, '每条流程一个总进度读数');
+  assert.equal(descendants(nodes.diagram, 'a').length, 0, '单主图不需要跨流程跳转链接');
   assert.equal(nodes.instances.children.length, 2);
   assert.match(nodes.summary.textContent, /3 条流程 \/ 7 个任务/);
-  assert.match(nodes.flows.textContent, /F03-T02/);
-  assert.match(nodes.flows.textContent, /待估/);
-  // 表头的完成计数与进度条共用服务端算好的同一分母，前端不参与任何换算
-  assert.match(nodes.flows.textContent, /1\/3 完成/);
-  assert.match(nodes.flows.textContent, /0\/2 完成/);
-  assert.deepEqual(byClass(nodes.flows, 'flow-meter-fill').map(fill => fill.style),
+  assert.match(nodes.diagram.textContent, /F03-T02/);
+  assert.match(nodes.diagram.textContent, /待估/);
+  // 流程读数条与进度条共用服务端算好的同一分母，前端不参与任何换算
+  assert.match(nodes.diagram.textContent, /1\/3 完成/);
+  assert.match(nodes.diagram.textContent, /0\/2 完成/);
+  assert.deepEqual(byClass(nodes.diagram, 'flow-meter-fill').map(fill => fill.style),
     ['width:33%', 'width:0%', 'width:0%'], '进度条宽度直接取服务端的流程总进度');
   // 前端不做业务计算：这几个函数一旦回来，就说明有人又把排程/进度搬进了浏览器
   for (const gone of ['computeSpans', 'taskProgress', 'ageOf'])
     assert.ok(!source.includes(gone), `${gone} 属于服务端的活，面板里不该再有第二份`);
-  console.log('PASS: Continuous Gantt charts / single total-progress component / unobstructed badges');
+  console.log('PASS: single pannable canvas / grid nodes / no start node / non-crossing routes / instance colors');
 
   // 面板唯一的写入口：实例卡上的时价按钮 → 弹窗 → POST /api/instance-price
   const priceButtons = byClass(nodes.instances, 'price');
@@ -231,7 +265,7 @@ async function main() {
   assert.equal(nodes.modal.classList.contains('hidden'), true, '登记成功后关窗');
   assert.equal(nodes.modal.children.length, 0, '关窗后输入框连同里面的值一起消失');
   assert.ok(!nodes.token.classList.contains('unset'), '登记后按钮回到常态');
-  const page = [nodes.title,nodes.updated,nodes.summary,nodes.instances,nodes.flows,nodes.error,nodes.modal];
+  const page = [nodes.title,nodes.updated,nodes.summary,nodes.instances,nodes.diagram,nodes.error,nodes.modal];
   assert.ok(!page.some(node => node.textContent.includes('secret-token-value')),
     '凭据不能留在页面任何位置');
   // 被拒绝时留在弹窗里：这是服务端说的实话，不是客户端编的
@@ -292,8 +326,8 @@ async function main() {
   assert.equal(byClass(nodes.summary, 'settled').length, 1);
 
   // 面板只做只读展示：没有 TB 链接、没有磁盘条、没有新的外部请求入口
-  assert.equal(descendants(nodes.flows, 'a').length + descendants(nodes.summary, 'a').length, 0,
-    '面板不提供 TensorBoard 直链');
+  assert.ok([...descendants(nodes.diagram, 'a'), ...descendants(nodes.summary, 'a')]
+    .every(link => link.href.startsWith('#task-')), '面板只提供任务内部引用，不提供 TensorBoard 直链');
   assert.ok(!/磁盘|disk_used|tf-logs|tensorboard/i.test(nodes.summary.textContent + nodes.instances.textContent),
     '面板不展示磁盘与 TensorBoard 信息（这些留给 agent 巡检）');
 
@@ -307,71 +341,144 @@ async function main() {
   const longName = 'v7_no_feedback_no_relation_no_composition_no_structure消融实验完整任务名称';
   data.tasks[0].name = longName;
   await nodes.refresh.fire('click');
-  const longTitle = byClass(nodes.flows, 'task-title')[0];
+  const longTitle = byClass(nodes.diagram, 'task-title')[0];
   assert.equal(byClass(longTitle, 'task-name')[0].textContent, longName, '长任务名称必须原样保留');
   assert.equal(byClass(longTitle, 'copy')[0].textContent, data.tasks[0].id, '名称换行不影响任务编号');
-  assert.equal(byClass(byClass(nodes.flows, 'gantt-row')[0], 'status').length, 1, '名称换行不移除任务状态');
+  assert.equal(byClass(byClass(nodes.diagram, 'task-node')[0], 'status').length, 1, '名称换行不移除任务状态');
   data.tasks[0].name = savedLongTaskName;
   await nodes.refresh.fire('click');
   console.log('PASS: long task names remain complete with wrapping styles');
 
-  // 几何与进度全部听服务端：前端不再从 estimate 重排一遍，改 payload 里的 bar 必须原样落到页面上
-  const savedBar = data.tasks[2].bar;
+  // 服务端的节点行列和进度必须直传；浏览器不从依赖或时间重新布局。
+  const savedNode = data.graph.nodes[2];
   const savedView = data.flows[0].view;
-  data.tasks[2].bar = {left:55.5, width:20.4, progress:40, unknown:true};
+  data.graph.nodes[2] = {...savedNode, row:1, layer:2, progress:40};
   data.flows[0].view = {total:7, countable:7, done:5, cancelled:2, open:2, progress:71,
-    known:true, finish:data.tasks[0].estimate.finish, span:savedView.span, ticks:savedView.ticks};
+    known:true, finish:data.tasks[0].estimate.finish};
   await nodes.refresh.fire('click');
-  const shifted = byClass(nodes.flows, 'gantt-bar')[2];
-  assert.equal(shifted.style, 'left:55.5%;width:20.4%', '条形坐标必须原样取服务端的 bar.left/width');
-  assert.ok(shifted.classList.contains('is-unknown'), 'bar.unknown 决定虚线斜纹');
-  assert.equal(byClass(shifted, 'gantt-bar-fill')[0].style, 'width:40%');
-  assert.equal(byClass(shifted, 'gantt-progress-badge')[0].textContent, '40%');
-  // 完成计数与进度条都取自服务端的同一份结论：面板不做分母换算，也不会两个数各说各话
-  assert.match(nodes.flows.textContent, /5\/7 完成 · 已取消 2/);
-  assert.equal(byClass(nodes.flows, 'flow-meter-fill')[0].style, 'width:71%');
-  data.tasks[2].bar = savedBar;
+  const shifted = byClass(nodes.diagram, 'task-node')[2];
+  assert.equal(shifted.style, 'left:824px;top:266px', '节点位置直接取服务端 layer/row');
+  assert.equal(byClass(shifted, 'task-meter-fill')[0].style, 'width:40%');
+  assert.equal(byClass(shifted, 'task-progress-value')[0].textContent, '40%');
+  assert.match(nodes.diagram.textContent, /5\/7 完成 · 已取消 2/);
+  assert.equal(byClass(nodes.diagram, 'flow-meter-fill')[0].style, 'width:71%');
+  data.graph.nodes[2] = savedNode;
   data.flows[0].view = savedView;
   await nodes.refresh.fire('click');
-  console.log('PASS: bar geometry and flow progress are rendered straight from the server payload');
+  console.log('PASS: node grid positions and progress rendered straight from the server payload');
+
+  // 空图、单节点、分叉汇合直接消费服务端拓扑，不虚构判断菱形。
+  const savedGraph = data.graph;
+  data.graph = {nodes:[], edges:[], columns:0, rows:0};
+  await nodes.refresh.fire('click');
+  assert.match(nodes.diagram.textContent, /暂无任务/);
+  assert.equal(byClass(nodes.diagram, 'canvas').length, 0);
+  const firstTask = savedGraph.nodes[0];
+  data.graph = {nodes:[{...firstTask, row:0, layer:0}], edges:[], columns:1, rows:1};
+  await nodes.refresh.fire('click');
+  assert.equal(byClass(nodes.diagram, 'canvas').length, 1, '有任务时始终只有一块画布');
+  assert.equal(byClass(byClass(nodes.diagram, 'canvas')[0], 'task-node').length, 1);
+  assert.equal(byClass(nodes.diagram, 'start-node').length, 0, '单节点图也不画开始节点');
+  const ids = data.tasks.filter(task => task.flow === data.flows[0].id).map(task => task.id);
+  data.graph = {
+    nodes:[{id:ids[0],row:0,layer:0,progress:0},
+      {id:ids[1],row:0,layer:1,progress:0},
+      {id:ids[2],row:1,layer:1,progress:0}],
+    edges:[{source:ids[0],target:ids[1],waypoints:[]},
+      {source:ids[0],target:ids[2],waypoints:[]}],
+    columns:2, rows:2};
+  await nodes.refresh.fire('click');
+  const branched = byClass(nodes.diagram, 'canvas')[0];
+  assert.equal(byClass(branched, 'canvas-edge').length, 2);
+  assert.equal(byClass(branched, 'canvas-edge')
+    .filter(edge => edge.classList.contains('arrow')).length, 2);
+  assert.equal(byClass(branched, 'canvas-edge')[0].style,
+    'left:344px;top:136px;width:100px;transform:rotate(0rad)',
+    '同排依赖画成水平箭头');
+  assert.equal(byClass(branched, 'canvas-edge')[1].style,
+    'left:344px;top:136px;width:' + Math.hypot(100,210)
+      + 'px;transform:rotate(' + Math.atan2(210,100) + 'rad)',
+    '并行分支画成直线分叉，不绕行到画布边缘');
+  data.graph = savedGraph;
+  await nodes.refresh.fire('click');
+  // 跨层依赖：斜线只走列间空隙，路点行内水平穿过空单元格，最后一段才带箭头
+  data.graph = {
+    nodes:[{id:ids[0],row:0,layer:0,progress:0},
+      {id:ids[2],row:0,layer:2,progress:0}],
+    edges:[{source:ids[0],target:ids[2],waypoints:[{layer:1,row:1}]}],
+    columns:3, rows:2};
+  await nodes.refresh.fire('click');
+  const routed = byClass(nodes.diagram, 'canvas-edge');
+  assert.equal(routed.length, 3, '跨层边拆成两条斜线 + 一条空行水平线');
+  assert.equal(routed.filter(edge => edge.classList.contains('arrow')).length, 1,
+    '跨层边只在最后一段画箭头');
+  assert.equal(routed[0].style,
+    'left:344px;top:136px;width:' + Math.hypot(100,210)
+      + 'px;transform:rotate(' + Math.atan2(210,100) + 'rad)');
+  assert.equal(routed[1].style, 'left:444px;top:346px;width:280px;transform:rotate(0rad)',
+    '路点行内的水平线穿过没有节点的空单元格');
+  assert.equal(routed[2].style,
+    'left:724px;top:346px;width:' + Math.hypot(100,210)
+      + 'px;transform:rotate(' + Math.atan2(-210,100) + 'rad)');
+  data.graph = savedGraph;
+  await nodes.refresh.fire('click');
+  console.log('PASS: empty / singleton / fork / cross-layer routing with straight canvas arrows');
+
+  // 画布可以随意拖动；重绘（10 秒轮询）后位置不跳回原点
+  const viewport = byClass(nodes.diagram, 'canvas-viewport')[0];
+  viewport.fire('pointerdown',{button:0,clientX:100,clientY:100,pointerId:1,target:{}});
+  viewport.fire('pointermove',{clientX:140,clientY:130,pointerId:1});
+  assert.match(byClass(nodes.diagram, 'canvas')[0].style, /translate\(40px, 30px\)/,
+    '拖动画布立即更新平移量');
+  viewport.fire('pointerup',{pointerId:1});
+  await nodes.refresh.fire('click');
+  assert.match(byClass(nodes.diagram, 'canvas')[0].style, /translate\(40px, 30px\)/,
+    '横向/纵向平移必须在自动刷新后保留');
+  descendants(nodes.diagram, 'button').find(button => button.textContent === '复位视图').fire('click');
+  assert.match(byClass(nodes.diagram, 'canvas')[0].style, /translate\(0px, 0px\)/,
+    '复位视图把画布移回原点');
+  console.log('PASS: pannable canvas keeps its offset across refresh');
 
   // 整个流程都被取消（真实计划里常见）：只报这件事，不画进度条，也不写"0/0 完成 · 完成待估"
   const savedSecond = data.flows[1].view;
   data.flows[1].view = {total:2, countable:0, done:0, cancelled:2, open:0, progress:null,
-    known:true, finish:null, span:savedSecond.span, ticks:savedSecond.ticks};
+    known:true, finish:null};
   await nodes.refresh.fire('click');
-  assert.match(nodes.flows.textContent, /已全部取消（2 个任务）/);
-  assert.equal(byClass(nodes.flows, 'flow-meter').length, 2, '没有需要完成的任务时不画进度条');
-  assert.ok(!/0\/0 完成/.test(nodes.flows.textContent), '不给"0/0 完成"这种空计数');
+  assert.match(nodes.diagram.textContent, /已全部取消（2 个任务）/);
+  assert.equal(byClass(nodes.diagram, 'flow-meter').length, 2, '没有需要完成的任务时不画进度条');
+  assert.ok(!/0\/0 完成/.test(nodes.diagram.textContent), '不给"0/0 完成"这种空计数');
   data.flows[1].view = savedSecond;
   await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.flows, 'flow-meter').length, 3);
-  console.log('PASS: a fully cancelled flow reports just that, with no progress meter');
-
-  // 每 10 秒重绘一次，但不能把用户正在看的横向滚动位置弹回去
-  byClass(nodes.flows, 'gantt-wrap')[0].scrollLeft = 137;
+  assert.equal(byClass(nodes.diagram, 'flow-meter').length, 3);
+  // 空流程只是"暂无任务"，不能报成"已全部取消（0 个任务）"
+  const savedEmptyView = data.flows[0].view;
+  data.flows[0].view = {total:0, countable:0, done:0, cancelled:0, open:0, progress:null,
+    known:true, finish:null};
   await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.flows, 'gantt-wrap')[0].scrollLeft, 137,
-    'Horizontal scroll must survive the periodic refresh');
-  console.log('PASS: gantt horizontal scroll is preserved across refresh');
+  assert.match(byClass(nodes.diagram, 'flow-chip')[0].textContent, /F01.*暂无任务/);
+  assert.ok(!/已全部取消（0 个任务）/.test(nodes.diagram.textContent));
+  data.flows[0].view = savedEmptyView;
+  await nodes.refresh.fire('click');
+  console.log('PASS: a fully cancelled flow reports just that, with no progress meter');
 
   // 逾期与巡检超时提示（先清干净，避免演示快照本身随时间变旧影响断言）
   data.tasks.forEach(task => { task.estimate.overdue = false; task.estimate.stale = false; });
   data.tasks[1].estimate.overdue = true;
   data.tasks[1].estimate.stale = true;
   await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.flows, 'eta-overdue').length, 1);
-  assert.equal(byClass(nodes.flows, 'eta-stale').length, 1);
-  assert.match(nodes.flows.textContent, /已超过预计完成时间，需重新估计/);
-  assert.match(nodes.flows.textContent, /超过 1 小时未巡检/);
+  assert.equal(byClass(nodes.diagram, 'eta-overdue').length, 1);
+  assert.equal(byClass(nodes.diagram, 'eta-stale').length, 1);
+  assert.match(nodes.diagram.textContent, /已超过预计完成时间，需重新估计/);
+  assert.match(nodes.diagram.textContent, /超过 1 小时未巡检/);
   console.log('PASS: overdue and never-inspected running tasks are flagged');
 
   const malicious = '<img src=x onerror="alert(1)">';
-  data.name = malicious; data.tasks[0].note = malicious;
+  data.name = malicious; data.tasks[0].name = malicious; data.tasks[0].note = malicious;
   await nodes.refresh.fire('click');
   assert.equal(nodes.title.textContent, malicious);
-  assert.equal(descendants(nodes.flows, 'img').length, 0);
-  assert.match(nodes.flows.textContent, /<img src=x/);
+  assert.equal(descendants(nodes.diagram, 'img').length, 0);
+  assert.equal(byClass(nodes.diagram, 'task-name')[0].textContent, malicious);
+  assert.match(nodes.diagram.textContent, /<img src=x/);
   console.log('PASS: untrusted plan text is not interpreted as HTML');
 
   failed = true;
@@ -380,7 +487,7 @@ async function main() {
   assert.match(nodes.error.textContent, /上次读取的数据/);
   assert.equal(nodes.error.classList.contains('hidden'), false);
   assert.equal(nodes.refresh.disabled, false);
-  assert.equal(byClass(nodes.flows, 'gantt-row').length, 7);
+  assert.equal(byClass(nodes.diagram, 'task-node').length, 7);
   console.log('PASS: offline warning / last snapshot retained / controls recovered');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

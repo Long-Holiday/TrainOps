@@ -1,6 +1,6 @@
 ---
 name: trainops
-description: AutoDL 多实例训练计划、甘特图、结算与飞书实验日志；按目标自主优化排程。
+description: AutoDL 多实例训练计划、任务流程图、结算与飞书实验日志；按目标自主优化排程。
 ---
 
 # TrainOps

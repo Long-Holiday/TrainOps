@@ -7,10 +7,10 @@
 <title>TrainOps · 项目计划</title>
 <style>
 /* 视觉：调度台。三条规矩——
-   一、颜色只归"状态"与"结论"（执行中/已完成/阻塞/失败、余额够不够），其余一律墨色；
+   一、颜色只归"状态/结论"与"容器实例"：读数条与状态点用状态色，主图节点用实例色；
    二、面板块是凹进去的（内嵌阴影 + 比纸面更深的底），全页只有弹窗有投影；
-   三、方格纸只画在甘特轨道里——那里每条竖线都对应一个时刻，别处不画。
-   全部为静态 CSS，不引入外部字体、图片、图标库、JS 库或 canvas，也没有持续动画循环。 */
+   三、任务矩形与箭头只表达依赖，不用位置或面积暗示任务耗时。
+   全部为静态 CSS，不引入外部字体、图片、图标库、JS 库或 canvas 元素，也没有持续动画循环。 */
 :root {
   color-scheme:light;
   --pad:16px;
@@ -24,6 +24,19 @@
   --done:#0e7a3e; --done-tint:rgba(14,122,62,.14);
   --blocked:#96540a; --blocked-tint:rgba(150,84,10,.14);
   --failed:#c02a24; --failed-tint:rgba(192,42,36,.12);
+  /* 实例色：主图里节点颜色只表示任务跑在哪台容器实例上，状态另用文字与状态点表达。
+     颜色按实例编号分配（I01 → inst-1，I02 → inst-2 …），编号稳定，刷新不会跳色。 */
+  --inst-1:#2f5fb3; --inst-1-tint:rgba(47,95,179,.12);
+  --inst-2:#0d7a68; --inst-2-tint:rgba(13,122,104,.12);
+  --inst-3:#7a469c; --inst-3-tint:rgba(122,70,156,.12);
+  --inst-4:#a85a12; --inst-4-tint:rgba(168,90,18,.12);
+  --inst-5:#a32c63; --inst-5-tint:rgba(163,44,99,.12);
+  --inst-6:#556b16; --inst-6-tint:rgba(85,107,22,.13);
+  --inst-7:#1b6d8a; --inst-7-tint:rgba(27,109,138,.12);
+  --inst-8:#7b4a2b; --inst-8-tint:rgba(123,74,43,.12);
+  --inst-local:#5c665e; --inst-local-tint:rgba(92,102,94,.12);
+  --inst-none:#6b756d; --inst-none-tint:rgba(107,117,109,.13);
+  --canvas:#ffffff;
   --recess:inset 0 2px 3px -2px rgba(18,28,20,.24);
   --r-mark:5px; --r-ctl:6px; --r-panel:8px; --r-dialog:12px;
 }
@@ -37,6 +50,17 @@
   --done:#46c07a; --done-tint:rgba(70,192,122,.16);
   --blocked:#e0a838; --blocked-tint:rgba(224,168,56,.15);
   --failed:#f0736b; --failed-tint:rgba(240,115,107,.15);
+  --inst-1:#8fb4ff; --inst-1-tint:rgba(143,180,255,.18);
+  --inst-2:#5fd3bb; --inst-2-tint:rgba(95,211,187,.18);
+  --inst-3:#c79bf0; --inst-3-tint:rgba(199,155,240,.18);
+  --inst-4:#f0a862; --inst-4-tint:rgba(240,168,98,.18);
+  --inst-5:#f08bb8; --inst-5-tint:rgba(240,139,184,.18);
+  --inst-6:#b9cc6a; --inst-6-tint:rgba(185,204,106,.18);
+  --inst-7:#6cc4e0; --inst-7-tint:rgba(108,196,224,.18);
+  --inst-8:#d3a17f; --inst-8-tint:rgba(211,161,127,.18);
+  --inst-local:#98a59a; --inst-local-tint:rgba(152,165,154,.18);
+  --inst-none:#9aa79c; --inst-none-tint:rgba(154,167,156,.18);
+  --canvas:#191d1b;
   --recess:inset 0 2px 4px -2px rgba(0,0,0,.7);
 }
 * { box-sizing:border-box; }
@@ -99,6 +123,7 @@ button:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
 .instance.starting::before { background:var(--blocked); }
 .instance.off::before,.instance.unreachable::before { background:var(--failed); }
 .instance-title { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:15px; font-weight:600; }
+.instance-name { display:inline-flex; align-items:center; gap:7px; min-width:0; }
 .instance p { margin-top:7px; font-size:12.5px; }
 .instance-actions { display:flex; align-items:center; gap:9px; flex-shrink:0; }
 /* 时价按钮与 Token 按钮是面板仅有的两处写入口，都做得低调；没登记时改虚线警示色——
@@ -124,67 +149,69 @@ button.token.unset:hover { border-style:solid; }
 .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
 .dialog-actions .primary { border-color:var(--ink); background:var(--ink); color:var(--paper); font-weight:600; }
 .dialog-actions .primary:hover { border-color:var(--ink); background:var(--ink); color:var(--paper); opacity:.88; }
-/* 计划区：一张连续的横线纸，流程之间用横线分段，不再各自套一张浮起来的卡片 */
-#flows { margin-top:4px; }
-.flow { margin:0 0 26px; padding-top:16px; border-top:1px solid var(--rule-strong); }
-.flow:last-child { margin-bottom:4px; }
-.flow-header { display:flex; justify-content:space-between; align-items:center; gap:10px 18px; flex-wrap:wrap; padding-bottom:12px; }
-.flow-title { display:flex; align-items:center; gap:10px; min-width:0; font-size:17px; font-weight:650; letter-spacing:-.01em; }
-.flow-metrics { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
-.metric { white-space:nowrap; }
-/* 总进度的标签、进度条、百分比是一件事，所以自成一组的紧凑间距，不跟其它读数一样拉开 14px */
-.meter-group { display:inline-flex; align-items:center; gap:7px; }
-.meter-group .strong { color:var(--ink); font-weight:700; font-size:13.5px; }
-.flow-meter { display:inline-block; width:72px; height:6px; flex-shrink:0; border:1px solid var(--rule-strong); border-radius:3px; background:var(--panel); overflow:hidden; }
+/* 主图区：整份计划只有这一张有向无环图，流程只作为节点标签与上方读数出现 */
+#diagram { margin-top:4px; }
+.diagram { margin:0 0 26px; padding-top:16px; border-top:1px solid var(--rule-strong); }
+.diagram-header { display:flex; justify-content:space-between; align-items:flex-end; gap:10px 18px; flex-wrap:wrap; padding-bottom:12px; }
+.diagram-title { min-width:0; }
+.diagram-sub { margin-top:4px; font-family:var(--mono); font-size:12.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
+/* 颜色图例把"哪种颜色 = 哪台容器实例"说在图上，不靠猜 */
+.diagram-legend { display:flex; align-items:center; gap:8px 16px; flex-wrap:wrap; padding-bottom:10px; font-size:12.5px; color:var(--secondary); }
+.legend-title { color:var(--ink); font-family:var(--mono); font-size:11.5px; font-weight:600; letter-spacing:.02em; }
+.legend-item { display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:100%; flex-wrap:wrap; overflow-wrap:anywhere; }
+.swatch { width:10px; height:10px; flex-shrink:0; border-radius:3px; background:var(--node,var(--rule-strong)); }
+/* 流程读数条：只给完成计数与总进度，不画第二张图 */
+.flow-index { display:flex; flex-wrap:wrap; gap:8px 10px; padding-bottom:12px; }
+.flow-chip { display:inline-flex; align-items:center; gap:8px; max-width:100%; flex-wrap:wrap; padding:5px 10px; border:1px solid var(--rule); border-radius:var(--r-mark); background:var(--panel); font-size:12.5px; color:var(--secondary); overflow-wrap:anywhere; }
+.flow-chip b { color:var(--ink); font-family:var(--mono); font-weight:600; }
+.flow-chip .flow-percent { color:var(--ink); font-family:var(--mono); font-variant-numeric:tabular-nums; }
+.flow-meter { display:inline-block; width:64px; height:6px; flex-shrink:0; border:1px solid var(--rule-strong); border-radius:3px; background:var(--panel); overflow:hidden; }
 .flow-meter-fill { display:block; height:100%; background:var(--ink); }
-.gantt-wrap { overflow-x:auto; scrollbar-width:thin; scrollbar-color:var(--rule-strong) transparent; }
-.gantt { min-width:920px; }
-.gantt-head,.gantt-row { display:grid; grid-template-columns:300px minmax(600px,1fr); align-items:stretch; }
-.gantt-head { background:var(--panel); border-top:1px solid var(--rule-strong); border-bottom:1px solid var(--rule-strong); color:var(--secondary); }
-.gantt-row { border-bottom:1px solid var(--rule); transition:background-color .12s; }
-.gantt-row:last-child { border-bottom:0; }
-.gantt-row:hover { background:var(--wash); }
-.gantt-col-info { padding:0 16px; height:46px; border-right:1px solid var(--rule); display:flex; align-items:center; font-size:12px; font-weight:600; letter-spacing:.03em; }
-.gantt-info { padding:11px 16px; border-right:1px solid var(--rule); display:flex; flex-direction:column; justify-content:center; gap:5px; overflow-wrap:anywhere; }
-/* 时间轴：底部刻度线与轨道里的方格纸同一套坐标，方格纸只出现在这里 */
-.gantt-axis { position:relative; height:46px; background-image:linear-gradient(90deg,var(--rule-strong) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 6px; background-position:var(--pad) 100%; background-repeat:repeat-x; }
-/* 轴里只剩刻度这一带文字，所以垂直居中；贴底的 6px 刻度线由上面那条背景画 */
-.gantt-tick { position:absolute; top:50%; transform:translate(-50%,-50%); white-space:nowrap; font-family:var(--mono); font-size:11.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
-.gantt-tick.first { transform:translate(0,-50%); }
-.gantt-tick.last { transform:translate(-100%,-50%); }
-.gantt-track { padding:9px 0 8px; display:flex; flex-direction:column; justify-content:center; background-image:linear-gradient(90deg,var(--rule) 1px,transparent 1px); background-size:calc((100% - var(--pad) * 2) / 4) 100%; background-position:var(--pad) 0; background-repeat:repeat-x; }
-/* --pad 是轨道的左右内边距：laneLeft() 与这条 margin 必须同源，否则条形会与时间轴错位 */
-.gantt-lane { position:relative; height:28px; margin:0 var(--pad); }
-/* overflow 保持可见：窄条形上的进度徽标宁可略微外溢，也不被裁掉数字 */
-.gantt-bar { position:absolute; top:0; height:28px; min-width:16px; border-radius:var(--r-mark); border:1px solid var(--rule-strong); background-color:var(--panel); display:flex; align-items:center; justify-content:space-between; padding:0 5px 0 7px; gap:6px; }
-.gantt-bar.running { border-color:var(--running); background-color:var(--running-tint); }
-.gantt-bar.done { border-color:var(--done); background-color:var(--done-tint); }
-.gantt-bar.blocked { border-color:var(--blocked); background-color:var(--blocked-tint); }
-.gantt-bar.failed { border-color:var(--failed); background-color:var(--failed-tint); }
-/* 斜纹只给"完成时间待估"的条形：底色深浅代表状态，斜纹代表这段时长是外推出来的 */
-.gantt-bar.is-unknown { border-style:dashed; background-image:repeating-linear-gradient(135deg,transparent 0 5px,var(--hatch) 5px 6px); }
-/* 子进度只画一处：填充块的宽度就是进度，不再叠一条同值的竖细线。
-   满格时四角跟着条形一起圆，否则填充的直角会从圆角里探出来 */
-.gantt-bar-fill { position:absolute; left:0; top:0; bottom:0; border-radius:var(--r-mark) 0 0 var(--r-mark); background:var(--rule-strong); opacity:.45; pointer-events:none; }
-.gantt-bar-fill.full { border-radius:var(--r-mark); }
-.gantt-bar.running .gantt-bar-fill { background:var(--running); opacity:.26; }
-.gantt-bar.done .gantt-bar-fill { background:var(--done); opacity:.26; }
-.gantt-bar.blocked .gantt-bar-fill { background:var(--blocked); opacity:.26; }
-.gantt-bar.failed .gantt-bar-fill { background:var(--failed); opacity:.26; }
-.gantt-bar-label { position:relative; z-index:1; font-family:var(--mono); font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.gantt-progress-badge { position:relative; z-index:2; background:var(--raise); color:var(--ink); border:1px solid var(--rule-strong); font-family:var(--mono); font-size:11px; font-weight:600; padding:0 6px; border-radius:4px; line-height:1.5; white-space:nowrap; font-variant-numeric:tabular-nums; margin-left:auto; flex-shrink:0; }
-.gantt-eta { margin:7px var(--pad) 0; font-size:12.5px; line-height:1.35; color:var(--secondary); display:flex; gap:12px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
+.diagram-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.diagram-hint { font-size:12px; color:var(--secondary); font-family:var(--mono); }
+/* 画布：一块白色白板。节点按服务端下发的列/行坐标绝对定位，整块画布可以用指针拖动平移。 */
+.canvas-viewport { position:relative; height:clamp(420px,70vh,820px); overflow:hidden; border:1px solid var(--rule-strong); border-radius:var(--r-panel); background:var(--canvas); cursor:grab; touch-action:none; user-select:none; }
+.canvas-viewport.panning { cursor:grabbing; }
+.canvas { position:absolute; left:0; top:0; isolation:isolate; }
+/* 连线按服务端给出的相邻层线段逐段绘制：旋转的 2px 细线，最后一段带箭头。
+   颜色跟随源任务所在的实例；任务节点始终盖在连线上方。 */
+.canvas-edge { position:absolute; height:0; border-top:2px solid var(--node,var(--rule-strong)); transform-origin:0 0; z-index:0; pointer-events:none; }
+.canvas-edge.arrow::after { content:""; position:absolute; right:-1px; top:-6px; border-top:5px solid transparent; border-bottom:5px solid transparent; border-left:8px solid var(--node,var(--rule-strong)); }
+/* 任务节点只有任务本身：名称、实例、流程、进度与预计时间，不嵌套任何子任务 */
+.task-node { position:relative; padding:12px 14px; border:1px solid var(--node,var(--rule-strong)); border-left-width:4px; border-radius:var(--r-mark); background:linear-gradient(90deg,var(--node-tint,transparent),var(--raise) 46%); overflow-wrap:anywhere; }
+.task-node.canvas-node { position:absolute; width:280px; z-index:1; }
+.task-node:target { outline:2px solid var(--ink); outline-offset:3px; }
+.task-node .tags { margin-top:8px; gap:6px 10px; }
+.instance-tag { display:inline-flex; align-items:center; gap:5px; max-width:100%; flex-wrap:wrap; padding:2px 7px; border-radius:999px; background:var(--node-tint,transparent); color:var(--node,var(--secondary)); font-family:var(--mono); font-size:11.5px; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.instance-tag::before { content:""; width:6px; height:6px; flex-shrink:0; border-radius:50%; background:var(--node,var(--rule-strong)); }
+.flow-tag { color:var(--secondary); font-size:12.5px; }
+.task-progress { margin-top:8px; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--secondary); }
+.task-meter { width:64px; height:4px; background:var(--rule); border-radius:2px; overflow:hidden; }
+.task-meter-fill { display:block; height:100%; background:var(--ink); }
+.task-progress-value { color:var(--ink); font-family:var(--mono); }
+.task-eta { margin-top:8px; font-size:12.5px; line-height:1.45; color:var(--secondary); display:flex; gap:6px 12px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
+.diagram-caption { margin:0; padding:0 16px 12px; color:var(--secondary); font-size:12px; }
+/* 实例色只在节点与图例上使用；状态仍由文字与状态点表达 */
+.inst-1 { --node:var(--inst-1); --node-tint:var(--inst-1-tint); }
+.inst-2 { --node:var(--inst-2); --node-tint:var(--inst-2-tint); }
+.inst-3 { --node:var(--inst-3); --node-tint:var(--inst-3-tint); }
+.inst-4 { --node:var(--inst-4); --node-tint:var(--inst-4-tint); }
+.inst-5 { --node:var(--inst-5); --node-tint:var(--inst-5-tint); }
+.inst-6 { --node:var(--inst-6); --node-tint:var(--inst-6-tint); }
+.inst-7 { --node:var(--inst-7); --node-tint:var(--inst-7-tint); }
+.inst-8 { --node:var(--inst-8); --node-tint:var(--inst-8-tint); }
+.inst-local { --node:var(--inst-local); --node-tint:var(--inst-local-tint); }
+.inst-none { --node:var(--inst-none); --node-tint:var(--inst-none-tint); }
 .eta-done { color:var(--done); }
 .eta-failed { color:var(--failed); }
 .eta-cancelled { color:var(--secondary); }
 .eta-overdue { color:var(--blocked); font-weight:600; }
 .eta-stale { color:var(--blocked); }
-/* 待执行/已取消/未观测没有专门的颜色：它们既不是好事也不是故障，
-   落回上面 .dot 与 .gantt-bar 的墨色默认值，正是"颜色只归状态"想要的效果 */
+/* 待执行/已取消/未观测没有专门的状态色：它们既不是好事也不是故障。
+   主图节点另由实例色区分归属，状态仍看文字与状态点。 */
 /* 复制按钮做成键帽：它是"取用这个标识"的操作，属于墨色交互，不该有颜色 */
 .copy { border:1px solid var(--rule-strong); padding:1px 7px; background:var(--raise); color:var(--secondary); border-radius:4px; font-family:var(--mono); font-size:12px; font-weight:600; flex-shrink:0; }
 .copy:hover { border-color:var(--ink); color:var(--ink); background:var(--raise); }
-.flow-title .copy { color:var(--ink); font-size:13px; padding:3px 9px; }
 .status { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; font-size:13px; font-weight:500; flex-shrink:0; }
 .dot { width:8px; height:8px; border-radius:50%; background:var(--rule-strong); flex-shrink:0; }
 .running .dot { background:var(--running); box-shadow:0 0 0 3px var(--running-tint); }
@@ -199,16 +226,11 @@ button.token.unset:hover { border-style:solid; }
 .empty { padding:24px 16px; color:var(--secondary); font-size:13px; font-family:var(--mono); text-align:center; }
 .page-foot { margin-top:10px; padding-top:14px; border-top:1px solid var(--rule); font-family:var(--mono); font-size:11.5px; color:var(--secondary); letter-spacing:.01em; }
 .page-foot code { color:var(--ink); }
-@media (prefers-reduced-motion:no-preference) {
-  @keyframes trainops-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.38; transform:scale(.74); } }
-  .running .dot { animation:trainops-pulse 2.6s ease-in-out infinite; }
-}
 @media(max-width:760px) {
   :root { --pad:12px; }
   main { padding:16px 14px 30px; }
   header { flex-direction:column; align-items:stretch; gap:12px; }
   h1 { font-size:22px; }
-  .gantt-head,.gantt-row { grid-template-columns:210px minmax(520px,1fr); }
   #summary,.chip { font-size:12.5px; }
   .chip.budget b { font-size:16px; }
 }
@@ -227,7 +249,7 @@ button.token.unset:hover { border-style:solid; }
 <div class="notice hidden" id="error" role="alert"></div>
 <div id="summary" aria-live="polite"></div>
 <div class="instances" id="instances"></div>
-<div id="flows"></div>
+<div id="diagram"></div>
 <p class="page-foot">数据源 <code>.agent/experiment.yaml</code> · 时价与 Token 可在面板登记（Token 只存本进程内存），其余修改请通过 agent / CLI</p>
 <div id="modal" class="hidden"></div>
 </main>
@@ -237,7 +259,14 @@ const $ = id => document.getElementById(id);
 const names = {pending:'待执行',running:'执行中',blocked:'阻塞',done:'已完成',failed:'失败',cancelled:'已取消',unknown:'未观测',off:'已关机',starting:'开机中',on:'开机',unreachable:'不可达'};
 let plan = null;
 let loading = false;
-const flowWraps = new Map();  // 流程 ID → 当前 .gantt-wrap 元素，用来保留横向滚动位置
+let canvasEl = null;      // 唯一主图的画布，重绘后按当前平移量重新定位
+let canvasW = 0, canvasH = 0;
+let panX = 0, panY = 0;   // 画布平移量：刷新后保持不变
+const CANVAS_PAD = 64;    // 画布四周留白
+const NODE_W = 280;       // 任务节点宽度
+const COL_PITCH = 380;    // 网格列距 = 节点宽 + 100px 连线空隙
+const ROW_PITCH = 210;    // 网格行距
+const PORT_Y = 72;        // 连线在节点行内的接入高度（约为常见节点高度的中线）
 function el(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined && text !== null) node.textContent = String(text);
@@ -251,11 +280,6 @@ function css(node, styleText) {
 function when(value) {
   if (!value) return '待估';
   return new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
-}
-/* 甘特图轨道左右各留 --pad 的内边距：时间轴刻度按同一坐标系定位，避免与条形错位。
-   ratio 由服务端给出（layout() 的 ticks），这里只把它拼进 calc，不做换算。 */
-function laneLeft(ratio) {
-  return 'left:calc(var(--pad) + (100% - var(--pad) * 2) * ' + ratio + ')';
 }
 function status(value) {
   const node = el('span',null,'status ' + value);
@@ -495,16 +519,98 @@ function settlementNode(settlement) {
   if (settlement.computed_at) node.title = '自动结算于 ' + when(settlement.computed_at) + '；由面板进程按周期重算';
   return node;
 }
-/* 面板不做业务计算：条形几何、流程总进度、时间轴刻度、完成计数都由服务端在
-   /api/plan 里算好（trainops.py 的 layout()/snapshot()），这里只负责打点。
-   以前前端自己重排一遍排程、又把条形宽度求和当成"总进度"——条形在时间上重叠时
-   宽度会重复累加，于是出现"完成 5/7、总进度 100%"这种自相矛盾（见 layout() 注释）。 */
+/* 实例色跟随实例编号：I01 → inst-1，I02 → inst-2……超过 8 台循环使用同一组颜色。
+   编号比数组位置稳定，重排或删除实例不会让别的实例换色。这是纯展示映射，不参与业务计算。 */
+function instanceClass(id) {
+  if (!id) return 'inst-none';
+  if (id === 'local') return 'inst-local';
+  const match = /^I(\d+)$/.exec(id);
+  if (match) return 'inst-' + ((Number(match[1]) - 1) % 8 + 1);
+  const index = plan.instances.findIndex(item => item.id === id);
+  return index >= 0 ? 'inst-' + (index % 8 + 1) : 'inst-none';
+}
+function instanceLabel(id) {
+  if (!id) return '未分配实例';
+  if (id === 'local') return '本机';
+  const item = plan.instances.find(entry => entry.id === id);
+  return item ? item.id + ' ' + item.name : id;
+}
+function legendItem(label,klass) {
+  const item = el('span',null,'legend-item');
+  item.append(el('span',null,'swatch ' + klass),el('span',label));
+  return item;
+}
+/* 颜色图例 + 各流程完成读数。二者都是主图之外的读数，不画任何第二张图。 */
+function diagramLegend() {
+  const legend = el('div',null,'diagram-legend');
+  legend.append(el('span','颜色 = 容器实例（节点与箭头）','legend-title'));
+  for (const item of plan.instances) legend.append(legendItem(item.id + ' ' + item.name,instanceClass(item.id)));
+  if (plan.tasks.some(task => task.instance === 'local')) legend.append(legendItem('本机','inst-local'));
+  if (plan.tasks.some(task => !task.instance)) legend.append(legendItem('未分配实例','inst-none'));
+  return legend;
+}
+function flowIndex() {
+  const row = el('div',null,'flow-index');
+  for (const flow of plan.flows) {
+    const view = flow.view;
+    const chip = el('span',null,'flow-chip');
+    chip.append(el('b',flow.id),el('span',flow.name));
+    if (!view.total) {
+      chip.append(el('span','暂无任务'));
+    } else if (view.countable) {
+      chip.append(el('span',view.done + '/' + view.countable + ' 完成'
+        + (view.cancelled ? ' · 已取消 ' + view.cancelled : '')));
+      const meter = el('span',null,'flow-meter');
+      meter.title = '总进度 ' + view.progress + '%：已完成 ÷ 未取消任务'
+        + (view.cancelled ? '（已取消 ' + view.cancelled + ' 个不计入）' : '');
+      meter.append(css(el('span',null,'flow-meter-fill'),'width:' + view.progress + '%'));
+      chip.append(meter,el('span',view.progress + '%','flow-percent'));
+      chip.title = view.known && view.finish
+        ? (view.open ? '预计 ' : '完成 ') + when(view.finish) : '完成待估';
+    } else {
+      chip.append(el('span','已全部取消（' + view.cancelled + ' 个任务）'));
+    }
+    row.append(chip);
+  }
+  return row;
+}
+/* 画布平移：只改 CSS transform，不触发布局测量；刷新重绘后继续用同一组 panX/panY。 */
+function applyPan() {
+  if (!canvasEl) return;
+  css(canvasEl,'width:' + canvasW + 'px;height:' + canvasH + 'px;'
+    + 'transform:translate(' + panX + 'px, ' + panY + 'px)');
+}
+function mountPan(viewport) {
+  let drag = null;
+  viewport.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    if (event.target && event.target.closest
+        && event.target.closest('button,a,input,select,textarea')) return;
+    drag = {x:event.clientX, y:event.clientY, panX, panY};
+    viewport.classList.add('panning');
+    if (event.preventDefault) event.preventDefault();
+    if (viewport.setPointerCapture) viewport.setPointerCapture(event.pointerId);
+  });
+  viewport.addEventListener('pointermove', event => {
+    if (!drag) return;
+    panX = drag.panX + (event.clientX - drag.x);
+    panY = drag.panY + (event.clientY - drag.y);
+    applyPan();
+  });
+  const end = () => { drag = null; viewport.classList.remove('panning'); };
+  viewport.addEventListener('pointerup', end);
+  viewport.addEventListener('pointercancel', end);
+}
+function resetPan() {
+  panX = 0;
+  panY = 0;
+  applyPan();
+}
+/* 面板不做业务计算：依赖层级、节点行列、跨层路点、进度与 ETA 都由服务端下发。
+   这里只把一张主图的列/行映射成画布坐标，并把相邻层线段画成带箭头的直线；
+   连线在服务端已排成不交叉，前端不做避让或测量。 */
 function render() {
   if (!plan) return;
-  /* 重绘会替换掉整个 DOM，先记下各流程当前的横向滚动位置，画完再还原，
-     否则每 10 秒轮询一次就把用户正在看的位置弹回最左边。 */
-  const scrolled = new Map([...flowWraps].map(([id, wrap]) => [id, wrap.scrollLeft || 0]));
-  flowWraps.clear();
   $('title').textContent = plan.name;
   document.title = 'TrainOps · ' + plan.name;
   $('updated').textContent = '更新 ' + when(plan.updated_at) + ' · rev ' + plan.revision;
@@ -512,7 +618,9 @@ function render() {
   const instanceNodes = plan.instances.map(item => {
     const node = el('article',null,'instance ' + item.status);
     const heading = el('div',null,'instance-title');
-    const label = el('span'); label.append(copy(item.id),document.createTextNode(' ' + item.name));
+    const label = el('span',null,'instance-name');
+    label.append(el('span',null,'swatch ' + instanceClass(item.id)),copy(item.id),
+      document.createTextNode(' ' + item.name));
     const actions = el('span',null,'instance-actions');
     actions.append(priceButton(item),status(item.status));
     heading.append(label,actions);
@@ -533,99 +641,114 @@ function render() {
   const settled = settlementNode(plan.settlement);
   if (settled) summary.push(settled);
   $('summary').replaceChildren(...summary);
-  const flows = [];
-  for (const flow of plan.flows) {
-    const all = plan.tasks.filter(task => task.flow === flow.id);
-    const view = flow.view;
-    const section = el('section',null,'flow');
-    const heading = el('div',null,'flow-header');
-    const title = el('h2',null,'flow-title');
-    title.append(copy(flow.id),document.createTextNode(flow.name));
-    if (!all.length) { heading.append(title); section.append(heading,el('div','暂无任务','empty')); flows.push(section); continue; }
-    /* 总进度只画一处：表头这一条进度条。完成计数与它同一个分母（已完成 ÷ 未取消任务），
-       所以两个数字永远一致；已取消的另列一项，把"为什么不是 7"说清楚。
-       整个流程都被取消时没有需要完成的任务，进度无从谈起：只报这件事，不画进度条。 */
-    const metrics = el('div',null,'flow-metrics');
-    if (view.countable) {
-      metrics.append(el('span',view.done + '/' + view.countable + ' 完成'
-        + (view.cancelled ? ' · 已取消 ' + view.cancelled : ''),'metric'));
-      const meter = el('span',null,'flow-meter');
-      meter.title = '总进度 ' + view.progress + '%：已完成 ÷ 未取消任务'
-        + (view.cancelled ? '（已取消 ' + view.cancelled + ' 个不计入）' : '');
-      meter.append(css(el('span',null,'flow-meter-fill'),'width:' + view.progress + '%'));
-      const group = el('span',null,'metric meter-group');
-      group.append(el('span','总进度'),meter,el('span',view.progress + '%','strong'));
-      metrics.append(group);
-      metrics.append(el('span',view.known && view.finish
-        ? (view.open ? '预计 ' : '完成 ') + when(view.finish) : '完成待估','metric'));
+  const graph = plan.graph || {nodes:[],edges:[],columns:0,rows:0};
+  const taskById = new Map(plan.tasks.map(task => [task.id,task]));
+  const flowById = new Map(plan.flows.map(flow => [flow.id,flow]));
+  const section = el('section',null,'diagram');
+  const heading = el('div',null,'diagram-header');
+  const title = el('div',null,'diagram-title');
+  title.append(el('h2','任务流程图'));
+  title.append(el('p',plan.stats.flows + ' 条流程 · ' + plan.stats.tasks + ' 个任务 · 从左到右为依赖方向','diagram-sub'));
+  heading.append(title);
+  section.append(heading);
+  if (!graph.nodes.length) {
+    section.append(el('div','暂无任务','empty'));
+    $('diagram').replaceChildren(section);
+    canvasEl = null;
+    canvasW = canvasH = 0;
+    panX = panY = 0;
+    return;
+  }
+  const actions = el('div',null,'diagram-actions');
+  const reset = el('button','复位视图');
+  reset.type = 'button';
+  reset.addEventListener('click',resetPan);
+  actions.append(el('span','拖动空白处平移画布','diagram-hint'),reset);
+  heading.append(actions);
+  section.append(diagramLegend(),flowIndex());
+  const viewport = el('div',null,'canvas-viewport');
+  viewport.setAttribute('role','group');
+  viewport.setAttribute('aria-label','任务流程图画布，拖动空白处平移');
+  canvasW = CANVAS_PAD * 2 + Math.max(0, graph.columns - 1) * COL_PITCH + NODE_W;
+  canvasH = CANVAS_PAD * 2 + Math.max(1, graph.rows) * ROW_PITCH;
+  const canvas = el('div',null,'canvas');
+  canvas.setAttribute('aria-label','任务依赖画布');
+  const positions = new Map(graph.nodes.map(node => [node.id,node]));
+  const pointX = position => CANVAS_PAD + position.layer * COL_PITCH;
+  const pointY = position => CANVAS_PAD + position.row * ROW_PITCH + PORT_Y;
+  /* 先画连线，再放节点：节点永远盖在线上方；线段颜色跟随源任务所在实例。
+     每段只走「列间空隙」或「不可见路点所在的空行」：斜线跨两列之间的空隙，
+     路点行内用水平线穿过空单元格，因此既不会压到任务节点，也不会互相交叉。 */
+  for (const edge of graph.edges) {
+    const source = positions.get(edge.source), target = positions.get(edge.target);
+    if (!source || !target) continue;
+    const sourceTask = taskById.get(edge.source);
+    const klass = 'canvas-edge ' + instanceClass(sourceTask ? sourceTask.instance : null);
+    const addSegment = (from, to, arrow) => {
+      const dx = to.x - from.x, dy = to.y - from.y;
+      const length = Math.hypot(dx,dy);
+      if (!(length > 0)) return;
+      const segment = el('span',null,klass + (arrow ? ' arrow' : ''));
+      css(segment,'left:' + from.x + 'px;top:' + from.y + 'px;width:' + length
+        + 'px;transform:rotate(' + Math.atan2(dy,dx) + 'rad)');
+      segment.dataset.source = edge.source;
+      segment.dataset.target = edge.target;
+      segment.title = edge.source + ' → ' + edge.target;
+      segment.setAttribute('aria-hidden','true');
+      canvas.append(segment);
+    };
+    let from = {x:pointX(source) + NODE_W, y:pointY(source)};
+    for (const waypoint of edge.waypoints || []) {
+      // 路点行的左右边缘：斜线只跨列间空隙，水平线只穿过没有任务节点的路点行。
+      const left = {x:pointX(waypoint), y:pointY(waypoint)};
+      const right = {x:pointX(waypoint) + NODE_W, y:pointY(waypoint)};
+      addSegment(from,left,false);
+      addSegment(left,right,false);
+      from = right;
+    }
+    addSegment(from,{x:pointX(target), y:pointY(target)},true);
+  }
+  for (const position of graph.nodes) {
+    const task = taskById.get(position.id);
+    const node = el('article',null,'task-node canvas-node ' + task.status + ' ' + instanceClass(task.instance));
+    node.id = 'task-' + task.id;
+    css(node,'left:' + pointX(position) + 'px;top:' + (CANVAS_PAD + position.row * ROW_PITCH - 8) + 'px');
+    const top = el('div',null,'task-top');
+    const titleWrap = el('div',null,'task-title');
+    titleWrap.append(copy(task.id),el('span',task.name,'task-name'));
+    top.append(titleWrap,status(task.status));
+    const meta = el('div',null,'tags');
+    meta.append(el('span',instanceLabel(task.instance),'instance-tag ' + instanceClass(task.instance)));
+    const flow = flowById.get(task.flow);
+    if (flow) meta.append(el('span',flow.id + ' ' + flow.name,'flow-tag'));
+    if (task.note) meta.append(el('span',task.note));
+    node.append(top,meta);
+    const progress = el('div',null,'task-progress');
+    const meter = el('span',null,'task-meter');
+    meter.append(css(el('span',null,'task-meter-fill'),'width:' + position.progress + '%'));
+    progress.append(el('span','进度'),meter,el('span',position.progress + '%','task-progress-value'));
+    node.append(progress);
+    const eta = el('div',null,'task-eta');
+    if (task.status === 'done') {
+      eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
+    } else if (['failed','cancelled'].includes(task.status)) {
+      /* 取消不是失败：红色只留给 failed，取消按"已经停下"的中性口径显示 */
+      eta.append(el('span',when(task.finished_at) + ' 结束',task.status === 'cancelled' ? 'eta-cancelled' : 'eta-failed'));
+    } else if (task.estimate.overdue) {
+      eta.append(el('span','已超过预计完成时间，需重新估计','eta-overdue'));
     } else {
-      metrics.append(el('span','已全部取消（' + view.cancelled + ' 个任务）','metric'));
+      eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估') + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
     }
-    heading.append(title,metrics);
-    section.append(heading);
-    const wrap = el('div',null,'gantt-wrap');
-    const gantt = el('div',null,'gantt');
-    const head = el('div',null,'gantt-head');
-    head.append(el('div','任务节点','gantt-col-info'));
-    const axis = el('div',null,'gantt-axis');
-    axis.title = '流程时间轴 ' + when(view.span.start) + ' → ' + when(view.span.end);
-    for (const tick of view.ticks) {
-      const edge = tick.ratio === 0 ? ' first' : (tick.ratio === 1 ? ' last' : '');
-      axis.append(css(el('span',when(tick.at),'gantt-tick' + edge),laneLeft(tick.ratio)));
-    }
-    head.append(axis);
-    gantt.append(head);
-    const body = el('div',null,'gantt-body');
-    for (const task of all) {
-      const g = task.bar;
-      const row = el('div',null,'gantt-row');
-      const info = el('div',null,'gantt-info');
-      const top = el('div',null,'task-top');
-      const titleWrap = el('div',null,'task-title');
-      titleWrap.append(copy(task.id),el('span',task.name,'task-name'));
-      top.append(titleWrap,status(task.status));
-      const meta = el('div',null,'tags');
-      meta.append(el('span',task.instance || '未分配','id'));
-      if (task.deps.length) meta.append(el('span','依赖 ' + task.deps.join('、'),'id'));
-      if (task.note) meta.append(el('span',task.note));
-      info.append(top,meta);
-      const track = el('div',null,'gantt-track');
-      const lane = el('div',null,'gantt-lane');
-      const bar = css(
-        el('div',null,'gantt-bar ' + task.status + (g.unknown ? ' is-unknown' : '')),
-        'left:' + g.left + '%;width:' + g.width + '%'
-      );
-      bar.append(css(el('div',null,'gantt-bar-fill' + (g.progress >= 100 ? ' full' : '')),'width:' + g.progress + '%'));
-      if (g.width >= 14) bar.append(el('span',task.id,'gantt-bar-label id'));
-      bar.append(el('span',g.progress + '%','gantt-progress-badge'));
-      lane.append(bar);
-      const eta = el('div',null,'gantt-eta');
-      if (task.status === 'done') {
-        eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
-      } else if (['failed','cancelled'].includes(task.status)) {
-        /* 取消不是失败：红色只留给 failed，取消按"已经停下"的中性口径显示 */
-        eta.append(el('span',when(task.finished_at) + ' 结束',task.status === 'cancelled' ? 'eta-cancelled' : 'eta-failed'));
-      } else if (task.estimate.overdue) {
-        eta.append(el('span','已超过预计完成时间，需重新估计','eta-overdue'));
-      } else {
-        eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估') + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
-      }
-      if (task.estimate.stale) eta.append(el('span','超过 1 小时未巡检','eta-stale'));
-      track.append(lane,eta);
-      row.append(info,track);
-      body.append(row);
-    }
-    gantt.append(body);
-    wrap.append(gantt);
-    section.append(wrap);
-    flowWraps.set(flow.id,wrap);
-    flows.push(section);
+    if (task.estimate.stale) eta.append(el('span','超过 1 小时未巡检','eta-stale'));
+    node.append(eta);
+    canvas.append(node);
   }
-  $('flows').replaceChildren(...(flows.length ? flows : [el('div','暂无计划','empty')]));
-  for (const [id, wrap] of flowWraps) {
-    const left = scrolled.get(id);
-    if (left) wrap.scrollLeft = left;
-  }
+  viewport.append(canvas);
+  mountPan(viewport);
+  section.append(viewport,el('p','箭头表示前置依赖（全部完成）；并行任务从同一节点分叉，跨层依赖按服务端路点分段走直线。节点与箭头颜色表示任务所在的容器实例。','diagram-caption'));
+  $('diagram').replaceChildren(section);
+  canvasEl = canvas;
+  applyPan();
 }
 async function refresh() {
   if (loading) return;

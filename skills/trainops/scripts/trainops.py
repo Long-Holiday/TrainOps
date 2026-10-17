@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -61,13 +62,6 @@ DISK_MOUNTS = (("sys", "system", "系统盘"), ("data", "data", "数据盘"), ("
 DISK_PREFIXES = {prefix: (field, label) for prefix, field, label in DISK_MOUNTS}
 DISK_SHORT = {"系统盘": "系统", "数据盘": "数据", "文件存储": "存储"}
 FULL_RATIO = 0.9
-# 甘特几何：条形最短 5 分钟（否则零宽条看不见），没登记耗时就按 30 分钟画，且不低于 10 分钟。
-# 这些以前散在前端 computeSpans() 里，搬进服务端后只有一个口径。
-MIN_BAR = timedelta(minutes=5)
-FALLBACK_TASK_MINUTES = 30
-MIN_TASK_MINUTES = 10
-# 时间轴刻度固定五档：0%、25%、50%、75%、100%，位置由服务端算好，前端只负责打点。
-TICK_RATIOS = (0, 0.25, 0.5, 0.75, 1)
 API_BALANCE_PATH = "/api/v1/dev/wallet/balance"
 # 面板可写的两个端点：登记时价（写计划）与登记 Token（只存进程内存）。其余路径全是只读，写动词一律 405。
 PRICE_PATH = "/api/instance-price"
@@ -667,8 +661,8 @@ def rounded(value):
     return int(math.floor(value + 0.5))
 
 
-def bar_progress(task):
-    """条形填充比例：done 一律满格，其余取登记过的真实进度；没进度就是 0，不猜。"""
+def node_progress(task):
+    """节点进度：done 一律满格，其余取登记过的真实进度；没进度就是 0，不猜。"""
     if task["status"] == "done":
         return 100
     if task["progress"] is None:
@@ -677,78 +671,208 @@ def bar_progress(task):
 
 
 def layout(plan, now=None, estimates=None):
-    """排程 → 甘特几何与流程结论。面板只打点，不再自己排程、加权或计数。
+    """把所有流程的任务排成一张无交叉的有向无环图，并给出各流程的完成结论。
 
-    bar.left/width 是轨道内的百分比，前端直接拼进 style；流程的 progress 是
-    「已完成 ÷ 未取消任务」——取消是不再需要完成，既不进分子也不进分母，
-    因此进度能正常走到 100%，也不会出现"完成数 5/7、进度却 100%"这种自相矛盾。
-    这里以前是前端一段 `Σ 条形宽度 × 进度` 的求和：条形在时间上重叠时宽度会重复
-    累加，5 个各宽 37.5% 的并行任务就能把总进度顶到 187%，再被钳成 100%。
+    整份计划只有一个主图：跨流程依赖与流程内依赖一样，都是图中的一条边。
+    节点按层（列）与行排成网格；跨层依赖在中间层插入不可见的走线节点，
+    再用重心排序与相邻交换最小化相邻层之间的交叉。浏览器只按行列摆节点、按路点画箭头，
+    不做图布局，也不测量 DOM。
     """
     now = now or utcnow()
     estimates = forecast(plan, now) if estimates is None else estimates
-    bars, views = {}, {}
+    tasks_by_id = {task["id"]: task for task in plan["tasks"]}
+    grouped = {flow["id"]: [] for flow in plan["flows"]}
+    views = {}
+    ordered = sorted(plan["tasks"], key=lambda task: natural_id(task["id"]))
+    for task in ordered:
+        grouped[task["flow"]].append(task)
     for flow in plan["flows"]:
-        tasks = sorted((task for task in plan["tasks"] if task["flow"] == flow["id"]),
-                       key=lambda task: natural_id(task["id"]))
+        tasks = grouped[flow["id"]]
         countable = [task for task in tasks if task["status"] != "cancelled"]
         done = [task for task in tasks if task["status"] == "done"]
         open_tasks = [task for task in tasks if task["status"] not in TERMINAL]
         finishes = [date(estimates[task["id"]]["finish"]) for task in tasks
                     if estimates[task["id"]]["finish"]]
-        view = {"total": len(tasks), "countable": len(countable), "done": len(done),
-                "cancelled": len(tasks) - len(countable), "open": len(open_tasks),
-                # 整个流程都被取消时没有"需要完成"的任务，进度无从谈起：给 null，面板不画进度条。
-                "progress": rounded(100 * len(done) / len(countable)) if countable else None,
-                # known 只看还没结束的任务：已取消/已完成的任务没有完成时间，不代表流程待估。
-                "known": all(estimates[task["id"]]["finish"] for task in open_tasks),
-                "finish": stamp(max(finishes)) if finishes else None,
-                "span": None, "ticks": []}
-        views[flow["id"]] = view
-        if not tasks:
-            continue
-        spans, cursor = {}, None
-        for task in tasks:
-            estimate = estimates[task["id"]]
-            start = date(task["started_at"]) if task["started_at"] else (
-                date(estimate["start"]) if estimate["start"] else None)
-            finish = date(task["finished_at"]) if task["finished_at"] else (
-                date(estimate["finish"]) if estimate["finish"] else None)
-            if start is None:
-                # 服务端没给出开始时间（待执行且排不出、或已结束却没起止）：顺延同流程前序与依赖
-                earlier = [cursor] + [spans[dep]["end"] for dep in task["deps"] if dep in spans]
-                start = max([moment for moment in earlier if moment is not None], default=now)
-            duration = None
-            if finish is not None and finish > start:
-                duration = finish - start
-            elif (task["status"] == "running" and task["progress"] and task["progress_at"]
-                  and task["started_at"] and date(task["progress_at"]) > date(task["started_at"])):
-                sampled = date(task["progress_at"]) - date(task["started_at"])
-                duration = sampled * (100 / task["progress"])
-            if duration is None:
-                duration = timedelta(minutes=max(MIN_TASK_MINUTES,
-                                                 task["duration_minutes"] or FALLBACK_TASK_MINUTES))
-            end = start + max(MIN_BAR, duration)
-            cursor = end
-            # 条形两端都有排程依据才算"不待估"：取消/失败的任务没有完成时间，它的条形是按
-            # 耗时外推画出来的（finish 只在有依据时才是真的），所以走虚线斜纹。
-            spans[task["id"]] = {"start": start, "end": end,
-                                 "known": estimate["start"] is not None and estimate["finish"] is not None}
-        first = min(span["start"] for span in spans.values())
-        last = max(span["end"] for span in spans.values())
-        total = max(last - first, MIN_BAR)
-        for task in tasks:
-            span = spans[task["id"]]
-            bars[task["id"]] = {
-                "left": round((span["start"] - first) / total * 100, 1),
-                "width": round((span["end"] - span["start"]) / total * 100, 1),
-                "progress": bar_progress(task),
-                "unknown": not span["known"],
-            }
-        view["span"] = {"start": stamp(first), "end": stamp(last)}
-        view["ticks"] = [{"ratio": ratio, "at": stamp(first + (last - first) * ratio)}
-                         for ratio in TICK_RATIOS]
-    return bars, views
+        views[flow["id"]] = {
+            "total": len(tasks), "countable": len(countable), "done": len(done),
+            "cancelled": len(tasks) - len(countable), "open": len(open_tasks),
+            # 取消不计入分母；全取消时无进度结论。known 只检查尚未结束的任务。
+            "progress": rounded(100 * len(done) / len(countable)) if countable else None,
+            "known": all(estimates[task["id"]]["finish"] for task in open_tasks),
+            "finish": stamp(max(finishes)) if finishes else None,
+        }
+    if not tasks_by_id:
+        return {"nodes": [], "edges": [], "columns": 0, "rows": 0}, views
+
+    children = {key: [] for key in tasks_by_id}
+    degrees = {key: len(task["deps"]) for key, task in tasks_by_id.items()}
+    layers = {key: 0 for key in tasks_by_id}
+    for task in ordered:
+        for dep in task["deps"]:
+            children[dep].append(task["id"])
+    ready = [(natural_id(key), key) for key, count in degrees.items() if count == 0]
+    heapq.heapify(ready)
+    while ready:
+        _, key = heapq.heappop(ready)
+        for child in children[key]:
+            layers[child] = max(layers[child], layers[key] + 1)
+            degrees[child] -= 1
+            if degrees[child] == 0:
+                heapq.heappush(ready, (natural_id(child), child))
+    columns = max(layers.values()) + 1
+
+    # 每条依赖一条边；跨层的边在中间层各插入一个不可见路点，保证每条线段只连接相邻两层。
+    edges = []
+    for task in ordered:
+        for dep in sorted(task["deps"], key=natural_id):
+            edges.append((dep, task["id"]))
+    per_layer = [[] for _ in range(columns)]
+    for task in tasks_by_id:
+        per_layer[layers[task]].append(task)
+    dummy_keys = {}
+    chains = []
+    for index, (source, target) in enumerate(edges):
+        chain = [source]
+        for layer in range(layers[source] + 1, layers[target]):
+            node = f"@{index}:{layer}"
+            dummy_keys[node] = (index, layer)
+            chain.append(node)
+            per_layer[layer].append(node)
+        chain.append(target)
+        chains.append(chain)
+
+    def node_key(node):
+        if node in tasks_by_id:
+            return (0,) + natural_id(node)
+        index, layer = dummy_keys[node]
+        return (1, index, layer)
+
+    for layer in per_layer:
+        layer.sort(key=node_key)
+
+    # 重心排序：先向下、再向上各扫若干轮；同重心时保持上一轮顺序，结果确定。
+    up, down = {}, {}
+    for chain in chains:
+        for source, target in zip(chain, chain[1:]):
+            down.setdefault(source, []).append(target)
+            up.setdefault(target, []).append(source)
+
+    def order_layer(layer, positions, neighbors):
+        base = {node: index for index, node in enumerate(layer)}
+
+        def key(node):
+            values = [positions[item] for item in neighbors.get(node, []) if item in positions]
+            center = sum(values) / len(values) if values else base[node]
+            return center, base[node], node_key(node)
+
+        layer.sort(key=key)
+
+    def crossing_count(layer_order):
+        """相邻层线段交叉数：同一源或同一目标的两段不算交叉。Fenwick 树按左端分组计数。"""
+        total = 0
+        for column in range(columns - 1):
+            left = {node: index for index, node in enumerate(layer_order[column])}
+            right = {node: index for index, node in enumerate(layer_order[column + 1])}
+            groups = {}
+            for chain in chains:
+                for source, target in zip(chain, chain[1:]):
+                    if source in left and target in right:
+                        groups.setdefault(left[source], []).append(right[target])
+            size = len(layer_order[column + 1])
+            tree = [0] * (size + 1)
+
+            def add(index):
+                index += 1
+                while index <= size:
+                    tree[index] += 1
+                    index += index & -index
+
+            def prefix(index):
+                index += 1
+                count = 0
+                while index > 0:
+                    count += tree[index]
+                    index -= index & -index
+                return count
+
+            seen = 0
+            for left_index in sorted(groups):
+                for right_index in groups[left_index]:
+                    total += seen - prefix(right_index)
+                for right_index in groups[left_index]:
+                    add(right_index)
+                    seen += 1
+        return total
+
+    best_order = [list(layer) for layer in per_layer]
+    best_crossings = crossing_count(best_order)
+    for _ in range(8):
+        for column in range(1, columns):
+            order_layer(per_layer[column],
+                        {node: index for index, node in enumerate(per_layer[column - 1])}, up)
+            current = crossing_count(per_layer)
+            if current < best_crossings:
+                best_order, best_crossings = [list(layer) for layer in per_layer], current
+        for column in range(columns - 2, -1, -1):
+            order_layer(per_layer[column],
+                        {node: index for index, node in enumerate(per_layer[column + 1])}, down)
+            current = crossing_count(per_layer)
+            if current < best_crossings:
+                best_order, best_crossings = [list(layer) for layer in per_layer], current
+        if best_crossings == 0:
+            break
+    per_layer = best_order
+    # 重心排序可能停在"单层各自最优、合起来仍交叉"的平台；再在相邻交换上做确定性下降，
+    # 允许代价相同的侧移（用已访问集合防止来回打转），直到没有交叉或搜索上限。
+    if best_crossings:
+        current = best_crossings
+        visited = {tuple(tuple(layer) for layer in per_layer)}
+        for _ in range(200):
+            move, move_count = None, current
+            for layer_index, layer in enumerate(per_layer):
+                for index in range(len(layer) - 1):
+                    layer[index], layer[index + 1] = layer[index + 1], layer[index]
+                    state = tuple(tuple(item) for item in per_layer)
+                    count = crossing_count(per_layer) if state not in visited else current + 1
+                    layer[index], layer[index + 1] = layer[index + 1], layer[index]
+                    if state not in visited and count <= move_count:
+                        if count < move_count or move is None:
+                            move, move_count = (layer_index, index), count
+                    if count == 0:
+                        move, move_count = (layer_index, index), 0
+                        break
+                if move_count == 0:
+                    break
+            if move is None:
+                break
+            layer = per_layer[move[0]]
+            index = move[1]
+            layer[index], layer[index + 1] = layer[index + 1], layer[index]
+            current = move_count
+            visited.add(tuple(tuple(item) for item in per_layer))
+            if current == 0:
+                break
+
+    positions = {}
+    for column, layer in enumerate(per_layer):
+        for row, node in enumerate(layer):
+            positions[node] = (column, row)
+    nodes = []
+    for column, layer in enumerate(per_layer):
+        for row, node in enumerate(layer):
+            if node in tasks_by_id:
+                nodes.append({"id": node, "row": row, "layer": column,
+                              "progress": node_progress(tasks_by_id[node])})
+    graph_edges = []
+    for (source, target), chain in zip(edges, chains):
+        waypoints = [{"layer": positions[node][0], "row": positions[node][1]}
+                     for node in chain[1:-1]]
+        graph_edges.append({"source": source, "target": target, "waypoints": waypoints})
+    graph = {
+        "nodes": nodes, "edges": graph_edges,
+        "columns": columns, "rows": max((len(layer) for layer in per_layer), default=0),
+    }
+    return graph, views
 
 
 def budget(plan, now=None, estimates=None):
@@ -879,13 +1003,13 @@ def settlement(plan, now=None):
 
 
 def snapshot(plan, now=None):
-    """面板与 show --json 看到的完整视图：账本 + 排程 + 几何 + 预算 + 结算。
+    """面板与 show --json 看到的完整视图：账本 + 排程 + 依赖图 + 预算 + 结算。
 
     凡是"算出来的"都在这里算完：面板不做业务计算，只把字段摆到页面上。
     """
     now = now or utcnow()
     estimates = forecast(plan, now)
-    bars, views = layout(plan, now, estimates)
+    graph, views = layout(plan, now, estimates)
     counts = {status: 0 for status in STATUSES}
     running, queued = {}, {}
     for task in plan["tasks"]:
@@ -903,8 +1027,10 @@ def snapshot(plan, now=None):
             "instances": [{**item, "view": {"running": sorted(running.get(item["id"], []), key=natural_id),
                                             "queued": queued.get(item["id"], 0)}}
                           for item in plan["instances"]],
-            "flows": [{**flow, "view": views[flow["id"]]} for flow in plan["flows"]],
-            "tasks": [{**task, "estimate": estimates[task["id"]], "bar": bars[task["id"]]}
+            "flows": [{**flow, "view": views[flow["id"]]}
+                      for flow in plan["flows"]],
+            "graph": graph,
+            "tasks": [{**task, "estimate": estimates[task["id"]]}
                       for task in plan["tasks"]]}
 
 
