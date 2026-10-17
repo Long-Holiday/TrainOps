@@ -511,6 +511,43 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(ops.node_progress({"status": "done", "progress": 100}), 100)
         self.assertEqual(ops.node_progress({"status": "running", "progress": 18.5}), 19)
 
+    def test_open_tasks_rank_above_finished_nodes(self):
+        """未完成任务置顶；完成但仍被未完成任务直接依赖的节点居中；独立完成节点沉底。"""
+        independent = ops.add_task(self.plan, "F01", "独立完成", "I01", 30)
+        upstream = ops.add_task(self.plan, "F01", "完成的上游", "I01", 30)
+        open_task = ops.add_task(self.plan, "F01", "待执行", "I01", 30)
+        dropped = ops.add_task(self.plan, "F01", "取消的独立节点", "I01", 30)
+        child = ops.add_task(self.plan, "F01", "未完成下游", "I01", 30, [upstream["id"]])
+        for task in (independent, upstream):
+            ops.set_task(self.plan, task["id"], {"status": "running"}, NOW - timedelta(minutes=40))
+            ops.set_task(self.plan, task["id"], {"status": "done"}, NOW - timedelta(minutes=10))
+        ops.set_task(self.plan, dropped["id"], {"status": "cancelled"}, NOW)
+        graph, _ = self.layout()
+        rows = {node["id"]: (node["layer"], node["row"]) for node in graph["nodes"]}
+        self.assertEqual(rows[open_task["id"]], (0, 0), "未完成任务占最上面一行")
+        self.assertEqual(rows[child["id"]], (1, 0))
+        self.assertEqual(rows[upstream["id"]], (0, 1), "仍被未完成任务依赖的完成节点留在中间")
+        self.assertGreater(rows[independent["id"]][1], rows[upstream["id"]][1],
+                           "独立完成节点沉到下面")
+        self.assertGreater(rows[dropped["id"]][1], rows[upstream["id"]][1],
+                           "取消与完成一样不再占用上半部")
+
+    def test_only_direct_prerequisites_stay_in_middle_band(self):
+        """完成但仍直接喂给未完成任务的节点居中；更早的上游随已完成的链一起下沉。"""
+        independent = ops.add_task(self.plan, "F01", "独立完成", "I01", 30)
+        ancestor = ops.add_task(self.plan, "F01", "更早的上游", "I01", 30)
+        middle = ops.add_task(self.plan, "F01", "直接前置", "I01", 30, [ancestor["id"]])
+        child = ops.add_task(self.plan, "F01", "未完成下游", "I01", 30, [middle["id"]])
+        for task, start, finish in ((independent, 120, 90), (ancestor, 120, 90), (middle, 80, 50)):
+            ops.set_task(self.plan, task["id"], {"status": "running"}, NOW - timedelta(minutes=start))
+            ops.set_task(self.plan, task["id"], {"status": "done"}, NOW - timedelta(minutes=finish))
+        graph, _ = self.layout()
+        rows = {node["id"]: (node["layer"], node["row"]) for node in graph["nodes"]}
+        self.assertEqual(rows[middle["id"]], (1, 0), "直接前置仍留在中间带")
+        self.assertEqual(rows[independent["id"]], (0, 0))
+        self.assertGreater(rows[ancestor["id"]][1], rows[independent["id"]][1],
+                           "仅作为传递上游的完成节点与独立节点一起沉底")
+
     def assert_no_crossings(self, graph):
         points = {node["id"]: (node["layer"], node["row"]) for node in graph["nodes"]}
         segments = []

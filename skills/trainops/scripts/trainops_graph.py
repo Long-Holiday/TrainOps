@@ -125,7 +125,9 @@ def layout(plan, now=None, estimates=None):
     整份计划只有一个主图：跨流程依赖与流程内依赖一样，都是图中的一条边。
     节点按层（列）与行排成网格；跨层依赖在中间层插入不可见的走线节点。
     排序用重心法 + 相邻交换：每次只计算受影响的两层局部交叉数，
-    不再为每个候选交换重算整张图。浏览器只按行列摆节点、按路点画箭头。
+    不再为每个候选交换重算整张图。每列内未完成任务占上半部，已完成节点下沉；
+    完成但仍被未完成任务直接依赖的前置节点留在中间，更早的上游随链一起下沉。
+    浏览器只按行列摆节点、按路点画箭头。
     """
     now = now or utcnow()
     estimates = forecast(plan, now) if estimates is None else estimates
@@ -171,6 +173,14 @@ def layout(plan, now=None, estimates=None):
                 heapq.heappush(ready, (order[child], child))
     columns = max(layers.values()) + 1
 
+    # 行优先级：未完成任务置顶；完成但仍被未完成任务直接依赖的前置节点居中；
+    # 其余已完成节点（含更早的上游）沉底。行只表达可读性，不表达时间或资源。
+    open_tasks = {key for key, task in tasks_by_id.items()
+                  if task["status"] not in ("done", "cancelled")}
+    needed = {dep for key in open_tasks for dep in tasks_by_id[key]["deps"]}
+    row_group = {key: 0 if key in open_tasks else (1 if key in needed else 2)
+                 for key in tasks_by_id}
+
     # 每条依赖一条边；跨层的边在中间层各插入一个不可见路点，保证每条线段只连接相邻两层。
     edges = []
     for task in ordered:
@@ -197,8 +207,15 @@ def layout(plan, now=None, estimates=None):
         index, layer = dummy_keys[node]
         return (1, index, layer)
 
+    def node_group(node):
+        """路点跟随它要通往的任务：未完成目标的连线同样留在上半部。"""
+        if node in row_group:
+            return row_group[node]
+        index, _ = dummy_keys[node]
+        return row_group[edges[index][1]]
+
     for layer in per_layer:
-        layer.sort(key=node_key)
+        layer.sort(key=lambda node: (node_group(node), node_key(node)))
 
     # 相邻层连线先按列归组，数交叉时只需要扫这一列的线段。
     nexts, prevs = {}, {}
@@ -219,7 +236,7 @@ def layout(plan, now=None, estimates=None):
         def key(node):
             values = [neighbor_positions[item] for item in neighbors.get(node, [])]
             center = sum(values) / len(values) if values else base[node]
-            return center, base[node], node_key(node)
+            return node_group(node), center, base[node], node_key(node)
 
         layer.sort(key=key)
 
@@ -292,6 +309,9 @@ def layout(plan, now=None, estimates=None):
         for column, layer in enumerate(per_layer):
             index = 0
             while index < len(layer) - 1:
+                if node_group(layer[index]) != node_group(layer[index + 1]):
+                    index += 1
+                    continue
                 delta = 0
                 if column + 1 < columns:
                     delta += swap_delta(layer, index, nexts, pos[column + 1])
