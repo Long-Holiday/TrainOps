@@ -23,7 +23,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 try:
     import fcntl
@@ -1765,7 +1765,7 @@ EXPERIMENT_FIELDS = {
 RUN_STATUSES = ("running", "done", "failed", "blocked", "cancelled")
 RUN_TEXT = {"intent", "change", "baseline", "metric_name", "dataset_version", "eval_protocol",
             "seed", "git_commit", "config_path", "artifacts", "evidence", "error", "suggestion", "next_step"}
-RUN_UPDATE = RUN_TEXT | {"status", "metric_value", "direction", "checked_at"}
+RUN_UPDATE = RUN_TEXT | {"status", "metric_value", "direction", "checked_at", "extra_metrics"}
 
 
 def reject_json_constant(value):
@@ -1795,6 +1795,25 @@ def reject_experiment_secrets(value):
             reject_experiment_secrets(item)
 
 
+def validate_extra_metrics(metrics, declarations=False):
+    reject_experiment_secrets(metrics)
+    if not isinstance(metrics, dict):
+        raise PlanError("extra_metrics 必须是指标名到数字或 null 的对象")
+    for name, value in metrics.items():
+        if (not isinstance(name, str) or not name.strip() or name != name.strip()
+                or len(name) > 100 or any(ord(c) < 32 or ord(c) == 127 for c in name)):
+            raise PlanError("额外指标名必须为 1–100 字符，不含首尾空白或控制字符")
+        if declarations and value is not None:
+            raise PlanError("配置 extra_metrics 只接受 null 预声明，实际测量值请写入 Run")
+        try:
+            valid = value is None or (not isinstance(value, bool) and isinstance(value, (int, float))
+                                       and math.isfinite(value))
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise PlanError("额外指标必须是有限数字或 null")
+
+
 def validate_experiment_config(config):
     reject_experiment_secrets(config)
     if not isinstance(config, dict) or config.get("schema_version") != CONFIG_VERSION:
@@ -1812,8 +1831,9 @@ def validate_experiment_config(config):
                                            or not val.strip() for key, val in mapping.items()):
         raise PlanError("字段映射只能将已知实验字段映射为非空的真实字段名或 ID")
     names = [mapping.get(key, name) for key, (name, _) in EXPERIMENT_FIELDS.items()]
-    if len(names) != len(set(names)) or "人工决策" in names:
-        raise PlanError("字段映射不能重复或映射到人工决策列")
+    if len(names) != len(set(names)) or "人工决策" in names or any(name.startswith("extra_metrics.") for name in names):
+        raise PlanError("字段映射不能重复或映射到人工决策列、额外指标列")
+    validate_extra_metrics(config.get("extra_metrics", {}), declarations=True)
     defaults = config.get("defaults", {})
     validate_run_patch(defaults, defaults_only=True)
     return config
@@ -1824,6 +1844,8 @@ def validate_run_patch(patch, defaults_only=False):
     allowed = {"metric_name", "direction", "dataset_version", "eval_protocol"} if defaults_only else RUN_UPDATE
     if not isinstance(patch, dict) or set(patch) - allowed:
         raise PlanError("实验记录含未知或不可修改字段")
+    if "extra_metrics" in patch:
+        validate_extra_metrics(patch["extra_metrics"])
     for key, value in patch.items():
         if key in RUN_TEXT and value is not None and (not isinstance(value, str) or len(value) > 8000):
             raise PlanError(f"{key} 必须为简短文本或 null（最多 8000 字符）")
@@ -1847,6 +1869,12 @@ def validate_experiment_state(state):
     if (not isinstance(state, dict) or state.get("schema_version") != EXPERIMENT_STATE_VERSION
             or not isinstance(state.get("runs"), dict)):
         raise PlanError("实验运行记录格式错误；未覆盖")
+    subscription = state.get("subscription")
+    if subscription is not None:
+        reject_experiment_secrets(subscription)
+        if (not isinstance(subscription, dict) or subscription.get("status") not in ("pending", "subscribed")
+                or not isinstance(subscription.get("base_token"), str) or not subscription["base_token"]):
+            raise PlanError("实验表订阅状态格式错误；未覆盖")
     for run_id, record in state["runs"].items():
         if (not isinstance(record, dict) or record.get("run_id") != run_id
                 or isinstance(record.get("version"), bool)
@@ -1912,7 +1940,18 @@ class ExperimentLog:
         return config
 
     def call(self, command, **options):
-        argv = ["lark-cli", "base", command, "--as", "user", "--format", "json"]
+        return self.invoke(["base", command], options)
+
+    def api(self, method, path):
+        data = self.invoke(["api", method, path], {"params": {"file_type": "bitable"}})
+        if "code" in data:
+            if data["code"] not in (0, "0") or not isinstance(data.get("data"), dict):
+                raise PlanError("飞书订阅 API 返回失败或数据格式不支持，请核实权限与目标")
+            return data["data"]
+        return data
+
+    def invoke(self, command, options):
+        argv = ["lark-cli", *command, "--as", "user", "--format", "json"]
         for key, value in options.items():
             argv.extend(["--" + key.replace("_", "-"),
                          json.dumps(value, ensure_ascii=False, allow_nan=False) if isinstance(value, (dict, list)) else str(value)])
@@ -1929,14 +1968,42 @@ class ExperimentLog:
             result = json.loads(process.stdout)
         except (ValueError, TypeError):
             raise PlanError("lark-cli 返回非 JSON；远端结果可能不确定，请先核实") from None
-        if not isinstance(result, dict) or result.get("ok") is False or result.get("code", 0) not in (0, "0"):
+        if not isinstance(result, dict) or result.get("ok") is not True or result.get("code", 0) not in (0, "0"):
             raise PlanError("lark-cli 返回失败；请核实授权、权限与目标表，不会另建表")
         data = result.get("data", result)
         if not isinstance(data, dict):
             raise PlanError("lark-cli 返回数据格式不支持")
         return data
 
-    def fields(self, config):
+    def metric_names(self, config, state):
+        names = set(config.get("extra_metrics", {}))
+        for record in state["runs"].values():
+            names.update(record.get("extra_metrics", {}))
+        return sorted(names)
+
+    def subscribe(self, config):
+        token = config["lark"]["base_token"]
+        path_token = quote(token, safe="")
+        outcome = {"base_token": token, "status": "pending"}
+
+        def save(document):
+            state = validate_experiment_state(document.get("experiments", default_state()))
+            state["subscription"] = copy.deepcopy(outcome)
+            document["experiments"] = state
+        self.store.update(save)
+        try:
+            result = self.api("GET", f"/open-apis/drive/v1/files/{path_token}/get_subscribe")
+            if not isinstance(result.get("is_subscribe"), bool):
+                raise PlanError("订阅状态响应无效；请重新 experiment init 核实")
+            if not result["is_subscribe"]:
+                self.api("POST", f"/open-apis/drive/v1/files/{path_token}/subscribe")
+            outcome.update(status="subscribed", checked_at=stamp())
+        except PlanError as exc:
+            outcome["error"] = str(exc)
+        self.store.update(save)
+        return outcome
+
+    def fields(self, config, metrics=()):
         target = config["lark"]
         if not target.get("base_token") or not target.get("table_id"):
             raise PlanError("实验表尚未确定；请 experiment init --url 指定真实表链接")
@@ -1961,14 +2028,26 @@ class ExperimentLog:
                        (field.get("name"), field.get("id"), field.get("field_name"), field.get("field_id"))]
             if len(matches) != 1 or matches[0].get("type") not in (kind, 1 if kind == "text" else 2):
                 raise PlanError(f"实验字段 {key} 缺失或类型不兼容，请核对字段映射；不会修改原表")
-            if matches[0].get("name", matches[0].get("field_name")) == "人工决策":
-                raise PlanError("字段映射不能指向人工决策列，包括它的字段 ID")
+            actual_name = matches[0].get("name", matches[0].get("field_name", ""))
+            if actual_name == "人工决策" or actual_name.startswith("extra_metrics."):
+                raise PlanError("字段映射不能指向人工决策列或额外指标列，包括它的字段 ID")
+
+        missing = []
+        for metric in metrics:
+            name = "extra_metrics." + metric
+            matches = [field for field in actual if field.get("name", field.get("field_name")) == name]
+            if matches and (len(matches) != 1 or matches[0].get("type") not in ("number", 2)):
+                raise PlanError(f"额外指标列 {name} 类型不兼容或重名，未写入飞书")
+            if not matches:
+                missing.append({"name": name, "type": "number"})
+        if missing:
+            self.call("+field-create", base_token=target["base_token"], table_id=target["table_id"], json=missing)
 
     def init(self, url=None, settings=None):
         plan = self.store.read()
         settings = settings or {}
-        if set(settings) - {"project", "defaults", "lark", "settings"}:
-            raise PlanError("init 只接受 project/defaults/lark/settings 配置")
+        if set(settings) - {"project", "defaults", "lark", "settings", "extra_metrics"}:
+            raise PlanError("init 只接受 project/defaults/lark/settings/extra_metrics 配置")
         with self.lock("sync"):
             document = self.store.read_document()
             config = document.get("config")
@@ -1980,6 +2059,7 @@ class ExperimentLog:
                 else:
                     config[key] = value
             validate_experiment_config(config)
+            metrics = self.metric_names(config, validate_experiment_state(document.get("experiments", default_state())))
             if url:
                 result = self.call("+url-resolve", url=url)
                 config["lark"].update({key: result[key] for key in ("base_token", "table_id") if result.get(key)})
@@ -1999,9 +2079,10 @@ class ExperimentLog:
                     document["experiments"] = state
                 self.store.update(mark_uncertain)
                 try:
-                    result = self.call("+base-create", name=f"{config['project']} · 实验日志", table_name="实验日志",
+                    result = self.call("+base-create", name="全局概况", table_name="全局概况",
                                        fields=[{"name": name, "type": kind} for name, kind in EXPERIMENT_FIELDS.values()]
-                                       + [{"name": "人工决策", "type": "text"}])
+                                       + [{"name": "人工决策", "type": "text"}]
+                                       + [{"name": "extra_metrics." + name, "type": "number"} for name in metrics])
                 except LarkNotStarted:
                     def clear_uncertain(document):
                         state = validate_experiment_state(document.get("experiments", default_state()))
@@ -2025,7 +2106,9 @@ class ExperimentLog:
                 self.save_config(config)
                 if not table_id:
                     raise PlanError("已保存 Base ID，但创建结果缺少表 ID；请用 init --url 绑定，不会重复建表")
-            self.fields(config)
+            self.save_config(config)
+            subscription = self.subscribe(config)
+            self.fields(config, metrics)
 
             def finalize(document):
                 document["config"] = validate_experiment_config(config)
@@ -2033,7 +2116,8 @@ class ExperimentLog:
                 state.pop("creation_uncertain", None)
                 document["experiments"] = state
             self.store.update(finalize)
-            return {"config": config, "verified": True}
+            return {"config": config, "verified": True, "subscription": subscription,
+                    "ok": subscription["status"] == "subscribed"}
 
     def run(self, task_id=None, run_id=None, patch=None):
         patch = patch or {}
@@ -2070,7 +2154,12 @@ class ExperimentLog:
                 record = state["runs"][run_id]
                 if record["status"] in ("done", "failed", "cancelled") and patch.get("status") in ("running", "blocked"):
                     raise PlanError("已结束 Run 不能重新启动；重跑应新建 Run")
-            record.update(patch)
+            merged = copy.deepcopy(patch)
+            if "extra_metrics" in patch:
+                merged["extra_metrics"] = {**record.get("extra_metrics", {}), **patch["extra_metrics"]}
+            record.update(merged)
+            if any(value is not None for value in record.get("extra_metrics", {}).values()) and not record.get("evidence"):
+                raise PlanError("额外指标需要可信评测 evidence；不从训练 loss 推测")
             if record.get("metric_value") is not None and (not record.get("metric_name") or not record.get("evidence")):
                 raise PlanError("主指标需要 metric_name 与可信评测 evidence；不从训练 loss 推测")
             if record["status"] in ("done", "failed", "cancelled") and not record["finished_at"]:
@@ -2087,7 +2176,8 @@ class ExperimentLog:
         values["project"] = config["project"]
         values["task"] = f"{record['task_id']} · {record['task']}"
         mapping = config["lark"].get("fields", {})
-        return {mapping.get(key, name): values[key] for key, (name, _) in EXPERIMENT_FIELDS.items()}
+        return {**{mapping.get(key, name): values[key] for key, (name, _) in EXPERIMENT_FIELDS.items()},
+                **{"extra_metrics." + key: value for key, value in record.get("extra_metrics", {}).items()}}
 
     def sync(self, run_id=None):
         reports = []
@@ -2100,8 +2190,12 @@ class ExperimentLog:
             if run_id is not None and run_id not in state["runs"]:
                 raise PlanError("找不到 Run")
             records = copy.deepcopy([r for key, r in state["runs"].items() if run_id is None or key == run_id])
+            subscription = state.get("subscription", {})
+            if config["lark"].get("base_token") and (subscription.get("status") != "subscribed"
+                    or subscription.get("base_token") != config["lark"]["base_token"]):
+                subscription = self.subscribe(config)
             try:
-                self.fields(config)
+                self.fields(config, self.metric_names(config, state))
             except PlanError as exc:
                 def save_error(document):
                     latest = validate_experiment_state(document.get("experiments", default_state()))
@@ -2109,7 +2203,7 @@ class ExperimentLog:
                         latest["runs"][record["run_id"]]["sync"] = {"error": str(exc)}
                     document["experiments"] = latest
                 self.store.update(save_error)
-                return {"ok": False, "error": str(exc), "runs": [
+                return {"ok": False, "error": str(exc), "subscription": subscription, "runs": [
                     {"run_id": record["run_id"], "status": "pending"} for record in records]}
             target = {key: config["lark"][key] for key in ("base_token", "table_id")}
             for record in records:
@@ -2163,7 +2257,8 @@ class ExperimentLog:
                 self.store.update(save_outcome)
                 reports.append({"run_id": record["run_id"], "status": status,
                                 **({"error": outcome["error"]} if "error" in outcome else {})})
-        return {"ok": all(r["status"] != "pending" for r in reports), "runs": reports}
+        return {"ok": all(r["status"] != "pending" for r in reports) and subscription.get("status") == "subscribed",
+                "subscription": subscription, "runs": reports}
 
     def show(self):
         document = self.store.read_document()
@@ -2179,7 +2274,8 @@ class ExperimentLog:
                 {key: config["lark"].get(key) for key in ("base_token", "table_id")},
                 self.projection(config, record)], sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
             record["pending"] = record.get("sync", {}).get("fingerprint") != digest or bool(record.get("sync", {}).get("error"))
-        return {"config": config, "runs": records, "creation_uncertain": state.get("creation_uncertain", False)}
+        return {"config": config, "runs": records, "subscription": state.get("subscription"),
+                "creation_uncertain": state.get("creation_uncertain", False)}
 
 
 def experiment_dispatch(args, store):
