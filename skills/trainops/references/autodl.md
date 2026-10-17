@@ -12,19 +12,24 @@
 
 | MCP 工具 | 参数 | 结果与边界 |
 |---|---|---|
-| `instance_status` | `instance_uuid` | 查询 `status`、`start_mode`、`charge_type`；无卡运行模式为 `non_gpu` |
+| `instance_status` | `instance_uuid` | 只读查询 `status`、`start_mode`、`charge_type` 及 `gpu_name`、`gpu_memory_gb`、`cpu_cores`；关机也可查规格，无需 SSH；无卡运行模式为 `non_gpu` |
 | `power_on_no_gpu` | `instance_uuid` | 无卡开机，立即返回 `job_id`，任务中 `no_gpu=true`；不会自动把已运行的有卡实例切成无卡 |
 | `power_on` | `instance_uuid` | 有卡开机，立即返回 `job_id`；缺货时后台持续重试，没有另一个“持续开机”工具，也没有每次调用的等待模式参数 |
-| `job_status` | `job_id` | 查询开机任务的 `phase`、`attempts`、`next_retry_at`、`error`，不是查询训练进度 |
+| `job_status` | `job_id` | 只读即时查询开机任务的 `phase`、`attempts`、`next_retry_at`、`error`，不是查询训练进度 |
+| `wait_for_job` | `job_id`, `timeout_seconds=300` | 只读长轮询，成功/失败/取消立即返回；超时返回当前快照，活动 phase 可继续等待；支持 0–300 秒，0 为立即查询 |
 | `cancel_job` | `job_id` | 只取消后续尝试，不撤销已接受的开机请求，不自动关机 |
 | `power_off` | `instance_uuid` | 先取消活动开机任务，再请求关机；返回接受结果，不代表关机已完成 |
 
 `instance_uuid` 是平台完整 UUID，不是账本编号 `I01`；从已核实的实例映射取值。MCP 服务名前缀由接入环境决定，不猜完整限定工具名。MCP 使用控制台登录 Token，TrainOps 余额接口使用面板上登记的那份开发者 Token，两者分开配置，别互相顶替（登录 Token 填进面板也拉不到余额）。
 
-1. **接管并核实**：先 `show --brief`，用 `instance_status(instance_uuid)` 核实目标实例、开机模式与计费类型，再 SSH 检查已有进程。已有训练运行时直接接管巡检，不为无卡准备而打断；已有 GPU 开机且是否可关机不明时先确认，不擅自重启。
-2. **无卡准备**：需要远端准备时默认调用 `power_on_no_gpu(instance_uuid)`，保留返回的 `job_id` 并用 `job_status(job_id)` 等待成功；用 `instance_status` 确认 `status="running"` 且 `start_mode="non_gpu"`。SSH 可达后了解项目结构、训练入口、数据与已有产物，检查环境/依赖、磁盘和路径；执行准备脚本前 `source /etc/network_turbo`，完成配置、代码调整及无需 GPU 的导入、语法、数据读取等检查。无卡阶段不启动 GPU 训练，不把待训练任务标为 running，也不因没有 GPU 就认定环境损坏。
+**规格用于筛选，不是运行资源证明**：`gpu_name`、`gpu_memory_gb`、`cpu_cores` 来自控制台“规格详情”的配置快照；显存是单卡容量，按 1024³ 字节换算，不能当作多卡总量或当前空闲显存；CPU 是实例分配的 vCPU 数。缺失或无效的可选字段为 `null`，保留待核实，不补 0、不猜型号。可在关机时比较候选实例与实验需求，不为查规格开机或 SSH；无卡阶段仍以 0.5 核 CPU、2GB 内存、无 GPU 为准，不能套用快照规格。实际 GPU 就绪仍须运行态验证。
+
+**等待只观察，不控制任务**：需要等待完成时优先 `wait_for_job`，即时看进度用 `job_status`。单次等待时长不超过用户剩余授权等待范围与调用方工具超时上限（必要时缩短 `timeout_seconds`）；返回后按 `phase` 判断，不把等待超时当作开机失败或成功。等待超时或取消等待请求均不会取消后台开机任务，需停止后续尝试时另按授权 `cancel_job`。长轮询不增加上游轮询或开机请求；后台开机重试只查询运行状态，不额外查规格，调用方也不为等结果反复查硬件或重发开机。当前 MCP 未提供该工具时才用 `job_status` 按合理间隔查询，避免密集轮询。
+
+1. **接管并核实**：先 `show --brief`，用 `instance_status(instance_uuid)` 核实目标实例、开机模式、计费类型与硬件规格，按实验需求筛选候选；运行实例再 SSH 检查已有进程。已有训练运行时直接接管巡检，不为无卡准备而打断；已有 GPU 开机且是否可关机不明时先确认，不擅自重启。
+2. **无卡准备**：需要远端准备时默认调用 `power_on_no_gpu(instance_uuid)`，保留返回的 `job_id` 并用 `wait_for_job(job_id, timeout_seconds=300)` 等待，按返回 `phase` 确认成功；用 `instance_status` 确认 `status="running"` 且 `start_mode="non_gpu"`。SSH 可达后了解项目结构、训练入口、数据与已有产物，检查环境/依赖、磁盘和路径；执行准备脚本前 `source /etc/network_turbo`，完成配置、代码调整及无需 GPU 的导入、语法、数据读取等检查。无卡阶段不启动 GPU 训练，不把待训练任务标为 running，也不因没有 GPU 就认定环境损坏。
 3. **准备就绪后关机**：确认配置与代码已落盘、下载/安装等准备进程已结束、必要产物已保存；按用户授权调用 `power_off(instance_uuid)`，再用 `instance_status` 确认已关机，`accepted=true` 或 `shutting_down` 均不够。实现认可的已停止状态是 `shutdown`、`shutdown_by_starting_error`、`shutdown_by_running_error`；遇错误关机先核实原因再启动。这是保留实例与后续训练计划的中间关机，不是释放实例，也不要求“所有流程无后续复用”。尚未准备完成不得提前申请 GPU。
-4. **申请训练开机**：调用 `power_on(instance_uuid)`；有资源时开机，缺货自动进入后台等待，持续请求不是另一种工具。保留 `job_id`，用 `job_status` 查询：`waiting_capacity` 表示缺货等待，`waiting_network` 表示网络/限流退避，`queued/checking/starting/confirming` 都不是最终成功，`succeeded` 才是任务确认成功，`failed/cancelled` 须处置。请求已提交不等于开机成功，不循环重发 `power_on`，也不伪造训练进度。超出用户约定等待范围时按授权 `cancel_job`，随后查 `instance_status`，不能假定取消后实例已关机；失败且 `error.ambiguous=true` 时先查询实例，不盲目重试。
+4. **申请训练开机**：调用 `power_on(instance_uuid)`；有资源时开机，缺货自动进入后台等待，持续请求不是另一种工具。保留 `job_id`，优先用 `wait_for_job` 等待，需即时进度时用 `job_status`；按返回 `phase` 判断：`waiting_capacity` 表示缺货等待，`waiting_network` 表示网络/限流退避，`queued/checking/starting/confirming` 都不是最终成功，`succeeded` 才是任务确认成功，`failed/cancelled` 须处置。请求已提交不等于开机成功，不循环重发 `power_on`，也不伪造训练进度。超出用户约定等待范围时按授权 `cancel_job`，随后查 `instance_status`，不能假定取消后实例已关机；失败且 `error.ambiguous=true` 时先查询实例，不盲目重试。
 5. **GPU 就绪再训练**：用 `instance_status` 确认 `status="running"` 且不是 `start_mode="non_gpu"`，再检查 SSH、`nvidia-smi` 及训练框架能否使用预期 GPU；`start_mode` 缺失不能单独作为有卡证据。复核挂载、环境与训练入口，无卡阶段无法验证的 GPU 相关项在此补验。确认依赖满足后，用 tmux/screen 启动正式训练并登记真实状态与进度；若 GPU 验证失败，不启动训练，及时处置，避免付费空转：自愈最多 5 次，仍无法继续即先关机止付，见 [协议](protocol.md#故障自愈与止付关机)。
 
 后台等待由 MCP 进程承担：`AUTODL_MAX_WAIT_SECONDS` 默认 0（不限缺货等待时间），不是 `power_on` 的参数；需要有限等待时与用户约定服务配置或取消时点。后台任务仅保存在当前 MCP 进程中，服务退出会取消任务但不会自动关机，重启后旧 `job_id` 无法恢复；接管先查实例真实状态，不因任务不存在就重发开机。不同模式的活动任务冲突时先按授权取消并核实实例；已运行的不同模式必须先关机，不会原地切换。

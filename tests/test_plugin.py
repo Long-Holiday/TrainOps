@@ -151,6 +151,22 @@ class SkillTests(unittest.TestCase):
         for phrase in ("主动执行", "全局概况", "自动订阅", "extra_metrics", "订阅注册不等于监听已运行"):
             self.assertIn(phrase, body)
 
+    def test_autodl_guidance_covers_specs_and_read_only_wait(self):
+        body = SKILL.read_text(encoding="utf-8")
+        reference = (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for document in (body, reference, readme):
+            for phrase in ("instance_status", "gpu_name", "gpu_memory_gb", "cpu_cores",
+                           "null", "单卡", "wait_for_job", "job_status", "phase"):
+                self.assertIn(phrase, document)
+        for phrase in ("timeout_seconds=300", "0–300", "1024³", "vCPU",
+                       "取消等待请求均不会取消后台开机任务", "不增加上游轮询或开机请求",
+                       "不把等待超时当作开机失败或成功", "不额外查规格"):
+            self.assertIn(phrase, reference)
+        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
+        self.assertIn("wait_for_job", protocol)
+        self.assertIn("等待超时或取消等待不取消后台任务", protocol)
+
     def test_frontmatter_matches_directory_and_limits(self):
         meta = frontmatter(SKILL)
         self.assertEqual(meta["name"], SKILL_DIR.name, "技能名必须与目录名一致，否则客户端找不到")

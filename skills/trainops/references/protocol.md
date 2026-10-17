@@ -19,7 +19,7 @@
 ## 恢复与关机
 
 1. 新会话先 show --brief；恢复实验 Run 与待补录项见[实验日志](experiments.md)，不要重建表或把恢复巡检当新 attempt；有省略或异常时按需 show/check，再 SSH 核实远端会话、进程、checkpoint，禁止盲目重启或覆盖账本。
-2. 远程执行训练/准备脚本先 source /etc/network_turbo，训练放 tmux/screen。摘要里的“依赖就绪”只是计划候选，不保证实例在线或已分配 GPU；无卡准备与有卡训练的切换见 [开机模式](autodl.md#无卡准备与训练开机)。恢复时用 `instance_status(instance_uuid)` 核实当前模式，用 `job_status(job_id)` 核实已有开机任务；任务仅存于 MCP 进程，服务重启后丢失不代表实例已关机，不盲目重发请求。
+2. 远程执行训练/准备脚本先 source /etc/network_turbo，训练放 tmux/screen。摘要里的“依赖就绪”只是计划候选，不保证实例在线或已分配 GPU；无卡准备与有卡训练的切换见 [开机模式](autodl.md#无卡准备与训练开机)。恢复时用 `instance_status(instance_uuid)` 核实当前模式，用 `job_status(job_id)` 即时核实已有开机任务，仍活动且需等待时优先 `wait_for_job`（时长不超过授权剩余时间与调用超时上限）；等待超时或取消等待不取消后台任务，按返回 `phase` 处置；任务仅存于 MCP 进程，服务重启后丢失不代表实例已关机，不盲目重发请求。
 3. 最终关机前确认进程退出、结果保存，检查所有流程无后续复用该实例且获用户授权，再通过已有 `autodl_mcp` 工具执行（“5 次自愈失败”的止付关机是唯一的预授权例外，见下节）。无卡准备完成后为切换 GPU 模式而中间关机，不受“无后续复用”限制，但仍须准备进程退出、配置/产物落盘并获授权；`power_off` 返回接受结果后仍须用 `instance_status` 确认关机完成，再调用 `power_on`（缺货自动持续重试），保留后续训练为待执行。`cancel_job` 仅停止后续尝试，不撤销已接受开机、不自动关机。TrainOps 本身不下发开关机指令。
 4. CLI 拒绝把仍有 running 的实例标为 off/unreachable；先核实远端并更新任务状态，不为绕过校验随意改状态。释放实例前还须转存并核实数据盘产物。
 
