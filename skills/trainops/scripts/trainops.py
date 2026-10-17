@@ -23,7 +23,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 try:
     import fcntl
@@ -1869,12 +1869,6 @@ def validate_experiment_state(state):
     if (not isinstance(state, dict) or state.get("schema_version") != EXPERIMENT_STATE_VERSION
             or not isinstance(state.get("runs"), dict)):
         raise PlanError("实验运行记录格式错误；未覆盖")
-    subscription = state.get("subscription")
-    if subscription is not None:
-        reject_experiment_secrets(subscription)
-        if (not isinstance(subscription, dict) or subscription.get("status") not in ("pending", "subscribed")
-                or not isinstance(subscription.get("base_token"), str) or not subscription["base_token"]):
-            raise PlanError("实验表订阅状态格式错误；未覆盖")
     for run_id, record in state["runs"].items():
         if (not isinstance(record, dict) or record.get("run_id") != run_id
                 or isinstance(record.get("version"), bool)
@@ -1942,14 +1936,6 @@ class ExperimentLog:
     def call(self, command, **options):
         return self.invoke(["base", command], options)
 
-    def api(self, method, path):
-        data = self.invoke(["api", method, path], {"params": {"file_type": "bitable"}})
-        if "code" in data:
-            if data["code"] not in (0, "0") or not isinstance(data.get("data"), dict):
-                raise PlanError("飞书订阅 API 返回失败或数据格式不支持，请核实权限与目标")
-            return data["data"]
-        return data
-
     def invoke(self, command, options):
         argv = ["lark-cli", *command, "--as", "user", "--format", "json"]
         for key, value in options.items():
@@ -1980,28 +1966,6 @@ class ExperimentLog:
         for record in state["runs"].values():
             names.update(record.get("extra_metrics", {}))
         return sorted(names)
-
-    def subscribe(self, config):
-        token = config["lark"]["base_token"]
-        path_token = quote(token, safe="")
-        outcome = {"base_token": token, "status": "pending"}
-
-        def save(document):
-            state = validate_experiment_state(document.get("experiments", default_state()))
-            state["subscription"] = copy.deepcopy(outcome)
-            document["experiments"] = state
-        self.store.update(save)
-        try:
-            result = self.api("GET", f"/open-apis/drive/v1/files/{path_token}/get_subscribe")
-            if not isinstance(result.get("is_subscribe"), bool):
-                raise PlanError("订阅状态响应无效；请重新 experiment init 核实")
-            if not result["is_subscribe"]:
-                self.api("POST", f"/open-apis/drive/v1/files/{path_token}/subscribe")
-            outcome.update(status="subscribed", checked_at=stamp())
-        except PlanError as exc:
-            outcome["error"] = str(exc)
-        self.store.update(save)
-        return outcome
 
     def fields(self, config, metrics=()):
         target = config["lark"]
@@ -2107,7 +2071,6 @@ class ExperimentLog:
                 if not table_id:
                     raise PlanError("已保存 Base ID，但创建结果缺少表 ID；请用 init --url 绑定，不会重复建表")
             self.save_config(config)
-            subscription = self.subscribe(config)
             self.fields(config, metrics)
 
             def finalize(document):
@@ -2116,11 +2079,7 @@ class ExperimentLog:
                 state.pop("creation_uncertain", None)
                 document["experiments"] = state
             self.store.update(finalize)
-            warnings = []
-            if subscription["status"] != "subscribed":
-                warnings.append("实验表初始化成功，但事件订阅待补；请修复飞书权限或网络后重新 experiment init 或 sync")
-            return {"config": config, "verified": True, "subscription": subscription,
-                    "ok": True, "warnings": warnings}
+            return {"config": config, "verified": True, "ok": True}
 
     def run(self, task_id=None, run_id=None, patch=None):
         patch = patch or {}
@@ -2193,10 +2152,6 @@ class ExperimentLog:
             if run_id is not None and run_id not in state["runs"]:
                 raise PlanError("找不到 Run")
             records = copy.deepcopy([r for key, r in state["runs"].items() if run_id is None or key == run_id])
-            subscription = state.get("subscription", {})
-            if config["lark"].get("base_token") and (subscription.get("status") != "subscribed"
-                    or subscription.get("base_token") != config["lark"]["base_token"]):
-                subscription = self.subscribe(config)
             try:
                 self.fields(config, self.metric_names(config, state))
             except PlanError as exc:
@@ -2206,7 +2161,7 @@ class ExperimentLog:
                         latest["runs"][record["run_id"]]["sync"] = {"error": str(exc)}
                     document["experiments"] = latest
                 self.store.update(save_error)
-                return {"ok": False, "error": str(exc), "subscription": subscription, "runs": [
+                return {"ok": False, "error": str(exc), "runs": [
                     {"run_id": record["run_id"], "status": "pending"} for record in records]}
             target = {key: config["lark"][key] for key in ("base_token", "table_id")}
             for record in records:
@@ -2225,8 +2180,15 @@ class ExperimentLog:
                         result = self.call("+record-list", **target, offset=offset, limit=200,
                                            filter_json={"logic": "and", "conditions": [[config["lark"].get("fields", {}).get(
                                                "run_id", "Run ID"), "==", record["run_id"]]]})
-                        page = result.get("records", result.get("items"))
-                        if not isinstance(page, list):
+                        if "record_id_list" in result:
+                            ids = result["record_id_list"]
+                            if not isinstance(ids, list) or any(not isinstance(rid, str) or not rid for rid in ids):
+                                raise PlanError("无法识别记录 ID 列表，未创建记录")
+                            # JSON 矩阵的 data 是单元格二维数组；去重只需服务端精确筛选返回的 ID。
+                            page = [{"record_id": rid} for rid in ids]
+                        else:
+                            page = result.get("records", result.get("items", result.get("data")))
+                        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
                             raise PlanError("无法识别记录列表，未创建记录")
                         found.extend(page)
                         if len(found) > 1:
@@ -2239,13 +2201,20 @@ class ExperimentLog:
                     options = {**target, "json": payload}
                     if found:
                         record_id = found[0].get("record_id") or found[0].get("id")
-                        if not record_id:
+                        if not isinstance(record_id, str) or not record_id:
                             raise PlanError("查询结果缺少 record ID，未写入")
                         options["record_id"] = record_id
                     result = self.call("+record-upsert", **options)
                     remote = result.get("record", result)
-                    record_id = remote.get("record_id") or remote.get("id") or options.get("record_id")
-                    if not record_id or result.get("ignored_fields"):
+                    if not isinstance(remote, dict):
+                        raise PlanError("无法识别写入结果，请核实后补录")
+                    ids = remote.get("record_id_list")
+                    if "record_id_list" in remote and (not isinstance(ids, list) or len(ids) != 1
+                            or not isinstance(ids[0], str) or not ids[0]):
+                        raise PlanError("写入结果 record ID 列表无效，请核实后补录")
+                    record_id = (remote.get("record_id") or remote.get("id")
+                                 or (ids[0] if ids else None) or options.get("record_id"))
+                    if not isinstance(record_id, str) or not record_id or result.get("ignored_fields"):
                         raise PlanError("写入结果缺少 record ID 或字段被忽略，请核实后补录")
                     outcome.update(record_id=record_id, fingerprint=fingerprint, synced_at=stamp())
                     status = "synced"
@@ -2260,8 +2229,7 @@ class ExperimentLog:
                 self.store.update(save_outcome)
                 reports.append({"run_id": record["run_id"], "status": status,
                                 **({"error": outcome["error"]} if "error" in outcome else {})})
-        return {"ok": all(r["status"] != "pending" for r in reports) and subscription.get("status") == "subscribed",
-                "subscription": subscription, "runs": reports}
+        return {"ok": all(r["status"] != "pending" for r in reports), "runs": reports}
 
     def show(self):
         document = self.store.read_document()
@@ -2277,7 +2245,7 @@ class ExperimentLog:
                 {key: config["lark"].get(key) for key in ("base_token", "table_id")},
                 self.projection(config, record)], sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
             record["pending"] = record.get("sync", {}).get("fingerprint") != digest or bool(record.get("sync", {}).get("error"))
-        return {"config": config, "runs": records, "subscription": state.get("subscription"),
+        return {"config": config, "runs": records,
                 "creation_uncertain": state.get("creation_uncertain", False)}
 
 

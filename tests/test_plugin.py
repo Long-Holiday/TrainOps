@@ -140,15 +140,22 @@ class SkillTests(unittest.TestCase):
             self.assertIn(phrase, body)
         reference = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")
         for phrase in (".agent/experiment.yaml", "lark-cli", "人工决策", "JSON 兼容 YAML 1.2",
-                       "关机止付", "Run ID", "extra_metrics", "get_subscribe", "订阅注册不等于监听已运行", "全局概况"):
+                       "关机止付", "Run ID", "extra_metrics", "全局概况"):
             self.assertIn(phrase, reference)
+
+    def test_experiment_guidance_does_not_require_event_subscription(self):
+        for path in (SKILL, SKILL_DIR / "references/experiments.md",
+                     SKILL_DIR / "references/protocol.md", ROOT / "rules/trainops.md"):
+            body = path.read_text(encoding="utf-8")
+            for phrase in ("自动订阅", "get_subscribe", "docs:event:subscribe", "订阅结果", "补订阅"):
+                self.assertNotIn(phrase, body)
 
     def test_logging_init_precedes_preparation_and_training(self):
         body = SKILL.read_text(encoding="utf-8")
         self.assertLess(body.index("**面板**"), body.index("**日志初始化**"))
         self.assertLess(body.index("**日志初始化**"), body.index("**无卡准备**"))
         self.assertLess(body.index("**无卡准备**"), body.index("**训练与记录**"))
-        for phrase in ("主动执行", "全局概况", "自动订阅", "extra_metrics", "订阅注册不等于监听已运行"):
+        for phrase in ("主动执行", "全局概况", "字段核验", "extra_metrics"):
             self.assertIn(phrase, body)
 
     def test_autodl_guidance_covers_specs_and_read_only_wait(self):

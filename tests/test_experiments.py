@@ -23,7 +23,6 @@ class FakeLark:
         self.calls = []
         self.records = []
         self.failure = None
-        self.subscriptions = set()
         self.after_write = None
         self.fields = [{"id": f"fld{i}", "name": name, "type": kind}
                        for i, (name, kind) in enumerate(ops.EXPERIMENT_FIELDS.values())]
@@ -60,16 +59,6 @@ class FakeLark:
             return {"record": copy.deepcopy(record)}
         raise AssertionError(command)
 
-    def api(self, method, path):
-        self.calls.append((method, {"path": path}))
-        if self.failure == method:
-            raise ops.PlanError("订阅权限或网络失败")
-        token = path.split("/")[-2]
-        if method == "GET":
-            return {"is_subscribe": token in self.subscriptions}
-        self.subscriptions.add(token)
-        return {}
-
 
 class ExperimentTests(unittest.TestCase):
     def setUp(self):
@@ -86,7 +75,6 @@ class ExperimentTests(unittest.TestCase):
         self.log = ops.ExperimentLog(self.store)
         self.fake = FakeLark()
         self.log.call = self.fake
-        self.log.api = self.fake.api
 
     def initialize(self):
         return self.log.init()
@@ -239,6 +227,93 @@ class ExperimentTests(unittest.TestCase):
         self.assertFalse(self.log.sync()["ok"])
         self.assertFalse(any(c == "+record-upsert" for c, _ in self.fake.calls))
 
+    def test_matrix_record_responses_create_update_and_deduplicate(self):
+        self.initialize()
+        self.start()
+        def call(command, **options):
+            result = self.fake(command, **options)
+            if command == "+record-list":
+                rows = result["records"]
+                return {"record_id_list": [r["record_id"] for r in rows],
+                        "data": [[r["fields"]["Run ID"]] for r in rows], "has_more": False}
+            if command == "+record-upsert":
+                return {"created": "record_id" not in options,
+                        "record": {"record_id_list": [result["record"]["record_id"]]}}
+            return result
+        self.log.call = call
+        self.assertTrue(self.log.sync()["ok"])
+        self.assertEqual(self.log.state()["runs"]["run-1"]["sync"]["record_id"], "rec1")
+        self.assertEqual(self.log.sync()["runs"][0]["status"], "unchanged")
+        self.log.run(run_id="run-1", patch={"suggestion": "复现"})
+        self.assertTrue(self.log.sync()["ok"])
+        writes = [kw for cmd, kw in self.fake.calls if cmd == "+record-upsert"]
+        self.assertNotIn("record_id", writes[0])
+        self.assertEqual(writes[1]["record_id"], "rec1")
+        self.assertEqual(len(self.fake.records), 1)
+        self.assertFalse(self.log.show()["runs"]["run-1"]["pending"])
+        self.assert_plan_unchanged()
+
+    def test_record_list_data_object_fallback(self):
+        self.initialize()
+        self.start()
+        def call(command, **options):
+            result = self.fake(command, **options)
+            if command == "+record-list":
+                result["data"] = result.pop("records")
+            return result
+        self.log.call = call
+        self.assertTrue(self.log.sync()["ok"])
+        self.log.run(run_id="run-1", patch={"suggestion": "复现"})
+        self.assertTrue(self.log.sync()["ok"])
+        self.assertEqual(len(self.fake.records), 1)
+
+    def test_matrix_pagination_detects_duplicate_rows(self):
+        self.initialize()
+        self.start()
+        offsets = []
+        def call(command, **options):
+            if command == "+record-list":
+                offsets.append(options["offset"])
+                return {"record_id_list": ["rec" + str(options["offset"])],
+                        "data": [["run-1"]], "has_more": options["offset"] == 0}
+            return self.fake(command, **options)
+        self.log.call = call
+        result = self.log.sync()
+        self.assertFalse(result["ok"])
+        self.assertEqual(offsets, [0, 1])
+        self.assertIn("冲突", result["runs"][0]["error"])
+        self.assertFalse(any(cmd == "+record-upsert" for cmd, _ in self.fake.calls))
+
+    def test_malformed_record_lists_never_write(self):
+        self.initialize()
+        self.start()
+        for response in ({"record_id_list": None}, {"record_id_list": "rec1"},
+                         {"record_id_list": [None]}, {"record_id_list": [""]},
+                         {"record_id_list": [123]}, {"data": [["run-1"]]},
+                         {"records": [None]}, {"records": [{"record_id": 123}]},
+                         {"record_id_list": [], "has_more": True}):
+            with self.subTest(response=response):
+                self.log.call = lambda command, **options: (
+                    response if command == "+record-list" else self.fake(command, **options))
+                self.assertFalse(self.log.sync()["ok"])
+                self.assertFalse(any(cmd == "+record-upsert" for cmd, _ in self.fake.calls))
+
+    def test_invalid_upsert_ids_and_ignored_fields_stay_pending(self):
+        self.initialize()
+        self.start()
+        for response in ({"record": None}, {"record": {"record_id_list": []}},
+                         {"record": {"record_id_list": "rec1"}},
+                         {"record": {"record_id_list": [None]}},
+                         {"record": {"record_id_list": ["rec1", "rec2"]}},
+                         {"record": {"record_id": 123}},
+                         {"record": {"record_id_list": ["rec1"]}, "ignored_fields": ["主指标值"]}):
+            with self.subTest(response=response):
+                self.log.call = lambda command, **options: (
+                    response if command == "+record-upsert" else self.fake(command, **options))
+                self.assertFalse(self.log.sync()["ok"])
+                self.assertTrue(self.log.show()["runs"]["run-1"]["pending"])
+                self.assertNotIn("fingerprint", self.log.state()["runs"]["run-1"]["sync"])
+
     def test_attempt_history_and_explicit_resume(self):
         self.initialize()
         first = self.start(intent="基线", change="无")
@@ -377,7 +452,7 @@ class ExperimentTests(unittest.TestCase):
         self.log.init(settings={"extra_metrics": {"Topology_Error": None}})
         self.assertEqual(set(self.log.config()["extra_metrics"]), {"Boundary_F1", "Topology_Error"})
         self.assertEqual(sum(command == "+base-create" for command, _ in self.fake.calls), 1)
-        self.assertEqual(sum(command == "POST" for command, _ in self.fake.calls), 1)
+        self.assertTrue(all(command.startswith("+") for command, _ in self.fake.calls))
         self.assert_plan_unchanged()
 
     def test_extra_metrics_merge_clear_deduplicate_and_reload(self):
@@ -468,23 +543,42 @@ class ExperimentTests(unittest.TestCase):
         self.assertFalse(self.log.sync()["ok"])
         self.assertFalse(self.fake.records)
 
-    def test_subscription_failure_retry_keeps_target_and_records_sync(self):
-        self.fake.failure = "POST"
+    def test_init_sync_and_target_switch_without_event_subscription(self):
         result = self.initialize()
         self.assertTrue(result["ok"])
         self.assertTrue(result["verified"])
-        self.assertTrue(result["warnings"])
-        self.assertEqual(result["subscription"]["error"], "订阅权限或网络失败")
-        self.assertEqual(self.log.show()["subscription"]["status"], "pending")
-        self.assertNotIn("creation_uncertain", self.log.state())
+        self.assertNotIn("subscription", result)
+        self.assertNotIn("warnings", result)
+        self.assertNotIn("subscription", self.log.state())
         self.start()
-        self.assertFalse(self.log.sync()["ok"])
-        self.assertEqual(len(self.fake.records), 1)
-        self.fake.failure = None
+        synced = self.log.sync()
+        self.assertTrue(synced["ok"])
+        self.assertNotIn("subscription", synced)
+        self.assertNotIn("subscription", self.log.show())
+        result = self.log.init(url="https://example.feishu.cn/base/existing?table=tbl-existing")
+        self.assertTrue(result["ok"])
         self.assertTrue(self.log.sync()["ok"])
-        self.assertEqual(self.log.show()["subscription"]["status"], "subscribed")
+        self.assertEqual(result["config"]["lark"]["base_token"], "base-existing")
+        self.assertTrue(all(command.startswith("+") for command, _ in self.fake.calls))
         self.assertEqual(sum(command == "+base-create" for command, _ in self.fake.calls), 1)
         self.assert_plan_unchanged()
+
+    def test_legacy_subscription_state_is_ignored_and_preserved(self):
+        for status in ("pending", "subscribed"):
+            with self.subTest(status=status):
+                legacy = {"base_token": "base-old", "status": status, "error": "旧订阅错误"}
+                def save(document):
+                    document.setdefault("experiments", ops.default_state())["subscription"] = legacy
+                self.store.update(save)
+                self.assertTrue(self.initialize()["ok"])
+                if not self.log.state()["runs"]:
+                    self.start()
+                result = self.log.sync()
+                self.assertTrue(result["ok"])
+                self.assertNotIn("subscription", result)
+                self.assertNotIn("subscription", self.log.show())
+                self.assertEqual(self.log.state()["subscription"], legacy)
+                self.assert_plan_unchanged()
 
     def test_init_cli_fatal_errors_still_exit_nonzero(self):
         for failure in ("+base-create", "+field-list", "config"):
@@ -495,7 +589,6 @@ class ExperimentTests(unittest.TestCase):
                 fake = FakeLark()
                 fake.failure = failure
                 log.call = fake
-                log.api = fake.api
                 if failure == "config":
                     store.path.write_text("{broken")
                 stdout, stderr = io.StringIO(), io.StringIO()
@@ -505,66 +598,6 @@ class ExperimentTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertEqual(stdout.getvalue(), "")
                 self.assertIn("TrainOps:", stderr.getvalue())
-
-    def test_subscription_lost_response_and_target_switch(self):
-        api = self.fake.api
-        def lost(method, path):
-            result = api(method, path)
-            if method == "POST":
-                raise ops.PlanError("订阅响应丢失")
-            return result
-        self.log.api = lost
-        self.assertTrue(self.initialize()["warnings"])
-        self.log.api = api
-        result = self.initialize()
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["warnings"], [])
-        self.assertEqual(sum(command == "POST" for command, _ in self.fake.calls), 1)
-        self.log.init(url="https://example.feishu.cn/base/existing?table=tbl-existing")
-        self.assertEqual(self.log.show()["subscription"]["base_token"], "base-existing")
-        self.assertEqual(sum(command == "POST" for command, _ in self.fake.calls), 2)
-        self.assertEqual(sum(command == "+base-create" for command, _ in self.fake.calls), 1)
-
-    def test_subscription_status_validation_and_network_outside_data_lock(self):
-        self.log.api = lambda *args: {"is_subscribe": "false"}
-        result = self.initialize()
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["warnings"])
-        self.assertEqual(result["subscription"]["status"], "pending")
-        api = self.fake.api
-        def check(method, path):
-            with self.store.lock():
-                pass
-            return api(method, path)
-        self.log.api = check
-        self.assertTrue(self.initialize()["ok"])
-
-    def test_api_argv_and_strict_success_envelope(self):
-        real = ops.ExperimentLog(self.store)
-        response = subprocess.CompletedProcess([], 0, '{"ok":true,"data":{}}', '')
-        with mock.patch.object(ops.subprocess, "run", return_value=response) as run:
-            real.api("POST", "/open-apis/drive/v1/files/base-test/subscribe")
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[:4], ["lark-cli", "api", "POST", "/open-apis/drive/v1/files/base-test/subscribe"])
-        self.assertEqual(json.loads(argv[argv.index("--params") + 1]), {"file_type": "bitable"})
-        self.assertNotIn("--data", argv)
-        for body in ('{}', '{"code":0,"data":{}}', '{"ok":false}', '{"ok":true,"data":[]}'):
-            response = subprocess.CompletedProcess([], 0, body, '')
-            with mock.patch.object(ops.subprocess, "run", return_value=response), self.assertRaises(ops.PlanError):
-                real.api("GET", "/open-apis/drive/v1/files/base-test/get_subscribe")
-
-    def test_native_api_envelope_is_validated(self):
-        real = ops.ExperimentLog(self.store)
-        for code in (0, 1069603):
-            body = json.dumps({"ok": True, "data": {"code": code, "data": {"is_subscribe": True}}})
-            response = subprocess.CompletedProcess([], 0, body, '')
-            with mock.patch.object(ops.subprocess, "run", return_value=response):
-                if code:
-                    with self.assertRaises(ops.PlanError):
-                        real.api("GET", "/open-apis/drive/v1/files/base-test/get_subscribe")
-                else:
-                    self.assertEqual(real.api("GET", "/open-apis/drive/v1/files/base-test/get_subscribe"),
-                                     {"is_subscribe": True})
 
     def test_call_is_argv_and_errors_do_not_echo_secrets(self):
         real = ops.ExperimentLog(self.store)
@@ -620,16 +653,6 @@ rows = json.loads(state.read_text()) if state.exists() else []
 if command == "+base-create":
     (root / "fields.json").write_text(arg("--fields"))
     data = {"base_token":"base-test", "table_id":"tbl-test", "url":"https://example.feishu.cn/base/base-test?table=tbl-test"}
-elif args[0] == "api":
-    assert json.loads(arg("--params")) == {"file_type":"bitable"}
-    assert arg("--as") == "user" and "--data" not in args
-    subscribed = root / "subscribed"
-    if (root / "subscription-fail").exists(): sys.exit(3)
-    if command == "GET": data = {"is_subscribe":subscribed.exists()}
-    elif command == "POST":
-        subscribed.touch()
-        data = {}
-    else: sys.exit(4)
 elif command == "+field-create":
     fields = root / "fields.json"
     fields.write_text(json.dumps(json.loads(fields.read_text()) + json.loads(arg("--json"))))
@@ -637,7 +660,9 @@ elif command == "+field-create":
 elif command == "+field-list": data = {"fields":json.loads((root / "fields.json").read_text()), "has_more":False}
 elif command == "+record-list":
     wanted = json.loads(arg("--filter-json"))["conditions"][0][2]
-    data = {"records":[r for r in rows if r["fields"]["Run ID"] == wanted], "has_more":False}
+    matches = [r for r in rows if r["fields"]["Run ID"] == wanted]
+    data = {"record_id_list":[r["record_id"] for r in matches],
+            "data":[[r["fields"]["Run ID"]] for r in matches], "has_more":False}
 elif command == "+record-upsert":
     if (root / "fail").exists(): sys.exit(3)
     payload = json.loads(arg("--json"))
@@ -648,7 +673,7 @@ elif command == "+record-upsert":
         row = {"record_id":"rec"+str(len(rows)+1), "fields":payload}
         rows.append(row)
     state.write_text(json.dumps(rows))
-    data = {"record":row}
+    data = {"created":"--record-id" not in args, "record":{"record_id_list":[row["record_id"]]}}
 else: sys.exit(4)
 print(json.dumps({"ok":True, "data":data}))
 ''')
@@ -663,8 +688,7 @@ print(json.dumps({"ok":True, "data":data}))
             cli("init", "--name", "测试", "--flow", "基线", "--task", "F01:训练")
             config_file = project / ".agent/experiment.yaml"
             original = json.loads(config_file.read_text())["plan"]
-            (bindir / "subscription-fail").touch()
-            # A warning must not abort bash -e or prevent the following command.
+            # Initialization must succeed under bash -e without an event API.
             result = subprocess.run([
                 "bash", "-e", "-c",
                 '\"$1\" \"$2\" -p \"$3\" experiment init; printf "continued\\n"',
@@ -676,14 +700,13 @@ print(json.dumps({"ok":True, "data":data}))
             initialized = json.loads("\n".join(lines[:-1]))
             self.assertTrue(initialized["ok"])
             self.assertTrue(initialized["verified"])
-            self.assertTrue(initialized["warnings"])
-            self.assertEqual(initialized["subscription"]["status"], "pending")
+            self.assertNotIn("warnings", initialized)
+            self.assertNotIn("subscription", initialized)
             self.assertEqual(initialized["config"]["lark"]["base_token"], "base-test")
-            (bindir / "subscription-fail").unlink()
             recovered = cli("experiment", "init", "--json", '{"extra_metrics":{"Boundary_F1":null}}')
             self.assertNotIn("warnings", recovered)
-            self.assertEqual(recovered["subscription"]["status"], "subscribed")
-            self.assertTrue((bindir / "subscribed").exists())
+            self.assertTrue(recovered["ok"])
+            self.assertNotIn("subscription", recovered)
             cli("experiment", "start", "--task", "F01-T01", "--run-id", "run-a", "--json", '{"intent":"基线"}')
             (bindir / "fail").touch()
             failed = cli("experiment", "update", "run-a", "--json", '{"status":"failed","error":"OOM"}', code=1)

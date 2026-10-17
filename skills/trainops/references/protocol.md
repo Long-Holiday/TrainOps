@@ -55,4 +55,4 @@ SSH 用 df -h 检查三盘，必要时只查看相关目录占用，登记方法
 
 ## 实验日志故障
 
-飞书授权、字段、网络或限流失败只影响同步；先本地留痕，下次巡检用 `experiment sync` 补录，不纳入训练五次自愈，也不延迟关机止付。建表结果不确定时禁止盲目重建，先在飞书核实再用 `experiment init --url` 绑定。订阅为 pending 时，下次 `experiment init` 或 `experiment sync` 查询后补订阅，不重建表；注册成功不等于监听已运行，需核实应用控制台事件与接收渠道。详见[实验日志](experiments.md)。
+飞书授权、字段、网络或限流失败只影响同步；先本地留痕，下次巡检用 `experiment sync` 补录，不纳入训练五次自愈，也不延迟关机止付。建表结果不确定时禁止盲目重建，先在飞书核实再用 `experiment init --url` 绑定。详见[实验日志](experiments.md)。

@@ -8,7 +8,7 @@
 
 - `plan`：计划与任务状态的唯一事实来源，只经原 CLI / 面板时价入口修改。
 - `config`：项目名、表格定位、字段映射、主指标方向与其他非敏感项目配置；首次 `experiment init` 前为 `null`。
-- `experiments`：本地 Run 历史、同步状态与绑定 Base 的事件订阅状态；飞书只是它的检索索引，不反向驱动计划。日志命令只改 `config` / `experiments` 两段，不推进计划 `revision`，也不向计划塞指标、命令、日志或 commit。
+- `experiments`：本地 Run 历史与同步状态；飞书只是它的检索索引，不反向驱动计划。日志命令只改 `config` / `experiments` 两段，不推进计划 `revision`，也不向计划塞指标、命令、日志或 commit。
 
 文件使用 **JSON 兼容 YAML 1.2**：内容是缩进 JSON（合法 YAML 子集），由 Python 标准库读写。首版不支持缩进式 YAML、注释、锚点或自定义标签；不支持/损坏时拒绝读取，不覆盖原文件。用命令维护，无需手填：
 
@@ -39,10 +39,10 @@
 
 ## 开工和表格选择
 
-收到实际任务后按入口先核实计划、后台常驻起面板，随后**主动执行 `experiment init`，检查返回的目标、字段与订阅结果，再做无卡准备或训练**；不能只给出命令等用户执行。仅加载插件时不创建任何文件或飞书表。
+收到实际任务后按入口先核实计划、后台常驻起面板，随后**主动执行 `experiment init`，检查返回的目标与字段核验结果，再做无卡准备或训练**；不能只给出命令等用户执行。仅加载插件时不创建任何文件或飞书表。
 
 ```bash
-# 用户指定表：解析真实 Base / table ID，保存真实目标、自动订阅，再验证字段
+# 用户指定表：解析真实 Base / table ID，保存真实目标，再验证字段
 $CLI experiment init --url 'https://<飞书域名>/base/<资源标识>?table=<数据表ID>'
 
 # 未指定：已有配置则验证复用；没有配置则自动创建 Base“全局概况”及同名首表（项目/任务归属仍写在记录中）
@@ -86,18 +86,7 @@ $CLI experiment update baseline-attempt-1 --json '{"extra_metrics":{"Boundary_F1
 
 动态列名为 `extra_metrics.<原始指标名>`，类型为 number。建列范围为配置声明与全部历史 Run 指标名的并集；投影只发送当前 Run 自己的指标，未测量项不补空值或默认结果。已有同名非数字列或重复列报错，不修改类型、不删列、不改人工决策；人工维护列勿使用该受管前缀。字段创建失败后重新同步先查询现状，只补缺列；指标变化和显式清空参与同步指纹及 pending 判断。
 
-## 自动订阅数据变更事件
-
-每次 `experiment init` 在保存真实目标后，查询 Base 事件订阅状态；未订阅则自动注册，指定/已有表也可补订阅。通过 `lark-cli api` 调用：
-
-- `GET /open-apis/drive/v1/files/<base_token>/get_subscribe`，query 为 `{"file_type":"bitable"}`，读取 `is_subscribe`。
-- 未订阅才 `POST /open-apis/drive/v1/files/<base_token>/subscribe`，同样 query，无请求体；身份固定为 `--as user`。
-
-订阅覆盖整个 Base 的相关事件，不是单个数据表；接收侧需按 `table_id` 过滤。飞书应用控制台须预先配置 `drive.file.bitable_record_changed_v1`（记录变更）和 `drive.file.bitable_field_changed_v1`（字段变更）及事件接收渠道。调用者须有文档所有者或管理权限，订阅接口需 `docs:event:subscribe` 等允许的 scope；事件接收还需对应数据读取权限，缺权限按飞书官方授权流程修复，不切换身份。
-
-**订阅注册不等于监听已运行**：`subscribed` 仅表示订阅 API 成功，不证明事件已经送达；当前 `lark-cli event` 不提供多维表格消费键，不虚构 consume 命令，也不新增长驻 webhook/监听器。实际事件接收由应用侧配置提供。
-
-`experiment show` 的 `subscription` 独立显示 `base_token/status/checked_at` 或脱敏错误；失败记 `pending`，再次 init 或 sync 先查询后补订阅，不重建 Base，切换目标不复用旧订阅状态。init 在目标保存、字段核验通过后返回 `verified:true`、`ok:true`、退出码 0；若仅订阅 pending，以 `warnings` 数组提示待补，详细原因见 `subscription.error`，不会中断 `set -e` 脚本。订阅成功时无告警（CLI 精简 JSON 省略空的 `warnings` 数组）。建表失败、配置损坏或字段核验失败仍返回非零退出码。sync 可继续写记录，但订阅 pending 时整体也返回失败，须分别判读行同步与订阅状态；不阻断训练与止付。
+初始化在目标保存、字段核验通过后返回 `verified:true`、`ok:true`、退出码 0；建表失败、配置损坏或字段核验失败返回非零退出码。实验日志不查询、注册或重试多维表格事件订阅，不要求事件订阅权限或接收渠道。
 
 ## 运行与巡检闭环
 
@@ -129,7 +118,7 @@ $CLI experiment show
 
 例子是独立操作示例，不能把“完成后改失败”当正常流水线；实际状态一律以观测为准。未提供 `--run-id` 时自动生成 UUID；显式 ID 可跨会话复用，重复 start 同任务同 ID 返回旧 Run，不启动新 attempt、不应用新 JSON。一个任务同时只能有一个 running/blocked Run；恢复用 update，重跑先结束旧 Run，再 start 新 ID。
 
-`start` / `update` **先原子本地落盘，再尝试同步**；`local_saved: true` 与 `ok: false` 表示本地已保存但飞书未成功，退出码为 1，不能误报为全部成功。即使还没完成飞书配置也允许先留本地记录。`show` 会标出记录的 `pending` 并单独返回订阅状态，`sync` 可补录。start/update 不会暗中建表；开工必须主动 init。更新只合并明确提供的字段，`null` 才清空；身份字段不可改，已结束 Run 不能重新转 running/blocked。结束后可补充可信评测结果。
+`start` / `update` **先原子本地落盘，再尝试同步**；`local_saved: true` 与 `ok: false` 表示本地已保存但飞书未成功，退出码为 1，不能误报为全部成功。即使还没完成飞书配置也允许先留本地记录。`show` 会标出记录的 `pending`，`sync` 可补录。start/update 不会暗中建表；开工必须主动 init。更新只合并明确提供的字段，`null` 才清空；身份字段不可改，已结束 Run 不能重新转 running/blocked。结束后可补充可信评测结果。
 
 允许增量字段：`intent/change/baseline/status/metric_name/metric_value/direction/dataset_version/eval_protocol/seed/git_commit/config_path/artifacts/evidence/error/suggestion/next_step/checked_at/extra_metrics`。文本字段最多 8000 字符，seed 用文本；方向仅 `max/min`，缺失留空；主指标必须为有限数字并有 `metric_name` 和可信 `evidence`；额外指标用对象键命名，也必须有评测依据。主指标来自真实评测产物，不从滚动训练 loss 推测；Git 有未提交修改时须在配置/产物引用中留实际配置快照及 patch 证据，不能声称 commit 足以复现。
 
@@ -137,8 +126,9 @@ $CLI experiment show
 
 ## 同步、恢复与安全优先级
 
-- 表结构与记录使用 `lark-cli base +...` shortcut，事件订阅使用已核实的 `lark-cli api` 原生接口，通过参数数组与超时执行；写前核实字段及类型。JSON 是顶层字段映射，不套旧 API 的 `fields` 外壳。
+- 表结构与记录使用 `lark-cli base +...` shortcut，通过参数数组与超时执行；写前核实字段及类型。JSON 是顶层字段映射，不套旧 API 的 `fields` 外壳。
 - `+record-upsert` 没有业务键去重：不带 record ID 必定创建。同步始终先按 Run ID 精确查询，零条才创建、一条带真实 ID 更新、多条报冲突，不随意覆盖。分页必须读完。
+- 兼容 `lark-cli v1.0.98` JSON 返回：记录查询从 `record_id_list` 读取 ID，`data` 二维矩阵不当作记录对象；写入结果支持 `record.record_id_list`，单条写入只接受唯一非空 ID。仍兼容旧版记录对象；响应结构异常或字段被忽略时保留 pending，不确认同步成功。
 - 记录保存目标表、record ID、内容指纹与发送版本；切换表不能复用旧表的 record ID。创建响应丢失后先查再更新，避免重复行。相同业务内容跳过写入。
 - 同项目同步串行；网络不持有计划或数据写锁。同步期间有新观测，旧响应只确认旧快照，新内容仍待同步。不承诺跨机器并发唯一性，重复记录需核实处理。
 - 人工决策列不在自动投影中，连默认“待确认”也不反复写。记录只传脱敏摘要与必要引用，原始 CLI stderr/鉴权 JSON 不落盘。
