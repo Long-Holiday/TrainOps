@@ -37,6 +37,6 @@ description: AutoDL 多实例训练计划、任务流程图、结算与飞书实
 ## 日常闭环
 
 - `show --brief` → 核实后 `set <任务> --status running` → `--progress 40`（真实观测）或 `--checked` → 核实后 done；写命令带 `--brief`。
-- 结构编辑回执附检查：修 issues、判读 warnings，不撤销已保存编辑；纯状态更新不必再跑 check + show。摘要有省略，按需 show/check 看全量。
+- 结构编辑回执附检查：修 issues、判读 warnings，不撤销已保存编辑；纯状态更新不必再跑 check + show。摘要有省略，按需 show/check 看全量。多条依赖变更用 `batch --dep "任务=依赖列表"` 一次提交；回执会标出自动串联边，独立任务建表时用 `-` 显式留空。
 - 默认每 30 分钟 SSH 巡检（用户另定则遵从）；`--checked` 只记巡检，未记或超 1 小时即未巡检。
 - 巡检及完成/失败后先 `experiment show` 读取当前 Run、最近记录与 pending，再 `experiment update`，以 `experiment sync` 补录；恢复/更新不新建重复 Run，不覆盖旧证据；飞书失败不阻断训练与止付。

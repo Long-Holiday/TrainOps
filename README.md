@@ -94,6 +94,9 @@ $CLI set F02-T02 --instance I01 --deps F01-T02,F02-T01 --minutes 25 --brief
 
 # 批量追加或批量更新
 $CLI batch --task "F03:消融补充:I02:40" --set "F01-T02:done" --set "F02-T01:running:60" --brief
+
+# 一次原子改多条依赖（右侧为空表示清空；整批只推进一个版本，按最终拓扑校验）
+$CLI batch --dep "F03-T04=F02-T06" --dep "F03-T07=F03-T03" --brief
 ```
 
 **任务写法**：`流程ID:任务名[:实例[:耗时[:依赖]]]`。中间字段不确定时用 `-` 占位跳过，例如只想登记“F01 上耗时 30 分钟的评估、依赖 F01-T01”：
@@ -102,7 +105,7 @@ $CLI batch --task "F03:消融补充:I02:40" --set "F01-T02:done" --set "F02-T01:
 $CLI batch --task "F01:评估:-:30:F01-T01"
 ```
 
-耗时写 `?` 表示待估（文本摘要显示“待估”，面板按默认 30 分钟占位绘制）。依赖用逗号分隔，空字符串表示清空；`--instance -` 等价于 `none`（未分配实例；本地并行任务应显式设为 `local`）。
+耗时写 `?` 表示待估（文本摘要显示“待估”，面板按默认 30 分钟占位绘制）。依赖用逗号分隔，空字符串表示清空；`--instance -` 等价于 `none`（未分配实例；本地并行任务应显式设为 `local`）。init/batch 回执会列出自动推断的 `自动串联` 边；它们只表示同流程同实例的默认执行顺序，独立任务应在第五个字段显式写 `-`。
 
 ### 低上下文工作方式
 
@@ -122,7 +125,7 @@ brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒�
 | `show --brief` / `show` / `show --json` | 当前行动摘要（推荐 agent 使用）、完整文本或完整 JSON；brief 分组限量并注明省略数，与 --json 互斥。`未巡检` 指未记录 checked_at 或超过 1 小时，`依赖就绪` 不保证远端在线 |
 | `set <任务ID> [--status ...] [--progress ...] [--instance ...] [--deps ...] [--minutes ...]` | 更新单个任务（`task set` 的简写） |
 | `task add --flow F01 --name 名称 [--instance I01] [--minutes 30] [--deps ...] [--not-before ...]` | 新增单个任务；`flow add --name ...`、`instance add` / `instance set I01 --status on --observed` 同理 |
-| `batch [--instance ...] [--flow ...] [--task ...] [--set ...]` | 单次命令批量追加实例/流程/任务或批量更新任务进度与状态（`--set "F01-T01:done:100:备注"`） |
+| `batch [--instance ...] [--flow ...] [--task ...] [--set ...] [--dep ...]` | 单次命令批量追加实例/流程/任务、更新进度/状态或依赖（`--set "F01-T01:done:100:备注"`、`--dep "F03-T04=F02-T06"`）；依赖整批一次提交、按最终拓扑校验 |
 | `instance set I01 --disk "data:40/50,fs:5/200"` | 登记各盘用量（GB）；`--disk` 逐盘合并，`data:none` 清空该盘 |
 | `instance set I01 --mode no-gpu`（或 `gpu` / `none`） | 登记开机模式：无卡准备（含持续请求等待 GPU）记 `no-gpu`，正式有卡开机记 `gpu`，核实不了记 `none`（未观测）。时价不在 CLI，见下方「余额与可用时长」 |
 | `wallet set --assets 128.50 [--voucher 20]` | 面板没开或要人工核对时手工登记余额（`none` 清空；无参数会被拒绝）。余额没有 CLI 自动拉取：结算由面板进程负责 |

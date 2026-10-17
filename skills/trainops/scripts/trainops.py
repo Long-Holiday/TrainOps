@@ -52,7 +52,8 @@ from trainops_experiments import (
 )
 from trainops_specs import (
     dependencies, disk_arg, disk_changes, duration, gigabytes, interval_arg, money_arg, nullable,
-    parse_instance_spec, parse_set_spec, parse_task_spec, price_value, set_instance_price,
+    parse_dep_spec, parse_instance_spec, parse_set_spec, parse_task_spec, price_value,
+    set_instance_price,
     structural_edit,
 )
 from trainops_brief import (
@@ -150,8 +151,8 @@ def experiment_dispatch(args, store):
     return _experiment_dispatch(args, store, ExperimentLog)
 
 
-def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=()):
-    added = {"instances": [], "flows": [], "tasks": [], "updated": []}
+def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=(), dep_updates=()):
+    added = {"instances": [], "flows": [], "tasks": [], "updated": [], "deps": [], "inferred": []}
     for spec in instances:
         name, autodl_id, ssh_alias = parse_instance_spec(spec)
         added["instances"].append(add_instance(plan, name, autodl_id, ssh_alias)["id"])
@@ -159,11 +160,15 @@ def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=()):
         added["flows"].append(add_flow(plan, flow_name)["id"])
     for spec in tasks:
         flow_id, name, inst, mins, deps = parse_task_spec(spec)
-        if deps is None:
+        inferred = deps is None
+        if inferred:
             prev = [t["id"] for t in plan["tasks"]
                     if t["flow"] == flow_id and inst is not None and t["instance"] == inst]
             deps = prev[-1:]
-        added["tasks"].append(add_task(plan, flow_id, name, inst, mins, deps)["id"])
+        item = add_task(plan, flow_id, name, inst, mins, deps)
+        added["tasks"].append(item["id"])
+        if inferred and item["deps"]:
+            added["inferred"].append({"id": item["id"], "deps": list(item["deps"])})
     for spec in updates:
         task_id, changes = parse_set_spec(spec)
         changes["checked_at"] = stamp()
@@ -172,6 +177,15 @@ def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=()):
             set_task(plan, task_id, {"status": "running", "checked_at": changes["checked_at"]})
         set_task(plan, task_id, changes)
         added["updated"].append(task_id)
+    for spec in dep_updates:
+        task_id, deps = parse_dep_spec(spec)
+        task = find(plan, "tasks", task_id)
+        before = list(task["deps"])
+        set_task(plan, task_id, {"deps": deps})
+        entry = {"id": task_id, "from": before, "to": list(task["deps"])}
+        if not entry["to"]:
+            entry["cleared"] = True
+        added["deps"].append(entry)
     return added
 
 
@@ -180,13 +194,14 @@ def dispatch(args, store):
         return experiment_dispatch(args, store)
     if args.operation_name == "init":
         plan = new_plan(args.name)
-        apply_batch_specs(plan, args.instance, args.flow, args.task)
+        added = apply_batch_specs(plan, args.instance, args.flow, args.task)
         report = check_structure(plan) if args.brief else None
         created = store.create(plan)
         result = {"revision": created["revision"], "name": created["name"],
                   "instances": [i["id"] for i in created["instances"]],
                   "flows": [f["id"] for f in created["flows"]],
-                  "tasks": [t["id"] for t in created["tasks"]]}
+                  "tasks": [t["id"] for t in created["tasks"]],
+                  "inferred": added["inferred"]}
         if report is not None:
             result["check"] = report
         return result
@@ -253,9 +268,10 @@ def dispatch(args, store):
 
     def operation(plan):
         if args.operation_name == "batch":
-            if not (args.instance or args.flow or args.task or args.updates):
-                raise PlanError("batch 至少需要提供 --instance、--flow、--task 或 --set 之一")
-            return apply_batch_specs(plan, args.instance, args.flow, args.task, args.updates)
+            if not (args.instance or args.flow or args.task or args.updates or args.dep_updates):
+                raise PlanError("batch 至少需要提供 --instance、--flow、--task、--set 或 --dep 之一")
+            return apply_batch_specs(plan, args.instance, args.flow, args.task, args.updates,
+                                     args.dep_updates)
         if args.operation_name == "instance":
             if args.action == "add":
                 return add_instance(plan, args.name, args.autodl_id, args.ssh_alias)
@@ -361,7 +377,7 @@ __all__ = [
     "validate_extra_metrics", "validate_experiment_config", "validate_run_patch",
     "validate_experiment_state", "reject_json_constant", "nullable", "duration", "interval_arg", "dependencies",
     "gigabytes", "disk_changes", "disk_arg", "price_value", "set_instance_price", "money_arg",
-    "parse_instance_spec", "parse_task_spec", "parse_set_spec", "structural_edit",
+    "parse_instance_spec", "parse_task_spec", "parse_set_spec", "parse_dep_spec", "structural_edit",
     "brief_text", "brief_group", "brief_finance", "brief_plan", "brief_receipt", "budget_parts",
     "disk_text", "instance_line", "compact", "add_task_args", "parser", "dispatch", "main",
 ]

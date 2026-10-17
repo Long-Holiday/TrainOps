@@ -36,6 +36,8 @@ def parser():
     batch.add_argument("--flow", action="append", default=[], help="流程名称")
     batch.add_argument("--task", action="append", default=[], help="F01:任务名[:实例[:分钟数[:依赖]]]")
     batch.add_argument("--set", dest="updates", action="append", default=[], help="F01-T01:状态[:进度[:备注]]")
+    batch.add_argument("--dep", dest="dep_updates", action="append", default=[],
+                       help="任务ID=依赖列表（逗号分隔；右侧为空/none/- 清空），可重复")
     demo = commands.add_parser("demo", help="在空目录生成演示计划，无远程操作")
     demo.add_argument("--force", action="store_true", help="覆盖已有计划（仅演示数据，慎用）")
     check = commands.add_parser("check", help="执行结构性检查（依赖拓扑、实例分配与耗时就绪情况）")

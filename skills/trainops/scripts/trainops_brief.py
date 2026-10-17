@@ -178,8 +178,17 @@ def brief_receipt(args, result):
             lines.append("余额观测于 " + age_text(wallet["observed_at"]))
     elif operation in ("init", "batch"):
         item = result if operation == "init" else result["item"]
-        for key, label in (("instances", "实例"), ("flows", "流程"), ("tasks", "任务"), ("updated", "更新")):
-            lines.extend(brief_group(label, item.get(key, [])))
+        for key, label in (("instances", "实例"), ("flows", "流程"), ("tasks", "任务"),
+                           ("updated", "更新"), ("deps", "依赖变更"), ("inferred", "自动串联")):
+            entries = item.get(key, [])
+            if key == "deps":
+                entries = [f"{e['id']}: {','.join(e['from']) or '空'} → {','.join(e['to']) or '空'}"
+                           for e in entries]
+            elif key == "inferred":
+                entries = [f"{e['id']}←{','.join(e['deps'])}" for e in entries]
+            lines.extend(brief_group(label, entries))
+        if item.get("inferred"):
+            lines.append("自动串联只表示同流程同实例的默认顺序；独立任务用 - 显式留空")
     else:
         item = result["item"]
         fields = []

@@ -116,6 +116,16 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(ops.parse_task_spec("F01:任务:-:-:F01-T01,F02-T01"),
                          ("F01", "任务", None, None, ["F01-T01", "F02-T01"]))
 
+    def test_parse_dep_spec_distinguishes_clear_and_list(self):
+        self.assertEqual(ops.parse_dep_spec("F01-T01=F02-T01,F02-T02"),
+                         ("F01-T01", ["F02-T01", "F02-T02"]))
+        for raw in ("F01-T01=", "F01-T01=none", "F01-T01=-", "F01-T01= "):
+            with self.subTest(raw=raw):
+                self.assertEqual(ops.parse_dep_spec(raw), ("F01-T01", []))
+        for raw in ("F01-T01", "=F02-T01", ""):
+            with self.subTest(raw=raw), self.assertRaises(ops.PlanError):
+                ops.parse_dep_spec(raw)
+
     def test_invalid_numbers_and_dates(self):
         task = ops.add_task(self.plan, "F01", "A", "I01", 10)
         for value in (-1, float("nan"), float("inf"), True, "ten"):
@@ -753,6 +763,75 @@ class CLITests(unittest.TestCase):
         self.assertEqual(task["duration_minutes"], 30)
         self.assertEqual(task["deps"], ["F01-T01"])
 
+    def test_batch_dep_updates_are_atomic_and_use_final_topology(self):
+        self.setup_plan()
+        self.command("task", "add", "--flow", "F01", "--name", "second", "--instance", "I01",
+                     "--minutes", "10", "--deps", "F01-T01")
+        self.command("task", "add", "--flow", "F01", "--name", "third", "--instance", "I01",
+                     "--minutes", "10", "--deps", "F01-T02")
+        revision = self.store.read()["revision"]
+        # 目标是从 T01→T02→T03 反转为 T03→T02→T01。前两条单独执行都会先形成
+        # T02↔T03 的中间环；整批只在最终状态上校验，因此一次就能落盘。
+        result = self.command("batch",
+                              "--dep", "F01-T02=F01-T03",
+                              "--dep", "F01-T01=F01-T02",
+                              "--dep", "F01-T03=")
+        plan = self.store.read()
+        self.assertEqual([task["deps"] for task in plan["tasks"]],
+                         [["F01-T02"], ["F01-T03"], []])
+        self.assertEqual(plan["revision"], revision + 1)
+        self.assertEqual(result["item"]["deps"], [
+            {"id": "F01-T02", "from": ["F01-T01"], "to": ["F01-T03"]},
+            {"id": "F01-T01", "to": ["F01-T02"]},
+            {"id": "F01-T03", "from": ["F01-T02"], "cleared": True},
+        ])
+        self.assertTrue(self.command("check")["ok"])
+
+    def test_batch_dep_can_target_a_task_added_in_the_same_batch(self):
+        self.setup_plan()
+        result = self.command("batch", "--task", "F01:second:I01:10:-",
+                              "--dep", "F01-T02=F01-T01")
+        self.assertEqual(self.store.read()["tasks"][1]["deps"], ["F01-T01"])
+        self.assertNotIn("inferred", result["item"])
+
+    def test_batch_dep_rejects_running_task_without_writing(self):
+        self.setup_plan()
+        self.command("task", "add", "--flow", "F01", "--name", "next", "--instance", "I01",
+                     "--minutes", "10", "--deps", "F01-T01")
+        self.command("task", "set", "F01-T01", "--status", "running")
+        before = self.store.path.read_bytes()
+        result = self.command("batch", "--dep", "F01-T01=F01-T02", success=False)
+        self.assertIn("运行中不能改", result.stderr)
+        self.assertEqual(before, self.store.path.read_bytes())
+
+    def test_batch_dep_requires_task_equals_dependencies(self):
+        self.setup_plan()
+        before = self.store.path.read_bytes()
+        result = run_cli(self.project, "batch", "--dep", "F01-T01", success=False)
+        self.assertIn("任务ID=依赖列表", result.stderr)
+        self.assertEqual(before, self.store.path.read_bytes())
+
+    def test_init_and_batch_receipts_expose_inferred_chains(self):
+        result = self.command("init", "--name", "推断", "--instance", "A:a:a", "--flow", "基线",
+                              "--task", "F01:第一步:I01:10", "--task", "F01:第二步:I01:10",
+                              "--task", "F01:独立:I01:10:-")
+        self.assertEqual(result["inferred"], [{"id": "F01-T02", "deps": ["F01-T01"]}])
+        added = self.command("batch", "--task", "F01:第三步:I01:10")
+        self.assertEqual(added["item"]["inferred"], [{"id": "F01-T04", "deps": ["F01-T03"]}])
+        brief = run_cli(self.project, "batch", "--task", "F01:第四步:I01:10", "--brief")
+        self.assertIn("自动串联（共 1 条）", brief.stdout)
+        self.assertIn("F01-T05←F01-T04", brief.stdout)
+        self.assertIn("独立任务用 - 显式留空", brief.stdout)
+
+    def test_batch_dep_brief_shows_direction(self):
+        self.setup_plan()
+        self.command("task", "add", "--flow", "F01", "--name", "second", "--instance", "I01",
+                     "--minutes", "10", "--deps", "F01-T01")
+        result = run_cli(self.project, "batch", "--dep", "F01-T02=", "--brief")
+        self.assertIn("依赖变更（共 1 条）", result.stdout)
+        self.assertIn("F01-T02: F01-T01 → 空", result.stdout)
+        self.assertIn("结构检查", result.stdout)
+
     def test_pending_unknown_duration_is_warning_and_strict_succeeds(self):
         self.setup_plan()
         self.command("task", "add", "--flow", "F01", "--name", "待估任务", "--instance", "local")
@@ -1160,7 +1239,8 @@ class BriefTests(unittest.TestCase):
 
     def test_leaf_parsers_accept_brief(self):
         commands = [
-            ["init", "--name", "实验"], ["batch", "--set", "F01-T01:done"], ["show"],
+            ["init", "--name", "实验"], ["batch", "--set", "F01-T01:done"],
+            ["batch", "--dep", "F01-T01="], ["show"],
             ["set", "F01-T01", "--checked"], ["task", "set", "F01-T01", "--minutes", "?"],
             ["task", "add", "--flow", "F01", "--name", "任务"],
             ["instance", "add", "--name", "GPU", "--autodl-id", "id-a", "--ssh-alias", "gpu-a"],

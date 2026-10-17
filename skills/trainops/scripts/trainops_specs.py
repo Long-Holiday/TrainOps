@@ -170,6 +170,16 @@ def parse_set_spec(spec):
     return task_id, changes
 
 
+def parse_dep_spec(spec):
+    """'F03-T04=F02-T06,F03-T03' → (任务ID, 依赖列表)；等号右侧为空、none 或 - 表示清空。"""
+    task_id, sep, raw = spec.partition("=")
+    task_id = task_id.strip()
+    if not sep or not task_id:
+        raise PlanError(f"依赖更新应写成 '任务ID=依赖列表'（右侧为空表示清空），实际为 {spec!r}")
+    raw = raw.strip()
+    return task_id, [] if raw in ("", "none", "-") else dependencies(raw)
+
+
 def disk_text(disk):
     """压成一行 '系统 12/30G·数据 40/50G'；≥90% 的盘打 ! ，让巡检的 agent 一眼看到。"""
     chunks = []
@@ -190,7 +200,7 @@ def disk_text(disk):
 
 def structural_edit(args):
     if args.operation_name == "batch":
-        return bool(args.instance or args.flow or args.task)
+        return bool(args.instance or args.flow or args.task or getattr(args, "dep_updates", []))
     if getattr(args, "action", None) == "add":
         return True
     return args.operation_name in ("set", "task") and any(
@@ -202,5 +212,5 @@ def structural_edit(args):
 __all__ = [
     "nullable", "duration", "interval_arg", "dependencies", "gigabytes", "disk_changes",
     "disk_arg", "price_value", "set_instance_price", "money_arg", "parse_instance_spec",
-    "parse_task_spec", "parse_set_spec", "structural_edit",
+    "parse_task_spec", "parse_set_spec", "parse_dep_spec", "structural_edit",
 ]
