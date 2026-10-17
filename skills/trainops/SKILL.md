@@ -38,5 +38,5 @@ description: AutoDL 多实例训练计划、任务流程图、结算与飞书实
 
 - `show --brief` → 核实后 `set <任务> --status running` → `--progress 40`（真实观测）或 `--checked` → 核实后 done；写命令带 `--brief`。
 - 结构编辑回执附检查：修 issues、判读 warnings，不撤销已保存编辑；纯状态更新不必再跑 check + show。摘要有省略，按需 show/check 看全量。批量追加/改派/状态/依赖修改默认 `batch --from-json -`，一次原子提交，依赖清空用 `deps: []`；先用 `--dry-run` 可无落盘检查。读取回执 aliases 映射，key 仅本次有效，后续用系统编号。单项仍用 set；旧简写 `batch --dep "任务=依赖列表"` 保留，只有简写新增会推断自动串联，独立任务用 `-` 显式留空。
-- 默认每 30 分钟 SSH 巡检（用户另定则遵从）；`--checked` 只记巡检，未记或超 1 小时即未巡检。
+- **固定巡检调度**：训练进入 running 后，立即通过宿主调度器登记整点与半点（:00 与 :30）的例行唤醒任务（Antigravity CLI 为 `schedule(CronExpression="0,30 * * * *", Prompt="执行整点/半点 SSH 训练巡检，在trainpilot飞书和对话中汇报", IsDaemon=false)`）；不可仅依赖开机缺货退避唤醒顺带巡检，确保任何阶段均有绝对时钟对齐的固定周期通报。用户另定巡检周期则遵从；`--checked` 只记巡检，未记或超 1 小时即未巡检。
 - 巡检及完成/失败后先 `experiment show` 读取当前 Run、最近记录与 pending，再 `experiment update`，以 `experiment sync` 补录；恢复/更新不新建重复 Run，不覆盖旧证据；飞书失败不阻断训练与止付。
