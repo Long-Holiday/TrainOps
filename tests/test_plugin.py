@@ -181,7 +181,8 @@ class SkillTests(unittest.TestCase):
         for document in documents:
             for phrase in ("list_instances", "instance_uuids", "switch_mode",
                            "waiting_capacity", "elapsed_seconds", "attempts",
-                           "next_retry_at", "return_on_capacity=False"):
+                           "next_retry_in_seconds", "不是资源可用倒计时",
+                           "return_on_capacity=False"):
                 self.assertIn(phrase, document)
             self.assertRegex(document, r"不(?:在缺货返回后)?紧密重复默认调用")
             self.assertRegex(document, r"默认 15 秒|timeout_seconds=15")
