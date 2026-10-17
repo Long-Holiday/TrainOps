@@ -106,6 +106,46 @@ class ValidationTests(unittest.TestCase):
                 self.assertEqual(any("未设置预计耗时" in x for x in result["warnings"]),
                                  status == "pending")
 
+    def test_pending_unknown_durations_are_counted_across_flows(self):
+        plan = base()
+        for index in range(15):
+            ops.add_task(plan, "F01" if index < 8 else "F02", f"待估{index}", "local", None)
+        ops.add_task(plan, "F01", "零耗时", "local", 0)
+        for status in ("running", "blocked", "done", "failed", "cancelled"):
+            task = ops.add_task(plan, "F02", status, "local", None)
+            ops.set_task(plan, task["id"], {"status": "running"}, NOW)
+            if status != "running":
+                ops.set_task(plan, task["id"], {"status": status}, NOW)
+        report = ops.check_structure(plan, NOW)
+        self.assertEqual(len(report["warnings"]), 1)
+        self.assertTrue(report["warnings"][0].startswith("15 个 pending 任务未设置预计耗时"))
+        self.assertEqual(len(report["issues"]), 2)
+        self.assertFalse(report["ok"])
+        for task in plan["tasks"][16:18]:
+            self.assertTrue(any(task["id"] in item for item in report["issues"]))
+
+    def test_duration_summary_follows_actionable_warnings_in_brief(self):
+        plan = ops.new_plan("提醒优先")
+        ops.add_instance(plan, "GPU", "test", "gpu")
+        ops.add_flow(plan, "实验")
+        for index in range(15):
+            ops.add_task(plan, "F01", f"待估{index}", "I01", None)
+        plan["instances"][0]["disk"]["data_used_gb"] = 48
+        plan["instances"][0]["disk"]["data_total_gb"] = 50
+        plan["monitor"]["last_error"] = "测试结算失败"
+        report = ops.check_structure(plan, NOW)
+        self.assertTrue(report["ok"])
+        self.assertEqual(len(report["warnings"]), 3)
+        self.assertIn("数据盘已用", report["warnings"][0])
+        self.assertIn("自动结算失败", report["warnings"][1])
+        self.assertIn("15 个 pending", report["warnings"][-1])
+        text = ops.brief_plan(plan, NOW)
+        self.assertIn("数据盘已用", text)
+        self.assertIn("自动结算失败", text)
+        self.assertEqual(text.count("未设置预计耗时"), 1)
+        warnings_text = text.split("提醒（共 3 条）:", 1)[1].split("缺失信息", 1)[0]
+        self.assertNotIn("省略", warnings_text)
+
     def test_batch_spec_distinguishes_omitted_and_explicit_empty_dependencies(self):
         for spec in ("F01:任务", "F01:任务:I01", "F01:任务:I01:?"):
             with self.subTest(spec=spec):
@@ -944,6 +984,22 @@ class CLITests(unittest.TestCase):
         self.assertTrue(any("未设置预计耗时" in item for item in result["warnings"]))
         self.assertNotIn("issues", result)
         self.assertIsNone(self.store.read()["tasks"][1]["duration_minutes"])
+
+    def test_many_pending_durations_are_summarized_in_check_and_write_brief(self):
+        self.setup_plan()
+        tasks = [f"F01:待估{index}:local:?" for index in range(15)]
+        args = [value for task in tasks for value in ("--task", task)]
+        receipt = run_cli(self.project, "batch", *args, "--brief").stdout
+        self.assertEqual(receipt.count("未设置预计耗时"), 1)
+        self.assertIn("15 个 pending", receipt)
+        self.assertIn("已保存", receipt)
+        report = self.command("check", "--strict")
+        self.assertTrue(report["ok"])
+        self.assertEqual(len(report["warnings"]), 1)
+        self.assertIn("15 个 pending", report["warnings"][0])
+        text = run_cli(self.project, "show", "--brief").stdout
+        self.assertEqual(text.count("未设置预计耗时"), 1)
+        self.assertIn("15 个 pending", text)
 
     def test_missing_instance_remains_issue_and_strict_fails(self):
         self.setup_plan()

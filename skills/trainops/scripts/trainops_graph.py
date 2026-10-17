@@ -570,6 +570,7 @@ def check_structure(plan, now=None, *, amounts=True):
     now = now or utcnow()
     validate(plan)
     issues, warnings = [], []
+    pending_unknown_duration = 0
     tasks_by_id = {t["id"]: t for t in plan["tasks"]}
     grouped = {flow["id"]: [] for flow in plan["flows"]}
     for task in plan["tasks"]:
@@ -584,8 +585,10 @@ def check_structure(plan, now=None, *, amounts=True):
                 if task["instance"] is None:
                     issues.append(f"{task['id']}: 未分配实例（I01.. 或 local）")
                 if task["duration_minutes"] is None:
-                    target = warnings if task["status"] == "pending" else issues
-                    target.append(f"{task['id']}: 未设置预计耗时（duration_minutes），完成时间待估")
+                    if task["status"] == "pending":
+                        pending_unknown_duration += 1
+                    else:
+                        issues.append(f"{task['id']}: 未设置预计耗时（duration_minutes），完成时间待估")
             if task["started_at"] and task["deps"]:
                 dep_finishes = [date(tasks_by_id[d]["finished_at"]) for d in task["deps"] if tasks_by_id[d]["finished_at"]]
                 if dep_finishes:
@@ -621,6 +624,9 @@ def check_structure(plan, now=None, *, amounts=True):
             settlement(plan, now, estimates, view)["live"]:
         warnings.append("有实例开机计费，但自动结算未在运行；开着面板（serve --interval）"
                         "才会定时重算余额与剩余计划的 GPU 小时")
+    if pending_unknown_duration:
+        warnings.append(f"{pending_unknown_duration} 个 pending 任务未设置预计耗时（duration_minutes），"
+                        "完成时间待估；可在首个 checkpoint 后补估")
     return {"ok": not issues, "flows": len(plan["flows"]), "tasks": len(plan["tasks"]),
             "issues": issues, "warnings": warnings}
 

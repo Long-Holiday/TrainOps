@@ -143,5 +143,5 @@ $CLI instance set I01 --status on --mode no-gpu --observed --brief
 - 时价不在 CLI：`instance set I01 --mode no-gpu` 只登记"这台现在无卡"，费率由用户在面板（`serve`）的实例行上登记——无卡登记无卡费率、有卡登记 GPU 时价，两者互不覆盖。缺费率时少给结论，不补 0。
 - Token 同样不在 CLI（没有 `--token`，也不读环境变量或文件）：用户在面板表头登记，只存在面板进程内存里，口径见 [配置](autodl.md#余额与定时结算)。余额只能由面板进程结算，或人工用 `wallet set` 登记。
 - `serve` 本身是前台进程：常驻由起它的调用方以后台任务负责（别用 shell 的 `&`，父 shell 一退进程就没了），面板不自己后台化、不写 PID、不碰 systemd。口径与生命周期见 [面板](autodl.md#面板)。
-- `check` 把必须修复的 issues 与提醒 warnings 分组；默认退出 0。`check --strict` 仅在 issues 非空时退出 1，warnings 不影响 ok。pending 任务的未知耗时（`?`）仅为 warning；其他非终态未知耗时、非终态未分配实例及空流程仍是 issue。brief 编辑发现问题仍是“已保存”，不撤销编辑、不改变成功退出码。硬校验拒绝的编辑不落盘。
+- `check` 把必须修复的 issues 与提醒 warnings 分组；默认退出 0。`check --strict` 仅在 issues 非空时退出 1，warnings 不影响 ok。pending 任务的未知耗时（`?` / JSON `null`）仅为 warning，按任务数量合并为一条并排在其他提醒之后，避免挤占 brief；任务详情用 show 查看，可在首个 checkpoint 后补估。其他非终态未知耗时、非终态未分配实例及空流程仍是 issue。brief 编辑发现问题仍是“已保存”，不撤销编辑、不改变成功退出码。硬校验拒绝的编辑不落盘。
 - `--version` 查询 schema；版本不符时先备份并核对文件，开发阶段不自动迁移。
