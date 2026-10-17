@@ -456,7 +456,8 @@ class RepoSnapshotTests(unittest.TestCase):
     """仓库里提交的演示快照必须和 demo_plan() 结构一致，防止测试与演示数据悄悄分叉。"""
 
     def test_committed_demo_snapshot_matches_demo_plan(self):
-        committed = json.loads((ROOT / "examples/demo-project/.trainops/plan.json").read_text(encoding="utf-8"))
+        document = json.loads((ROOT / "examples/demo-project/.agent/experiment.yaml").read_text(encoding="utf-8"))
+        committed = document["plan"]
         fresh = ops.demo_plan(NOW)
         fields = ("id", "flow", "name", "instance", "deps", "duration_minutes", "status", "progress", "note")
         hint = ("演示快照已过期：python3 skills/trainops/scripts/trainops.py "
@@ -1182,7 +1183,7 @@ class BriefTests(unittest.TestCase):
             return check(plan)
 
         args = self.parse("set", "F01-T01", "--minutes", "?", "--brief")
-        with mock.patch.object(self.store, "read", wraps=self.store.read) as read, \
+        with mock.patch.object(self.store, "read_document", wraps=self.store.read_document) as read, \
                 mock.patch.object(ops, "check_structure", side_effect=inspect) as checks:
             result = ops.dispatch(args, self.store)
             self.assertEqual(read.call_count, 1, "仅 Store.change 内的一次读取")
@@ -1543,8 +1544,20 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(plan["credentials"], {"configured": False, "set_at": None},
                              "面板刚起来时没有凭据，状态要照实说")
 
+    def test_api_plan_never_exposes_project_config_or_runs(self):
+        """面板快照只该有计划；同一文件里的飞书配置与 Run 历史不能跟着漏出去。"""
+        def seed(document):
+            document["config"] = {"schema_version": 1, "project": "演示", "lark": {"base_token": "base-x"},
+                                  "defaults": {}}
+            document["experiments"] = {"schema_version": 1, "runs": {}}
+        self.store.update(seed)
+        with OPEN(self.url + "/api/plan") as response:
+            plan = json.load(response)
+        for key in ("config", "experiments", "lark"):
+            self.assertNotIn(key, plan)
+
     def test_arbitrary_paths_and_writes_rejected(self):
-        for path in ("/.trainops/plan.json", "/../README.md", "/favicon.ico"):
+        for path in ("/.trainops/plan.json", "/.agent/experiment.yaml", "/../README.md", "/favicon.ico"):
             with self.subTest(path=path), self.assertRaises(HTTPError) as error:
                 OPEN(self.url + path)
             self.assertEqual(error.exception.code, 404)

@@ -32,6 +32,11 @@ except ImportError:
 
 # 版本号只用来拒绝看不懂的文件：开发阶段不提供迁移，旧版一律明确报错而不是猜着读。
 SCHEMA_VERSION = 3
+# 一个实验项目只有一份配置文件：.agent/experiment.yaml。它把项目配置、计划账本和
+# Run 历史装进同一个 JSON 兼容 YAML 文档，三个段各自保留自己的 schema 版本。
+FILE_VERSION = 1
+CONFIG_VERSION = 1
+EXPERIMENT_STATE_VERSION = 1
 STATUSES = ("pending", "running", "blocked", "done", "failed", "cancelled")
 INSTANCE_STATUSES = ("unknown", "off", "starting", "on", "unreachable")
 AWAKE = ("on", "starting")
@@ -349,42 +354,92 @@ def sync_directory(directory):
         os.close(handle)
 
 
+def default_config(project):
+    return {"schema_version": CONFIG_VERSION, "project": project, "lark": {}, "defaults": {}}
+
+
+def default_state():
+    return {"schema_version": EXPERIMENT_STATE_VERSION, "runs": {}}
+
+
+def new_document(plan, config=None, state=None):
+    """一个实验项目的完整配置文档。
+
+    config 为 None 表示还没跑过 experiment init；计划命令与面板都不需要它。
+    """
+    return {"schema_version": FILE_VERSION,
+            "config": copy.deepcopy(config) if config is not None else None,
+            "plan": plan,
+            "experiments": copy.deepcopy(state) if state is not None else default_state()}
+
+
+def validate_document(document):
+    if not isinstance(document, dict) or type(document.get("schema_version")) is not int:
+        raise PlanError("项目配置格式/版本不支持；请备份并核对文件，不会自动覆盖")
+    if document["schema_version"] != FILE_VERSION:
+        raise PlanError(f"项目配置 schema {document['schema_version']} 与当前 {FILE_VERSION} 不符"
+                        "（开发阶段不提供迁移）；请备份并核对文件，不会自动覆盖")
+    if not isinstance(document.get("plan"), dict):
+        raise PlanError("项目配置缺少 plan 段；禁止直接编辑文件，请备份后重新 init")
+    if "config" not in document or "experiments" not in document:
+        raise PlanError("项目配置缺少 config 或 experiments 段；禁止直接编辑文件，请备份后重新 init")
+    config = document["config"]
+    if config is not None:
+        validate_experiment_config(config)
+    validate_experiment_state(document["experiments"])
+    validate(document["plan"])
+
+
 class Store:
+    """`.agent/experiment.yaml` 的唯一读写入口。
+
+    计划、实验配置与 Run 历史在同一个文件里，所以也只有一把文件锁：任何写路径都走
+    lock() → 读整份文档 → 只改自己那一段 → 原子替换。计划命令只动 plan 段；
+    experiment 命令只动 config/experiments 段，因此不会推进计划的 revision。
+    """
+
     def __init__(self, project):
         self.root = Path(project).expanduser().resolve()
-        self.directory = self.root / ".trainops"
-        self.path = self.directory / "plan.json"
+        self.directory = self.root / ".agent"
+        self.path = self.directory / "experiment.yaml"
+        self.lock_path = self.directory / "experiment.lock"
 
     @contextmanager
     def lock(self):
         if fcntl is None:
             raise PlanError("需要 POSIX 文件锁；Windows 请在 WSL 中运行")
         self.directory.mkdir(parents=True, exist_ok=True)
-        with (self.directory / "plan.lock").open("a", encoding="utf-8") as handle:
+        with self.lock_path.open("a", encoding="utf-8") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             try:
                 yield
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
-    def read(self):
+    def read_document(self):
         try:
-            plan = json.loads(self.path.read_text(encoding="utf-8"))
+            document = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
-            raise PlanError("尚无计划，请先 init 或在空目录运行 demo") from exc
+            raise PlanError("尚无项目配置，请先 init 或在空目录运行 demo") from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise PlanError(f"计划文件损坏，未覆盖: {exc}") from exc
-        validate(plan)
-        return plan
+            raise PlanError(f"项目配置损坏，未覆盖: {exc}") from exc
+        if isinstance(document, dict) and "plan" not in document:
+            raise PlanError("项目配置缺少 plan 段；禁止直接编辑文件，请备份后重新 init")
+        validate_document(document)
+        return document
 
-    def write(self, plan):
-        validate(plan)
+    def read(self):
+        return self.read_document()["plan"]
+
+    def write_document(self, document):
+        validate_document(document)
+        self.directory.mkdir(parents=True, exist_ok=True)
         path = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.directory,
-                                             prefix=".plan-", suffix=".tmp", delete=False) as handle:
+                                             prefix=".experiment-", suffix=".tmp", delete=False) as handle:
                 path = Path(handle.name)
-                json.dump(plan, handle, ensure_ascii=False, indent=2, allow_nan=False)
+                json.dump(document, handle, ensure_ascii=False, indent=2, allow_nan=False)
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -394,23 +449,44 @@ class Store:
             if path is not None:
                 path.unlink(missing_ok=True)
 
+    def write(self, plan):
+        """只替换 plan 段；配置与 Run 历史原样保留。"""
+        with self.lock():
+            document = self.read_document() if self.path.exists() else new_document(plan)
+            document["plan"] = plan
+            self.write_document(document)
+
     def create(self, plan, force=False):
         with self.lock():
-            if self.path.exists() and not force:
-                raise PlanError("计划已存在，不会覆盖；请使用原计划、指定另一个目录，或对演示数据用 demo --force")
+            if self.path.exists():
+                if not force:
+                    raise PlanError("计划已存在，不会覆盖；请使用原计划、指定另一个目录，或对演示数据用 demo --force")
+                document = self.read_document()
+            else:
+                document = new_document(plan)
             plan["revision"] = 1
-            self.write(plan)
+            document["plan"] = plan
+            self.write_document(document)
         return plan
+
+    def update(self, operation):
+        """只改 plan 以外的段（config / experiments），不推进计划 revision。"""
+        with self.lock():
+            document = self.read_document()
+            result = operation(document)
+            self.write_document(document)
+            return result
 
     def change(self, operation):
         with self.lock():
-            plan = self.read()
+            document = self.read_document()
+            plan = document["plan"]
             # 先自增再执行：操作里读 plan["revision"] 得到的必须是这次落盘后的编号
             # （结算快照要记 revision，用来判断"结算之后计划有没有变过"）。
             plan["revision"] += 1
             result = operation(plan)
             plan["updated_at"] = stamp()
-            self.write(plan)
+            self.write_document(document)
             return {"revision": plan["revision"], "item": result}
 
 
@@ -1049,7 +1125,7 @@ def set_wallet(plan, changes, observed_at=None):
 
 
 def sanitize_error(exc):
-    """last_error 会落盘也会显示：压成单行并截断，别把多行堆栈写进计划文件。"""
+    """last_error 会落盘也会显示：压成单行并截断，别把多行堆栈写进项目文件。"""
     return " ".join(str(exc).split())[:ERROR_LIMIT]
 
 
@@ -1721,8 +1797,8 @@ def reject_experiment_secrets(value):
 
 def validate_experiment_config(config):
     reject_experiment_secrets(config)
-    if not isinstance(config, dict) or config.get("schema_version") != 1:
-        raise PlanError("实验配置 schema_version 必须为 1，未覆盖原文件")
+    if not isinstance(config, dict) or config.get("schema_version") != CONFIG_VERSION:
+        raise PlanError(f"实验配置 schema_version 必须为 {CONFIG_VERSION}，未覆盖原文件")
     if not isinstance(config.get("project"), str) or not config["project"].strip():
         raise PlanError("实验配置缺少项目名")
     target = config.get("lark", {})
@@ -1767,25 +1843,51 @@ def validate_run_patch(patch, defaults_only=False):
                 raise PlanError("checked_at 必须是带时区的 ISO 时间") from None
 
 
+def validate_experiment_state(state):
+    if (not isinstance(state, dict) or state.get("schema_version") != EXPERIMENT_STATE_VERSION
+            or not isinstance(state.get("runs"), dict)):
+        raise PlanError("实验运行记录格式错误；未覆盖")
+    for run_id, record in state["runs"].items():
+        if (not isinstance(record, dict) or record.get("run_id") != run_id
+                or isinstance(record.get("version"), bool)
+                or not isinstance(record.get("version"), int) or record["version"] < 1
+                or not isinstance(record.get("sync", {}), dict)
+                or record.get("status") not in RUN_STATUSES
+                or not all(key in record for key in ("task_id", "started_at", "finished_at"))):
+            raise PlanError("实验运行记录损坏；未覆盖")
+        validate_run_patch({key: record[key] for key in RUN_UPDATE if key in record})
+    return state
+
+
 class LarkNotStarted(PlanError):
     """CLI 进程根本未启动，确定没有创建远端资源。"""
 
 
 class ExperimentLog:
+    """实验配置与 Run 历史，和计划共用 .agent/experiment.yaml。
+
+    config / experiments 两段由这里维护；任何写都走 store.update()，只改这两段、
+    不会推进计划 revision。实验同步另用一把 sync 锁串行化，网络期间不持有文件锁。
+    """
+
     def __init__(self, store):
         self.store = store
-        self.directory = store.directory / "experiments"
-        self.config_path = store.root / ".agent" / "experiment.yaml"
-        self.state_path = self.directory / "state.json"
+        self.directory = store.directory
+        self.config_path = store.path
+        self.state_path = store.path
 
     @contextmanager
     def lock(self, name="data"):
+        if name == "data":
+            with self.store.lock():
+                yield
+            return
         if fcntl is None:
             raise PlanError("实验日志需要 POSIX 文件锁")
         self.directory.mkdir(parents=True, exist_ok=True)
-        with (self.directory / f"{name}.lock").open("a", encoding="utf-8") as handle:
+        with (self.directory / "experiment-sync.lock").open("a", encoding="utf-8") as handle:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | (fcntl.LOCK_NB if name == "sync" else 0))
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise PlanError("实验同步已在进行，请稍后补录") from None
             try:
@@ -1793,53 +1895,21 @@ class ExperimentLog:
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
-    def read_json(self, path, default=None):
-        try:
-            result = json.loads(path.read_text(encoding="utf-8"), parse_constant=reject_json_constant)
-        except FileNotFoundError:
-            if default is not None:
-                return copy.deepcopy(default)
-            raise PlanError("尚无实验配置，请先 experiment init") from None
-        except (ValueError, UnicodeError):
-            raise PlanError(f"{path.name} 损坏或不是 JSON 兼容 YAML；未覆盖原文件") from None
-        if not isinstance(result, dict):
-            raise PlanError(f"{path.name} 必须为对象；未覆盖原文件")
-        return result
-
-    def write_json(self, path, value):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                             prefix=".experiment-", suffix=".tmp", delete=False) as handle:
-                temporary = Path(handle.name)
-                json.dump(value, handle, ensure_ascii=False, indent=2, allow_nan=False)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-            sync_directory(path.parent)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-
     def config(self):
-        return validate_experiment_config(self.read_json(self.config_path))
+        document = self.store.read_document()
+        if document.get("config") is None:
+            raise PlanError("尚无实验配置，请先 experiment init")
+        return validate_experiment_config(document["config"])
 
     def state(self):
-        state = self.read_json(self.state_path, {"schema_version": 1, "runs": {}})
-        if state.get("schema_version") != 1 or not isinstance(state.get("runs"), dict):
-            raise PlanError("实验运行记录格式错误；未覆盖")
-        for run_id, record in state["runs"].items():
-            if (not isinstance(record, dict) or record.get("run_id") != run_id
-                    or isinstance(record.get("version"), bool)
-                    or not isinstance(record.get("version"), int) or record["version"] < 1
-                    or not isinstance(record.get("sync", {}), dict)
-                    or record.get("status") not in RUN_STATUSES
-                    or not all(key in record for key in ("task_id", "started_at", "finished_at"))):
-                raise PlanError("实验运行记录损坏；未覆盖")
-            validate_run_patch({key: record[key] for key in RUN_UPDATE if key in record})
-        return state
+        document = self.store.read_document()
+        return validate_experiment_state(document.get("experiments", default_state()))
+
+    def save_config(self, config):
+        def operation(document):
+            document["config"] = validate_experiment_config(config)
+        self.store.update(operation)
+        return config
 
     def call(self, command, **options):
         argv = ["lark-cli", "base", command, "--as", "user", "--format", "json"]
@@ -1900,15 +1970,16 @@ class ExperimentLog:
         if set(settings) - {"project", "defaults", "lark", "settings"}:
             raise PlanError("init 只接受 project/defaults/lark/settings 配置")
         with self.lock("sync"):
-            with self.lock():
-                config = self.config() if self.config_path.exists() else {
-                    "schema_version": 1, "project": plan["name"], "lark": {}, "defaults": {}}
-                for key, value in settings.items():
-                    if isinstance(value, dict) and isinstance(config.get(key), dict):
-                        config[key].update(value)
-                    else:
-                        config[key] = value
-                validate_experiment_config(config)
+            document = self.store.read_document()
+            config = document.get("config")
+            config = copy.deepcopy(validate_experiment_config(config)) if config is not None \
+                else default_config(plan["name"])
+            for key, value in settings.items():
+                if isinstance(value, dict) and isinstance(config.get(key), dict):
+                    config[key].update(value)
+                else:
+                    config[key] = value
+            validate_experiment_config(config)
             if url:
                 result = self.call("+url-resolve", url=url)
                 config["lark"].update({key: result[key] for key in ("base_token", "table_id") if result.get(key)})
@@ -1918,22 +1989,25 @@ class ExperimentLog:
             elif not config["lark"].get("base_token"):
                 if config["lark"].get("table_id") or config["lark"].get("url"):
                     raise PlanError("表配置不完整；请用 init --url 解析目标，不会另建表")
-                with self.lock():
-                    state = self.state()
+
+                def mark_uncertain(document):
+                    state = validate_experiment_state(document.get("experiments", default_state()))
                     if state.get("creation_uncertain"):
                         raise PlanError("上次建表结果不确定；请在飞书核实并用 init --url 绑定，禁止盲目重建")
-                    self.write_json(self.config_path, config)
+                    document["config"] = validate_experiment_config(config)
                     state["creation_uncertain"] = True
-                    self.write_json(self.state_path, state)
+                    document["experiments"] = state
+                self.store.update(mark_uncertain)
                 try:
                     result = self.call("+base-create", name=f"{config['project']} · 实验日志", table_name="实验日志",
                                        fields=[{"name": name, "type": kind} for name, kind in EXPERIMENT_FIELDS.values()]
                                        + [{"name": "人工决策", "type": "text"}])
                 except LarkNotStarted:
-                    with self.lock():
-                        state = self.state()
+                    def clear_uncertain(document):
+                        state = validate_experiment_state(document.get("experiments", default_state()))
                         state.pop("creation_uncertain", None)
-                        self.write_json(self.state_path, state)
+                        document["experiments"] = state
+                    self.store.update(clear_uncertain)
                     raise
                 base = result.get("base", result)
                 base_token = base.get("base_token") or result.get("base_token") or base.get("app_token")
@@ -1948,25 +2022,29 @@ class ExperimentLog:
                 if remote_url:
                     config["lark"]["url"] = remote_url
                 # 即使字段核验失败也保留刚创建的目标，防止下一次重复建表。
-                with self.lock():
-                    self.write_json(self.config_path, validate_experiment_config(config))
+                self.save_config(config)
                 if not table_id:
                     raise PlanError("已保存 Base ID，但创建结果缺少表 ID；请用 init --url 绑定，不会重复建表")
             self.fields(config)
-            with self.lock():
-                self.write_json(self.config_path, validate_experiment_config(config))
-                state = self.state()
+
+            def finalize(document):
+                document["config"] = validate_experiment_config(config)
+                state = validate_experiment_state(document.get("experiments", default_state()))
                 state.pop("creation_uncertain", None)
-                self.write_json(self.state_path, state)
+                document["experiments"] = state
+            self.store.update(finalize)
             return {"config": config, "verified": True}
 
     def run(self, task_id=None, run_id=None, patch=None):
         patch = patch or {}
         validate_run_patch(patch)
-        plan = self.store.read()
-        with self.lock():
-            config = self.config() if self.config_path.exists() else {"defaults": {}}
-            state = self.state()
+
+        def operation(document):
+            nonlocal run_id
+            plan = document["plan"]
+            config = document.get("config")
+            config = validate_experiment_config(config) if config is not None else {"defaults": {}}
+            state = validate_experiment_state(document.get("experiments", default_state()))
             if task_id is not None:
                 task = find(plan, "tasks", task_id)
                 active = [r for r in state["runs"].values() if r["task_id"] == task_id
@@ -1999,8 +2077,10 @@ class ExperimentLog:
                 record["finished_at"] = stamp()
             record["checked_at"] = patch.get("checked_at") or stamp()
             record["version"] += 1
-            self.write_json(self.state_path, state)
+            document["experiments"] = state
             return copy.deepcopy(record)
+
+        return self.store.update(operation)
 
     def projection(self, config, record):
         values = {key: record.get(key) for key in EXPERIMENT_FIELDS}
@@ -2012,20 +2092,23 @@ class ExperimentLog:
     def sync(self, run_id=None):
         reports = []
         with self.lock("sync"):
-            with self.lock():
-                config = self.config()
-                state = self.state()
-                if run_id is not None and run_id not in state["runs"]:
-                    raise PlanError("找不到 Run")
-                records = copy.deepcopy([r for key, r in state["runs"].items() if run_id is None or key == run_id])
+            document = self.store.read_document()
+            if document.get("config") is None:
+                raise PlanError("尚无实验配置，请先 experiment init")
+            config = validate_experiment_config(document["config"])
+            state = validate_experiment_state(document.get("experiments", default_state()))
+            if run_id is not None and run_id not in state["runs"]:
+                raise PlanError("找不到 Run")
+            records = copy.deepcopy([r for key, r in state["runs"].items() if run_id is None or key == run_id])
             try:
                 self.fields(config)
             except PlanError as exc:
-                with self.lock():
-                    latest = self.state()
+                def save_error(document):
+                    latest = validate_experiment_state(document.get("experiments", default_state()))
                     for record in records:
                         latest["runs"][record["run_id"]]["sync"] = {"error": str(exc)}
-                    self.write_json(self.state_path, latest)
+                    document["experiments"] = latest
+                self.store.update(save_error)
                 return {"ok": False, "error": str(exc), "runs": [
                     {"run_id": record["run_id"], "status": "pending"} for record in records]}
             target = {key: config["lark"][key] for key in ("base_token", "table_id")}
@@ -2072,29 +2155,31 @@ class ExperimentLog:
                 except PlanError as exc:
                     outcome["error"] = str(exc)
                     status = "pending"
-                with self.lock():
-                    latest = self.state()
-                    current = latest["runs"][record["run_id"]]
-                    current["sync"] = outcome
-                    self.write_json(self.state_path, latest)
+
+                def save_outcome(document):
+                    latest = validate_experiment_state(document.get("experiments", default_state()))
+                    latest["runs"][record["run_id"]]["sync"] = outcome
+                    document["experiments"] = latest
+                self.store.update(save_outcome)
                 reports.append({"run_id": record["run_id"], "status": status,
                                 **({"error": outcome["error"]} if "error" in outcome else {})})
         return {"ok": all(r["status"] != "pending" for r in reports), "runs": reports}
 
     def show(self):
-        with self.lock():
-            config = self.config() if self.config_path.exists() else None
-            state = self.state()
-            records = copy.deepcopy(state["runs"])
-            for record in records.values():
-                if config is None:
-                    record["pending"] = True
-                    continue
-                digest = hashlib.sha256(json.dumps([
-                    {key: config["lark"].get(key) for key in ("base_token", "table_id")},
-                    self.projection(config, record)], sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
-                record["pending"] = record.get("sync", {}).get("fingerprint") != digest or bool(record.get("sync", {}).get("error"))
-            return {"config": config, "runs": records, "creation_uncertain": state.get("creation_uncertain", False)}
+        document = self.store.read_document()
+        config = document.get("config")
+        config = validate_experiment_config(config) if config is not None else None
+        state = validate_experiment_state(document.get("experiments", default_state()))
+        records = copy.deepcopy(state["runs"])
+        for record in records.values():
+            if config is None:
+                record["pending"] = True
+                continue
+            digest = hashlib.sha256(json.dumps([
+                {key: config["lark"].get(key) for key in ("base_token", "table_id")},
+                self.projection(config, record)], sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+            record["pending"] = record.get("sync", {}).get("fingerprint") != digest or bool(record.get("sync", {}).get("error"))
+        return {"config": config, "runs": records, "creation_uncertain": state.get("creation_uncertain", False)}
 
 
 def experiment_dispatch(args, store):

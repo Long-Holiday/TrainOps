@@ -2,26 +2,33 @@
 
 实际实验任务的开工、训练启动、SSH 巡检、完成/失败与会话恢复时读取。本能力通过外部 **`lark-cli`**（不是 `lark_cli` 或旧 bitable API）维护多维表格；不靠面板刷新，不新增常驻监控器，不自动运行训练。设 `CLI="python3 <技能目录>/scripts/trainops.py -p <实验项目目录>"`。
 
-## 三层数据
+## 一个文件，三段数据
 
-- `.trainops/plan.json`：计划与任务状态的唯一事实来源，继续只经原 CLI / 面板时价入口修改。
-- `.agent/experiment.yaml`：项目持久配置，随**实验项目**保存，不在插件安装目录。保存项目名、表格定位、字段映射、主指标方向与其他非敏感项目配置。
-- `.trainops/experiments/state.json`：本地 Run 历史及同步状态；飞书只是它的检索索引，不反向驱动计划。日志命令不会更改计划，不向计划塞指标、命令、日志或 commit。
+`.agent/experiment.yaml` 是实验项目唯一的持久文件，随**实验项目**保存，不在插件安装目录：
 
-`experiment.yaml` 使用 **JSON 兼容 YAML 1.2**：内容是缩进 JSON（合法 YAML 子集），由 Python 标准库读写。首版不支持缩进式 YAML、注释、锚点或自定义标签；不支持/损坏时拒绝读取，不覆盖原文件。用命令维护，无需手填：
+- `plan`：计划与任务状态的唯一事实来源，只经原 CLI / 面板时价入口修改。
+- `config`：项目名、表格定位、字段映射、主指标方向与其他非敏感项目配置；首次 `experiment init` 前为 `null`。
+- `experiments`：本地 Run 历史及同步状态；飞书只是它的检索索引，不反向驱动计划。日志命令只改这一段，不推进计划 `revision`，也不向计划塞指标、命令、日志或 commit。
+
+文件使用 **JSON 兼容 YAML 1.2**：内容是缩进 JSON（合法 YAML 子集），由 Python 标准库读写。首版不支持缩进式 YAML、注释、锚点或自定义标签；不支持/损坏时拒绝读取，不覆盖原文件。用命令维护，无需手填：
 
 ```json
 {
   "schema_version": 1,
-  "project": "项目名",
-  "lark": {
-    "base_token": "真实返回的 Base 资源 ID",
-    "table_id": "真实返回的数据表 ID",
-    "url": "真实表链接",
-    "fields": {"intent": "实验意图"}
+  "config": {
+    "schema_version": 1,
+    "project": "项目名",
+    "lark": {
+      "base_token": "真实返回的 Base 资源 ID",
+      "table_id": "真实返回的数据表 ID",
+      "url": "真实表链接",
+      "fields": {"intent": "实验意图"}
+    },
+    "defaults": {"metric_name": "accuracy", "direction": "max", "dataset_version": "v1", "eval_protocol": "eval-v1"},
+    "settings": {"monitor_minutes": 30}
   },
-  "defaults": {"metric_name": "accuracy", "direction": "max", "dataset_version": "v1", "eval_protocol": "eval-v1"},
-  "settings": {"monitor_minutes": 30}
+  "plan": {"schema_version": 3, "name": "项目名", "revision": 1, "...": "计划字段"},
+  "experiments": {"schema_version": 1, "runs": {}}
 }
 ```
 

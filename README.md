@@ -10,7 +10,7 @@
 - **只做 Antigravity CLI 插件**：仓库根就是插件根（`plugin.json` 清单 + `rules/` 规则入口 + `skills/trainops/` 能力契约），一条 `agy plugin install` 装完即用；不提供别家 agent 的清单，也不维护第二份会漂移的规则。
 - **无卡准备再训练**：通过外部 `autodl_mcp` 先无卡开机，完成项目/环境了解、配置与代码调整；准备就绪后关机，再按需正常开机或持续请求 GPU，验证就绪后正式训练，减少 GPU 空等。
 - **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；面板进程按周期结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」，开发者 Token 在面板上登记。
-- **飞书实验日志**：agent 巡检同时用 `lark-cli` 维护多维表格；复用用户指定/项目已有表，未指定则自动创建。项目配置存实验项目 `.agent/experiment.yaml`，运行历史与待补录独立留存，不覆盖人工决策。见[实验日志](skills/trainops/references/experiments.md)。
+- **飞书实验日志**：agent 巡检同时用 `lark-cli` 维护多维表格；复用用户指定/项目已有表，未指定则自动创建。项目配置、计划账本与 Run 历史统一存实验项目 `.agent/experiment.yaml`，不覆盖人工决策。见[实验日志](skills/trainops/references/experiments.md)。
 - **零第三方 Python 依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）；飞书同步另需已安装并授权的 `lark-cli`。
 
 ## 1. 安装到 Antigravity CLI
@@ -46,7 +46,7 @@ ln -s <仓库路径>/skills/trainops <实验项目>/.agents/skills/trainops     
 ### 1.4 两个容易踩的坑
 
 - **凭据在哪**：开发者 Token **只在面板上填，并且只存在面板进程的内存里**（表头「Token」按钮，见 §5）。不读环境变量、不读任何文件，CLI 也没有 `--token`——凭据从不跟着仓库走。这一点在装成插件时尤其要紧：Antigravity 会把整个插件根复制到 `~/.gemini/config/plugins/trainops/`，写进仓库的任何东西都会跟着这份副本走，重装一次就换掉。面板进程一退（重启、换端口重开都算）就要重新填；没填时本地命令照常可用，只是余额和「够不够跑完」缺结论。
-- **两个版本号**：清单 `plugin.json` 里的 `version` 是**插件版本**（0.1.0），`trainops.py --version` 打的是**计划文件 schema 版本**（3）。前者变了不影响账本，后者变了要先备份并核对文件。
+- **两个版本号**：清单 `plugin.json` 里的 `version` 是**插件版本**（0.1.0），`trainops.py --version` 打的是**计划段 schema 版本**（3）。前者变了不影响账本，后者变了要先备份并核对文件。
 
 ## 2. 预览甘特图演示面板
 
@@ -58,7 +58,7 @@ python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --por
 
 面板上能改的只有两处，其余一律是只读的：**时价**——点实例卡右上角的「时价」，填当前档位的费率（无卡开机填无卡费率，有卡填 GPU 时价），保存后顶部的「现价可跑 X 小时」立刻重算；点「清空时价」则整块结论消失——缺数据就缺结论，不会显示成 0。**Token**——点表头的「Token」填开发者 Token，只存在这个面板进程的内存里，登记后当场结算一轮（见 §5）。
 
-演示目录不要启动自动结算：`serve --interval` 会真的写入 `examples/demo-project/.trainops/plan.json`（那是版本库里的快照），需要真实结算时用自己的实验项目目录。
+演示目录不要启动自动结算：`serve --interval` 会真的写入 `examples/demo-project/.agent/experiment.yaml`（那是版本库里的快照），需要真实结算时用自己的实验项目目录。
 
 ## 3. 精简 CLI 用法
 
@@ -174,7 +174,7 @@ ln -sfn "$TB" /root/tf-logs/<项目名>     # 内置 TensorBoard 免启动即可
 
 ### 余额与可用时长
 
-Token 在**面板**上登记，不在 CLI：打开 `serve` 后点表头的「Token」，粘贴控制台 → 设置 → 开发者Token。它只存在面板进程的内存里——不落盘、不进计划文件、不进日志或异常文本，面板重启要重新填。
+Token 在**面板**上登记，不在 CLI：打开 `serve` 后点表头的「Token」，粘贴控制台 → 设置 → 开发者Token。它只存在面板进程的内存里——不落盘、不进项目文件、不进日志或异常文本，面板重启要重新填。
 
 ```bash
 $CLI show                                # 预算行：余额、可跑小时、计划剩余 GPU 小时与花费、够不够
@@ -213,7 +213,7 @@ node tests/test_web.cjs                    # 面板渲染：服务端几何原�
 ### 硬约束
 
 - **零第三方依赖**：只用 Python 标准库；测试用 Node 内置模块（没有 `package.json`，不装 npm 包）。
-- **写计划只有两条入口**：CLI，以及面板的时价接口（`POST /api/instance-price`，只能改时价）。两条都走 `Store.change()`；计划账本 `$PROJECT/.trainops/plan.json` 是唯一事实来源，禁止用 Edit/Write 直接改。面板另有一个 `POST /api/token`，只把开发者 Token 写进面板进程内存——不经过 `Store`，也不落任何文件。
+- **写计划只有两条入口**：CLI，以及面板的时价接口（`POST /api/instance-price`，只能改时价）。两条都走 `Store.change()`；项目文件 `$PROJECT/.agent/experiment.yaml` 的 `plan` 段是唯一事实来源，禁止用 Edit/Write 直接改。面板另有一个 `POST /api/token`，只把开发者 Token 写进面板进程内存——不经过 `Store`，也不落任何文件。
 - **缺数据就缺结论**：算不出的数字（缺费率、缺耗时、缺余额）一律不显示，绝不用 0 顶替或自行估算。这条口径同时约束 CLI 文本、`/api/plan` 与面板三处。
 
 ### 常用命令
@@ -239,11 +239,11 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 
 ### 架构
 
-数据流是单向的：`plan.json` → CLI（`Store` → `forecast`/`budget`/`settlement`）→ `show` 文本或 `/api/plan` JSON → 面板只渲染。
+数据流是单向的：`.agent/experiment.yaml` 的 `plan` 段 → CLI（`Store` → `forecast`/`budget`/`settlement`）→ `show` 文本或 `/api/plan` JSON → 面板只渲染。`config` 与 `experiments` 两段由 `ExperimentLog` 维护，不进入面板快照。
 
 `skills/trainops/scripts/trainops.py`（全部逻辑，单文件）：
 
-- `Store`：唯一写入口。`fcntl.flock` 排他锁 + 临时文件 `os.replace` + 文件与目录 fsync；所有读改写都走 `store.change(operation)`。
+- `Store`：唯一读写入口。`.agent/experiment.yaml` 是 JSON 兼容 YAML 的单个文档，含 `config` / `plan` / `experiments` 三段；`fcntl.flock` 排他锁 + 临时文件 `os.replace` + 文件与目录 fsync。计划读改写走 `store.change(operation)`，实验配置与 Run 历史走 `store.update(operation)`——后者只改自己那两段，不推进计划 `revision`。
 - `validate()`：读取与写入两侧都跑，账本不变量集中在这里——编号与计数器一致性、`TRANSITIONS` 状态机、依赖闭环（Kahn）、`done` ⇒ 进度 100、同一 GPU 实例同时只能有一个 `running`。校验失败只报错，**从不静默修复**；schema 版本不符直接拒绝读（开发阶段无迁移，提示"备份并核对文件"）。
 - `forecast()`：排程的唯一事实来源。每个 GPU 实例一条车道，`estimate.start/finish` 由依赖 + 车道 + `not_before` 推出；`running` 任务靠 `progress_at` 采样外推，进度 100% 或已超期即降级为"待估"。
 - `layout()`：排程 → 甘特几何与流程结论，**所有数值计算只在这里做一次**。每个任务得到 `bar.left/width/progress/unknown`（轨道内百分比），每个流程得到 `view.progress/finish/known/span/ticks` 与完成计数。流程总进度是**已完成 ÷ 未取消任务**：取消是不再需要完成，既不进分子也不进分母，所以它能正常走到 100%，也不会出现"完成数 5/7、进度却 100%"这种自相矛盾。**不要再用条形宽度去加权或求和**——条形在时间上重叠时宽度会重复累加（5 个各宽 37.5% 的并行任务能顶到 187%，再被钳成 100%，看起来像"已经完成"）。`bar.unknown` 指条形两端有没有排程依据（取消/失败的任务没有，走虚线斜纹）。
@@ -254,7 +254,7 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 - `Handler`：可写的只有两个端点——`POST /api/instance-price` 与 `POST /api/token`；其余路径与写动词一律 404/405。Host 白名单只放 127.0.0.1/localhost（防 DNS rebinding），另加 Origin 同源与 `application/json` 两道关。`/api/plan` 与登记响应都带 `credentials` 块，但只有布尔与登记时间，没有值。
 - AutoDL 外部调用是只读余额接口（POST 无请求体、拒绝重定向以免转发 `Authorization`）。返回值是千分之一元整数，单位对不上就报错，而不是写错 1000 倍。
 
-实验日志另由 `ExperimentLog` / `experiment` 命令维护：`.agent/experiment.yaml` 保存非敏感配置（JSON 兼容 YAML 1.2，不支持任意 YAML）；`.trainops/experiments/state.json` 保存 Run 和同步状态。项目路径复用 `Store.root`，独立文件锁与原子写，飞书通过参数数组调用 `lark-cli`，网络期间不持计划或数据锁。同项目同步串行；按 Run ID 精确查询去重、内容指纹去重写、版本差异保留补录。普通计划命令和余额结算不触发飞书。首次建表前落结果不确定标记，成功后立即保存目标；出错不另建表。测试使用 mock/临时假 CLI，不访问真实授权或飞书。
+实验日志另由 `ExperimentLog` / `experiment` 命令维护：同一个 `.agent/experiment.yaml` 里，`config` 段保存非敏感配置，`experiments` 段保存 Run 和同步状态（文件是 JSON 兼容 YAML 1.2，不支持任意 YAML）。项目路径复用 `Store.root`，与计划共用一把文件锁与同一套原子写；飞书通过参数数组调用 `lark-cli`，网络期间不持锁。同项目同步串行；按 Run ID 精确查询去重、内容指纹去重写、版本差异保留补录。普通计划命令和余额结算不触发飞书。首次建表前落结果不确定标记，成功后立即保存目标；出错不另建表。测试使用 mock/临时假 CLI，不访问真实授权或飞书。
 
 `skills/trainops/web/index.html`（单文件面板，无构建步骤）：
 
@@ -263,7 +263,7 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 - **同一个数只画一处**：流程总进度只有表头那一条进度条（甘特图里的总进度竖线与标签已删）；条形子进度只有填充块 + 百分比徽标（同值的竖细线已删）。加新组件前先问一句：它是不是在重复显示已有的数。
 - **视觉口径是"调度台"**：颜色只归状态与结论（执行中/已完成/阻塞/失败、余额够不够），交互与表头一律墨色——想给按钮或标题加彩色之前，先问一句它是不是在报告状态。板块做成凹的（内嵌 + 比纸面更深的底），投影只留给弹窗。方格纸只画在甘特轨道与时间轴里。进度条与条形填充都用墨色（`--ink`），红色因此只表示失败。
 - **`.gantt-lane` 的左右 margin 必须继续用 `--pad`**：`laneLeft()` 与条形的百分比坐标同源于它，改动这个值会让条形与时间轴错位（`test_web.cjs` 盯不到这一处）。
-- DOM 一律 `createElement` + `textContent`：计划文件里的文本是不可信输入（`test_web.cjs` 有 XSS 用例）。
+- DOM 一律 `createElement` + `textContent`：项目文件里的文本是不可信输入（`test_web.cjs` 有 XSS 用例）。
 - 每 10 秒轮询 `/api/plan`，`document.hidden` 时跳过；重绘必须保留各流程甘特的横向滚动位置。
 - **两个弹窗**（时价、Token）都挂在 `#modal`（不在重绘范围内），否则轮询会冲掉正在输入的值。
 
@@ -298,8 +298,8 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 ### 约定
 
 - 全仓库中文：文档、CLI 输出、`PlanError` 文案（写成可直接执行的建议）、测试断言消息、commit message（中文摘要 + 按子系统分条的 `-` 列表）。
-- 失败必须原子：被拒绝的编辑不留下半个文件（有测试逐字节比对计划文件）。
-- Token 只进请求头：绝不写进计划文件、stdout/stderr 或异常文本。它**只有面板一个入口**（`POST /api/token`），只存在面板进程内存里——不要给它加环境变量、配置文件或 CLI 参数（插件被复制/远程安装后，跟着仓库走的凭据文件都会丢）。
+- 失败必须原子：被拒绝的编辑不留下半个文件（有测试逐字节比对项目文件）。
+- Token 只进请求头：绝不写进项目文件、stdout/stderr 或异常文本。它**只有面板一个入口**（`POST /api/token`），只存在面板进程内存里——不要给它加环境变量、配置文件或 CLI 参数（插件被复制/远程安装后，跟着仓库走的凭据文件都会丢）。
 - 计划表只记核心字段（状态、进度、实例、依赖、耗时）；命令、日志路径、commit 一律不进计划。
 - 新增测试沿用既有约定：不碰网络也不碰开发机上的凭据——需要余额接口的用例把 `TRAINOPS_API_BASE` 指到本地假服务，Token 直接作为参数传给 `cycle()`；需要 `agy` 的用例用临时 `HOME`。
 

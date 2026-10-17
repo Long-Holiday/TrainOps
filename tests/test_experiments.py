@@ -65,7 +65,7 @@ class ExperimentTests(unittest.TestCase):
         ops.add_flow(plan, "基线")
         ops.add_task(plan, "F01", "训练", "I01", 10)
         self.store.create(plan)
-        self.original_plan = self.store.path.read_bytes()
+        self.original_plan = copy.deepcopy(self.store.read())
         self.log = ops.ExperimentLog(self.store)
         self.fake = FakeLark()
         self.log.call = self.fake
@@ -77,7 +77,20 @@ class ExperimentTests(unittest.TestCase):
         return self.log.run(task_id="F01-T01", run_id=run_id, patch=patch)
 
     def assert_plan_unchanged(self):
-        self.assertEqual(self.store.path.read_bytes(), self.original_plan)
+        self.assertEqual(self.store.read(), self.original_plan)
+
+    def test_plan_and_experiment_sections_share_one_file(self):
+        self.assertEqual(self.store.path, self.root / ".agent/experiment.yaml")
+        document = self.store.read_document()
+        self.assertIsNone(document["config"])
+        self.assertEqual(document["experiments"], {"schema_version": 1, "runs": {}})
+        revision = self.store.read()["revision"]
+        self.initialize()
+        self.start()
+        document = self.store.read_document()
+        self.assertIsNotNone(document["config"])
+        self.assertIn("run-1", document["experiments"]["runs"])
+        self.assertEqual(document["plan"]["revision"], revision, "记录 Run 不能推进计划 revision")
 
     def test_auto_create_config_persistence_and_resume(self):
         self.initialize()
@@ -133,12 +146,11 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(sum(c == "+base-create" for c, _ in self.fake.calls), 1)
 
     def test_corrupt_config_not_overwritten(self):
-        self.log.config_path.parent.mkdir()
         for content in ("project: yaml-not-supported\n", "{broken", "[]"):
-            self.log.config_path.write_text(content)
+            self.store.path.write_text(content)
             with self.assertRaises(ops.PlanError):
                 self.log.init()
-            self.assertEqual(self.log.config_path.read_text(), content)
+            self.assertEqual(self.store.path.read_text(), content)
         self.assertFalse(self.fake.calls)
 
     def test_secret_keys_and_invalid_settings_rejected_before_network(self):
@@ -293,7 +305,7 @@ class ExperimentTests(unittest.TestCase):
         self.start()
         config = self.log.config()
         config["lark"]["fields"] = {"intent": "fld5"}
-        self.log.write_json(self.log.config_path, config)
+        self.log.save_config(config)
         self.log.fields(config)
         self.fake.fields[0]["type"] = "formula"
         self.assertFalse(self.log.sync()["ok"])
@@ -304,7 +316,7 @@ class ExperimentTests(unittest.TestCase):
         self.start()
         config = self.log.config()
         config["lark"]["fields"] = {"suggestion": "fld-human"}
-        self.log.write_json(self.log.config_path, config)
+        self.log.save_config(config)
         self.fake.fields.append({"id": "fld-human", "name": "人工决策", "type": "text"})
         self.assertFalse(self.log.sync()["ok"])
         self.assertFalse(self.fake.records)
@@ -327,9 +339,9 @@ class ExperimentTests(unittest.TestCase):
         self.start()
         real_call = self.fake
         def call(command, **options):
-            with self.log.lock():
-                with self.store.lock():
-                    self.store.read()
+            # 配置文件只有一把锁：网络期间它必须能随时拿到，否则巡检会被飞书拖住。
+            with self.store.lock():
+                self.store.read()
             return real_call(command, **options)
         self.log.call = call
         self.assertTrue(self.log.sync()["ok"])
@@ -418,7 +430,8 @@ print(json.dumps({"ok":True, "data":data}))
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 return json.loads(result.stdout)
             cli("init", "--name", "测试", "--flow", "基线", "--task", "F01:训练")
-            original = (project / ".trainops/plan.json").read_bytes()
+            config_file = project / ".agent/experiment.yaml"
+            original = json.loads(config_file.read_text())["plan"]
             cli("experiment", "init")
             cli("experiment", "start", "--task", "F01-T01", "--run-id", "run-a", "--json", '{"intent":"基线"}')
             (bindir / "fail").touch()
@@ -431,7 +444,7 @@ print(json.dumps({"ok":True, "data":data}))
             self.assertFalse(shown["runs"]["run-a"]["pending"])
             self.assertEqual(shown["runs"]["run-a"]["status"], "failed")
             self.assertEqual(len(json.loads((bindir / "remote.json").read_text())), 1)
-            self.assertEqual((project / ".trainops/plan.json").read_bytes(), original)
+            self.assertEqual(json.loads(config_file.read_text())["plan"], original)
 
 
 if __name__ == "__main__":

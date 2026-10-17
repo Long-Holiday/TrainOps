@@ -2,8 +2,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# 实验账本：各实验项目里的 .trainops/ 不进版本库，只保留演示快照
-.trainops/
-!examples/demo-project/.trainops/
-examples/demo-project/.trainops/*
-!examples/demo-project/.trainops/plan.json
+# 实验项目配置不随仓库提交，只保留演示快照
+.agent/experiment.yaml
+.agent/experiment.lock
+.agent/experiment-sync.lock
+!examples/demo-project/.agent/experiment.yaml
