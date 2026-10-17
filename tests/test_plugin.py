@@ -159,13 +159,38 @@ class SkillTests(unittest.TestCase):
             for phrase in ("instance_status", "gpu_name", "gpu_memory_gb", "cpu_cores",
                            "null", "单卡", "wait_for_job", "job_status", "phase"):
                 self.assertIn(phrase, document)
-        for phrase in ("timeout_seconds=300", "0–300", "1024³", "vCPU",
+        for phrase in ("timeout_seconds=15", "0–300", "1024³", "vCPU",
                        "取消等待请求均不会取消后台开机任务", "不增加上游轮询或开机请求",
                        "不把等待超时当作开机失败或成功", "不额外查规格"):
             self.assertIn(phrase, reference)
         protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
         self.assertIn("wait_for_job", protocol)
         self.assertIn("等待超时或取消等待不取消后台任务", protocol)
+
+    def test_autodl_guidance_covers_capacity_batches_and_mode_switch(self):
+        documents = [SKILL.read_text(encoding="utf-8"),
+                     (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8"),
+                     (ROOT / "README.md").read_text(encoding="utf-8")]
+        for document in documents:
+            for phrase in ("list_instances", "instance_uuids", "switch_mode",
+                           "waiting_capacity", "elapsed_seconds", "attempts",
+                           "next_retry_at", "return_on_capacity=False"):
+                self.assertIn(phrase, document)
+            self.assertRegex(document, r"不(?:在缺货返回后)?紧密重复默认调用")
+            self.assertRegex(document, r"默认 15 秒|timeout_seconds=15")
+            self.assertNotIn("默认 300 秒", document)
+            self.assertNotIn("timeout_seconds=300", document)
+        for document in documents[1:]:
+            for phrase in ("1–100", "逐项", "白名单", "5 路并发", "price: null",
+                           "不代表免费", "不覆盖面板已有费率", "可回滚事务",
+                           'target_mode="gpu"', 'target_mode="non_gpu"',
+                           "工具不支持时才", "防止后续自动拉起"):
+                self.assertIn(phrase, document)
+            self.assertRegex(document, r"(?:不能用|不用)切成无卡代替关机")
+        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
+        for phrase in ("switch_mode", "return_on_capacity=False", "elapsed_seconds",
+                       "失败后先查真实状态", "防止后续自动拉起"):
+            self.assertIn(phrase, protocol)
 
     def test_frontmatter_matches_directory_and_limits(self):
         meta = frontmatter(SKILL)
