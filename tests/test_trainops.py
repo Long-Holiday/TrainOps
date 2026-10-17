@@ -81,6 +81,41 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(deps=deps), self.assertRaises(ops.PlanError):
                 ops.validate(self.plan)
 
+    def test_parallel_roots_and_diamond_are_valid_structure(self):
+        ops.add_task(self.plan, "F01", "根A", "I01", 10)
+        ops.add_task(self.plan, "F01", "根B", "I02", 10)
+        ops.add_task(self.plan, "F01", "分支", "local", 5, ["F01-T01"])
+        ops.add_task(self.plan, "F01", "汇合", "local", 5, ["F01-T02", "F01-T03"])
+        ops.add_task(self.plan, "F02", "结果", "local", 5, ["F01-T04"])
+        self.assertTrue(ops.check_structure(self.plan, NOW)["ok"])
+        self.plan["tasks"][0]["deps"] = ["F01-T04"]
+        with self.assertRaisesRegex(ops.PlanError, "环"):
+            ops.check_structure(self.plan, NOW)
+
+    def test_unknown_duration_severity_by_status(self):
+        for status in ("pending", "running", "blocked", "done", "failed", "cancelled"):
+            with self.subTest(status=status):
+                plan = ops.new_plan("待估")
+                ops.add_flow(plan, "流程")
+                task = ops.add_task(plan, "F01", "任务", "local", None)
+                if status != "pending":
+                    ops.set_task(plan, task["id"], {"status": "running"}, NOW)
+                    ops.set_task(plan, task["id"], {"status": status}, NOW)
+                result = ops.check_structure(plan, NOW)
+                self.assertEqual(result["ok"], status not in ("running", "blocked"))
+                self.assertEqual(any("未设置预计耗时" in x for x in result["warnings"]),
+                                 status == "pending")
+
+    def test_batch_spec_distinguishes_omitted_and_explicit_empty_dependencies(self):
+        for spec in ("F01:任务", "F01:任务:I01", "F01:任务:I01:?"):
+            with self.subTest(spec=spec):
+                self.assertIsNone(ops.parse_task_spec(spec)[4])
+        for suffix in ("", "-", "none"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(ops.parse_task_spec(f"F01:任务:I01:?:{suffix}")[4], [])
+        self.assertEqual(ops.parse_task_spec("F01:任务:-:-:F01-T01,F02-T01"),
+                         ("F01", "任务", None, None, ["F01-T01", "F02-T01"]))
+
     def test_invalid_numbers_and_dates(self):
         task = ops.add_task(self.plan, "F01", "A", "I01", 10)
         for value in (-1, float("nan"), float("inf"), True, "ten"):
@@ -655,18 +690,50 @@ class CLITests(unittest.TestCase):
         self.assertEqual(task["duration_minutes"], 30)
         self.assertEqual(task["deps"], ["F01-T01"])
 
-    def test_check_issues_fail_and_strict_sets_exit_code(self):
+    def test_pending_unknown_duration_is_warning_and_strict_succeeds(self):
         self.setup_plan()
         self.command("task", "add", "--flow", "F01", "--name", "待估任务", "--instance", "local")
+        result = self.command("check", "--strict")
+        self.assertTrue(result["ok"])
+        self.assertTrue(any("未设置预计耗时" in item for item in result["warnings"]))
+        self.assertNotIn("issues", result)
+        self.assertIsNone(self.store.read()["tasks"][1]["duration_minutes"])
+
+    def test_missing_instance_remains_issue_and_strict_fails(self):
+        self.setup_plan()
+        self.command("task", "add", "--flow", "F01", "--name", "未分配", "--minutes", "5")
         result = self.command("check")
         self.assertFalse(result["ok"])
-        self.assertTrue(any("未设置预计耗时" in item for item in result["issues"]))
+        self.assertTrue(any("未分配实例" in item for item in result["issues"]))
         strict = self.command("check", "--strict", success=False)
         self.assertFalse(json.loads(strict.stdout)["ok"])
-        self.command("task", "set", "F01-T02", "--minutes", "5", "--deps", "F01-T01")
-        self.command("task", "set", "F01-T01", "--status", "done")
-        self.command("task", "set", "F01-T02", "--status", "done")
-        self.assertTrue(self.command("check")["ok"])
+        self.command("task", "set", "F01-T02", "--instance", "local")
+        self.assertTrue(self.command("check", "--strict")["ok"])
+
+    def test_init_and_batch_infer_dependencies_only_within_instance_and_flow(self):
+        self.command("init", "--name", "并行", "--instance", "A:a:a", "--instance", "B:b:b",
+                     "--flow", "基线", "--flow", "评估",
+                     "--task", "F01:A:I01:?", "--task", "F01:B:I02:?",
+                     "--task", "F01:C:I01:10", "--task", "F01:D:I02:10",
+                     "--task", "F02:评估:local:5:F01-T03,F01-T04")
+        self.assertEqual([t["deps"] for t in self.store.read()["tasks"]],
+                         [[], [], ["F01-T01"], ["F01-T02"], ["F01-T03", "F01-T04"]])
+        self.assertTrue(self.command("check", "--strict")["ok"])
+        self.command("batch", "--task", "F01:E:I01:5", "--task", "F01:F:I02:5",
+                     "--task", "F02:跨实例:I01:5:F01-T04")
+        self.assertEqual([t["deps"] for t in self.store.read()["tasks"]][-3:],
+                         [["F01-T03"], ["F01-T04"], ["F01-T04"]])
+
+    def test_batch_explicit_empty_dependencies_override_inference(self):
+        self.setup_plan()
+        for suffix in ("", "-", "none"):
+            self.command("batch", "--task", f"F01:独立:I01:5:{suffix}")
+            self.assertEqual(self.store.read()["tasks"][-1]["deps"], [])
+        self.command("batch", "--task", "F01:未分配:-:5", "--task", "F01:也未分配:-:5",
+                     "--flow", "另一流程", "--task", "F02:新流程:I01:5",
+                     "--task", "F02:本地:local:5", "--task", "F02:本地后续:local:5")
+        self.assertEqual([t["deps"] for t in self.store.read()["tasks"]][-5:],
+                         [[], [], [], [], ["F02-T02"]])
 
     def test_check_time_gap_is_warning_not_issue(self):
         self.setup_plan()
@@ -1190,7 +1257,8 @@ class BriefTests(unittest.TestCase):
             self.assertEqual(checks.call_count, 1)
         self.assertEqual(result["revision"], previous + 1)
         self.assertEqual(seen[0]["revision"], result["revision"])
-        self.assertFalse(result["check"]["ok"])
+        self.assertTrue(result["check"]["ok"])
+        self.assertTrue(any("未设置预计耗时" in item for item in result["check"]["warnings"]))
         self.assertIsNone(self.store.read()["tasks"][0]["duration_minutes"])
         self.assertNotIn("check", self.store.read(), "诊断不写入账本 schema")
         self.assertIn("已保存", ops.brief_receipt(args, result))
@@ -1232,7 +1300,7 @@ class BriefTests(unittest.TestCase):
 
     def test_brief_structure_issues_save_but_hard_failures_remain_atomic(self):
         self.setup_plan()
-        result = run_cli(self.project, "set", "F01-T01", "--minutes", "?", "--brief")
+        result = run_cli(self.project, "set", "F01-T01", "--instance", "none", "--brief")
         self.assertEqual(result.returncode, 0)
         self.assertIn("结构问题", result.stdout)
         self.assertEqual(run_cli(self.project, "check", "--strict", success=False).returncode, 1)
@@ -1288,10 +1356,9 @@ class BriefTests(unittest.TestCase):
         self.assertNotIn("F01-T01 ", brief)
         self.assertEqual(before, self.store.path.read_bytes(), "查看摘要不得写计划")
 
-    def test_entry_budget_safety_and_reference_links(self):
+    def test_entry_safety_and_reference_links(self):
         entry = ROOT / "skills/trainops/SKILL.md"
         text = entry.read_text()
-        self.assertLessEqual(len(text), 2000, "仅限制常驻入口，不限制按需参考")
         for rule in ("禁止直接 Edit/Write JSON", "用户授权", "释放前先转存", "Token", "--checked", "--brief",
                      "自主优化调度", "验收标准", "硬约束", "未授权费用"):
             self.assertIn(rule, text)

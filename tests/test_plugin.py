@@ -106,7 +106,7 @@ class SkillTests(unittest.TestCase):
         """入口要写死开工顺序：起面板 + 默认无卡准备。
 
         这两步曾整体缺失：agent 装完插件后直接请求有卡开机，用户看不到面板也没有无卡准备。
-        删掉任一条都算回归，所以在这里钉住（正文长度预算见 test_trainops 的入口用例）。
+        删掉任一条都算回归，所以在这里钉住；入口优先清晰简洁，不设字符硬门槛。
         """
         body = SKILL.read_text(encoding="utf-8")
         self.assertIn("## 开工顺序", body, "入口缺少开工顺序，agent 会跳过面板与无卡准备")

@@ -948,7 +948,7 @@ def demo_plan(now=None):
 
 
 def check_structure(plan, now=None, *, amounts=True):
-    """Structural check for flow continuity, dependency links, and resource/duration readiness.
+    """Structural check for dependency topology and resource/duration readiness.
 
     issues 是需要修正的结构缺陷（ok 为假），warnings 只是观察到的现象，不影响 ok。
     """
@@ -960,14 +960,13 @@ def check_structure(plan, now=None, *, amounts=True):
         if not flow_tasks:
             issues.append(f"{flow['id']}({flow['name']}): 流程为空，无任务节点")
             continue
-        for idx, task in enumerate(flow_tasks):
-            if idx > 0 and not task["deps"]:
-                issues.append(f"{task['id']}: 缺少前置依赖，会导致流程甘特图块断裂（建议依赖 {flow_tasks[idx - 1]['id']}）")
+        for task in flow_tasks:
             if task["status"] not in TERMINAL:
                 if task["instance"] is None:
                     issues.append(f"{task['id']}: 未分配实例（I01.. 或 local）")
                 if task["duration_minutes"] is None:
-                    issues.append(f"{task['id']}: 未设置预计耗时（duration_minutes），完成时间待估")
+                    target = warnings if task["status"] == "pending" else issues
+                    target.append(f"{task['id']}: 未设置预计耗时（duration_minutes），完成时间待估")
             if task["started_at"] and task["deps"]:
                 dep_finishes = [date(tasks_by_id[d]["finished_at"]) for d in task["deps"] if tasks_by_id[d]["finished_at"]]
                 if dep_finishes:
@@ -1471,13 +1470,14 @@ def parse_instance_spec(spec):
 
 
 def parse_task_spec(spec):
-    """'流程ID:名称[:实例[:分钟数[:依赖]]]'；只想给靠后的字段时，前面的用 - 占位。"""
-    parts = (spec.split(":", 4) + [""] * 5)[:5]
-    parts = [part.strip() for part in parts]
+    """任务简写；省略依赖返回 None，显式空依赖返回 []，中间字段用 - 占位。"""
+    fields = spec.split(":", 4)
+    parts = [part.strip() for part in (fields + [""] * 5)[:5]]
+    deps = None if len(fields) < 5 else ([] if parts[4] == "none" else dependencies(parts[4]))
     if not parts[0] or not parts[1]:
         raise PlanError(f"任务简写格式应为 '流程ID:名称[:实例[:分钟数[:依赖]]]'（跳过中间字段用 -），实际为 {spec!r}")
     return parts[0], parts[1], nullable(parts[2]) if parts[2] else None, \
-        duration(parts[3]) if parts[3] else None, dependencies(parts[4])
+        duration(parts[3]) if parts[3] else None, deps
 
 
 def parse_set_spec(spec):
@@ -2231,7 +2231,7 @@ def parser():
     batch.add_argument("--set", dest="updates", action="append", default=[], help="F01-T01:状态[:进度[:备注]]")
     demo = commands.add_parser("demo", help="在空目录生成演示计划，无远程操作")
     demo.add_argument("--force", action="store_true", help="覆盖已有计划（仅演示数据，慎用）")
-    check = commands.add_parser("check", help="执行结构性检查（流程连续性、依赖链、实例与耗时完整性）")
+    check = commands.add_parser("check", help="执行结构性检查（依赖拓扑、实例分配与耗时就绪情况）")
     check.add_argument("--strict", action="store_true", help="存在结构问题时以退出码 1 结束，便于脚本判断")
     show = commands.add_parser("show", help="读取最新计划和时间估算")
     show_output = show.add_mutually_exclusive_group()
@@ -2297,10 +2297,10 @@ def apply_batch_specs(plan, instances=(), flows=(), tasks=(), updates=()):
         added["flows"].append(add_flow(plan, flow_name)["id"])
     for spec in tasks:
         flow_id, name, inst, mins, deps = parse_task_spec(spec)
-        if not deps:
-            prev = [t["id"] for t in plan["tasks"] if t["flow"] == flow_id]
-            if prev:
-                deps = [prev[-1]]
+        if deps is None:
+            prev = [t["id"] for t in plan["tasks"]
+                    if t["flow"] == flow_id and inst is not None and t["instance"] == inst]
+            deps = prev[-1:]
         added["tasks"].append(add_task(plan, flow_id, name, inst, mins, deps)["id"])
     for spec in updates:
         task_id, changes = parse_set_spec(spec)
