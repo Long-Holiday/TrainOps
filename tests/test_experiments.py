@@ -104,7 +104,11 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(self.log.config()["lark"]["base_token"], "base-new")
         created = self.fake.calls[0]
         self.assertEqual(created[0], "+base-create")
-        self.assertEqual(created[1]["fields"][0], {"name": "Run ID", "type": "text"})
+        run_id_field = created[1]["fields"][0]
+        self.assertEqual((run_id_field["name"], run_id_field["type"]), ("Run ID", "text"))
+        self.assertIn("description", run_id_field)
+        field_names = {field["name"] for field in created[1]["fields"]}
+        self.assertTrue({"人工决策", "决策人", "决策时间", "创建时间", "最后更新时间"} <= field_names)
         self.log.init(settings={"settings": {"monitor_minutes": 20}})
         self.log.init(settings={"defaults": {"direction": "max"}})
         self.assertEqual(sum(c == "+base-create" for c, _ in self.fake.calls), 1)
@@ -191,6 +195,22 @@ class ExperimentTests(unittest.TestCase):
         with self.assertRaises(ops.PlanError):
             self.log.run(task_id="F99-T99")
         self.assertEqual(self.log.state_path.read_bytes(), original)
+
+    def test_explicit_run_times_preserve_real_window(self):
+        self.initialize()
+        started = "2026-10-17T19:40:00+08:00"
+        finished = "2026-10-17T21:05:00+08:00"
+        record = self.start(started_at=started)
+        self.assertEqual(record["started_at"], started)
+        self.log.run(run_id="run-1", patch={"status": "done", "finished_at": finished})
+        record = self.log.state()["runs"]["run-1"]
+        self.assertEqual(record["started_at"], started)
+        self.assertEqual(record["finished_at"], finished)
+        with self.assertRaisesRegex(ops.PlanError, "不能早于"):
+            self.log.run(run_id="run-1", patch={"finished_at": "2026-10-17T19:00:00+08:00"})
+        with self.assertRaises(ops.PlanError):
+            self.start(run_id="run-2", started_at="2026-10-17T19:40:00")
+        self.assertNotIn("run-2", self.log.state()["runs"])
 
     def test_switch_target_never_reuses_old_record_id(self):
         self.initialize()
@@ -445,8 +465,12 @@ class ExperimentTests(unittest.TestCase):
     def test_extra_metrics_declarations_create_columns_not_results(self):
         result = self.log.init(settings={"extra_metrics": {"Boundary_F1": None}})
         created = next(options for command, options in self.fake.calls if command == "+base-create")
-        self.assertEqual((created["name"], created["table_name"]), ("全局概况", "全局概况"))
-        self.assertIn({"name": "extra_metrics.Boundary_F1", "type": "number"}, created["fields"])
+        self.assertEqual((created["name"], created["table_name"]), ("真实实验 · 实验日志", "Run 记录"))
+        metric_field = next(field for field in created["fields"]
+                            if field["name"] == "extra_metrics.Boundary_F1")
+        self.assertEqual((metric_field["name"], metric_field["type"]),
+                         ("extra_metrics.Boundary_F1", "number"))
+        self.assertIn("description", metric_field)
         self.assertTrue(result["ok"])
         self.assertNotIn("extra_metrics", self.start())
         self.log.init(settings={"extra_metrics": {"Topology_Error": None}})

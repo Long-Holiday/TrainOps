@@ -45,7 +45,7 @@
 # 用户指定表：解析真实 Base / table ID，保存真实目标，再验证字段
 $CLI experiment init --url 'https://<飞书域名>/base/<资源标识>?table=<数据表ID>'
 
-# 未指定：已有配置则验证复用；没有配置则自动创建 Base“全局概况”及同名首表（项目/任务归属仍写在记录中）
+# 未指定：已有配置则验证复用；没有配置则自动创建 Base“<项目名> · 实验日志”及首表“Run 记录”（项目/任务归属仍写在记录中）
 $CLI experiment init
 
 # 合并项目默认值与其他非敏感项目设置；保留无关已有键
@@ -57,7 +57,7 @@ $CLI experiment show
 
 自动建表成功即保存真实标识，后续字段核验失败也不重建。创建超时或响应无法确认时，本地记录 `creation_uncertain`：先在飞书核实，找到已创建表后用 `init --url` 绑定，**禁止盲目重试创建**。该标记不可直接编辑清除；若未能定位目标，报告并等用户决定。
 
-默认字段按 TrainOps 流程组织：Run ID、项目、流程、任务、实例、实验意图、关键改动、对照 Run、运行状态、起止时间、主指标名/值、指标方向、数据版本、评测协议、Seed、Git Commit、配置引用、产物与日志、评测依据、故障摘要、Agent 建议、下一步，另有人工决策列。主指标值为 number，其余为 text。真实路径只作为引用，不伪造为浏览器可访问 URL。
+默认字段按 TrainOps 流程组织：Run ID、项目、流程、任务、实例、实验意图、关键改动、对照 Run、运行状态、起止时间、主指标名/值、指标方向、数据版本、评测协议、Seed、Git Commit、配置引用、产物与日志、评测依据、故障摘要、Agent 建议、下一步，另有人工决策列。主指标值为 number，其余固定列为 text；人工决策为单选，另建决策人/决策时间/创建时间/最后更新时间。决策人/决策时间/创建时间/最后更新时间仅人工或系统维护，不在同步投影中；新建表会写入字段说明。真实路径只作为引用，不伪造为浏览器可访问 URL。
 
 复用已有表时先检查字段结构；固定列缺失/类型不匹配会明确报错，不删除或修改原列；仅对 `extra_metrics.` 命名空间增补缺失数字列。可映射同类型的真实字段名或 ID：
 
@@ -116,11 +116,13 @@ $CLI experiment sync
 $CLI experiment show
 ```
 
+真实训练窗口可以在 `start`/`update` 的 JSON 中显式传 `started_at`/`finished_at`（带时区 ISO 8601）；未传时分别使用登记时间和终态时间。结束时间不能早于开始时间。
+
 例子是独立操作示例，不能把“完成后改失败”当正常流水线；实际状态一律以观测为准。未提供 `--run-id` 时自动生成 UUID；显式 ID 可跨会话复用，重复 start 同任务同 ID 返回旧 Run，不启动新 attempt、不应用新 JSON。一个任务同时只能有一个 running/blocked Run；恢复用 update，重跑先结束旧 Run，再 start 新 ID。
 
 `start` / `update` **先原子本地落盘，再尝试同步**；`local_saved: true` 与 `ok: false` 表示本地已保存但飞书未成功，退出码为 1，不能误报为全部成功。即使还没完成飞书配置也允许先留本地记录。`show` 会标出记录的 `pending`，`sync` 可补录。start/update 不会暗中建表；开工必须主动 init。更新只合并明确提供的字段，`null` 才清空；身份字段不可改，已结束 Run 不能重新转 running/blocked。结束后可补充可信评测结果。
 
-允许增量字段：`intent/change/baseline/status/metric_name/metric_value/direction/dataset_version/eval_protocol/seed/git_commit/config_path/artifacts/evidence/error/suggestion/next_step/checked_at/extra_metrics`。文本字段最多 8000 字符，seed 用文本；方向仅 `max/min`，缺失留空；主指标必须为有限数字并有 `metric_name` 和可信 `evidence`；额外指标用对象键命名，也必须有评测依据。主指标来自真实评测产物，不从滚动训练 loss 推测；Git 有未提交修改时须在配置/产物引用中留实际配置快照及 patch 证据，不能声称 commit 足以复现。
+允许增量字段：`intent/change/baseline/status/metric_name/metric_value/direction/dataset_version/eval_protocol/seed/git_commit/config_path/artifacts/evidence/error/suggestion/next_step/checked_at/started_at/finished_at/extra_metrics`。文本字段最多 8000 字符，seed 用文本；方向仅 `max/min`，缺失留空；主指标必须为有限数字并有 `metric_name` 和可信 `evidence`；额外指标用对象键命名，也必须有评测依据。主指标来自真实评测产物，不从滚动训练 loss 推测；Git 有未提交修改时须在配置/产物引用中留实际配置快照及 patch 证据，不能声称 commit 足以复现。
 
 每次 SSH 巡检后更新关键变化并补同步。仅 checked_at/版本变化不触发飞书写入，不按 step 刷表。训练结束但评测未完成时指标留空；缺数据不补零。首版不自动计算改善率或替换 baseline；不可比或方向/协议未知时不下改善结论，Agent 建议与人工决策分开。
 

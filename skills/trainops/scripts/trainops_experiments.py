@@ -5,7 +5,6 @@
 
 import copy
 from contextlib import contextmanager
-from datetime import datetime
 import hashlib
 import json
 import math
@@ -36,10 +35,37 @@ EXPERIMENT_FIELDS = {
     "error": ("故障摘要", "text"), "suggestion": ("Agent 建议", "text"),
     "next_step": ("下一步", "text"),
 }
+EXPERIMENT_FIELD_DESCRIPTIONS = {
+    "run_id": "Run 唯一标识；由 experiment start 生成或指定。",
+    "project": "实验项目名；同一 Base 内用于区分项目。",
+    "flow": "计划中的流程 ID；当前同步只写 ID。",
+    "task": "任务 ID · 任务名；对应本地计划的 tasks。",
+    "instance": "执行 Run 的实例 ID；当前同步只写 ID。",
+    "intent": "本 Run 要验证的假设或目的。",
+    "change": "相对基线或上一版的关键改动；只写摘要。",
+    "baseline": "用于对比的 Run ID；应尽量填写。",
+    "status": "running/done/failed/blocked/cancelled。",
+    "started_at": "登记的开始时间（带时区 ISO 8601）；可在 start/update 显式传入真实时间。",
+    "finished_at": "登记的结束时间（带时区 ISO 8601）；可在 update 显式传入真实时间。",
+    "metric_name": "主评测指标名；建议带单位。",
+    "metric_value": "真实评测产物中的主指标值；空 = 未测，不是 0。",
+    "direction": "max 或 min；只描述主指标。",
+    "dataset_version": "评测所用数据集版本；缺失时不要下跨 Run 可比结论。",
+    "eval_protocol": "评测脚本/协议版本；缺失时不要下跨 Run 可比结论。",
+    "seed": "训练随机种子；空表示未记录。",
+    "git_commit": "代码 commit；有未提交修改时需另留配置快照/patch 证据。",
+    "config_path": "配置文件或配置快照路径；Git 不干净时必须填写。",
+    "artifacts": "checkpoint、日志、TensorBoard 等路径或链接；只放引用。",
+    "evidence": "指标文件、评测命令输出等可信证据路径。",
+    "error": "已核实的简短故障摘要；不要贴完整 stderr 或凭据。",
+    "suggestion": "Agent 的结论/建议；与人工决策分开填写。",
+    "next_step": "下一步动作或待办；结束后也应填写。",
+}
 RUN_STATUSES = ("running", "done", "failed", "blocked", "cancelled")
 RUN_TEXT = {"intent", "change", "baseline", "metric_name", "dataset_version", "eval_protocol",
             "seed", "git_commit", "config_path", "artifacts", "evidence", "error", "suggestion", "next_step"}
-RUN_UPDATE = RUN_TEXT | {"status", "metric_value", "direction", "checked_at", "extra_metrics"}
+RUN_UPDATE = RUN_TEXT | {"status", "metric_value", "direction", "checked_at",
+                         "started_at", "finished_at", "extra_metrics"}
 
 
 def reject_json_constant(value):
@@ -130,13 +156,10 @@ def validate_run_patch(patch, defaults_only=False):
         if key == "metric_value" and value is not None and (isinstance(value, bool)
                 or not isinstance(value, (int, float)) or not math.isfinite(value)):
             raise PlanError("主指标必须是有限数字或 null")
-        if key == "checked_at" and value is not None:
-            try:
-                parsed = datetime.fromisoformat(value)
-                if parsed.tzinfo is None:
-                    raise ValueError()
-            except (ValueError, TypeError):
-                raise PlanError("checked_at 必须是带时区的 ISO 时间") from None
+        if key in ("checked_at", "started_at", "finished_at") and value is not None:
+            date(value)
+        if key == "started_at" and value is None:
+            raise PlanError("started_at 不能为空")
 
 
 def validate_experiment_state(state):
@@ -277,7 +300,8 @@ class ExperimentLog:
             if matches and (len(matches) != 1 or matches[0].get("type") not in ("number", 2)):
                 raise PlanError(f"额外指标列 {name} 类型不兼容或重名，未写入飞书")
             if not matches:
-                missing.append({"name": name, "type": "number"})
+                missing.append({"name": name, "type": "number",
+                                "description": "额外评测指标；空 = 未测，不是 0。"})
         if missing:
             self.call("+field-create", base_token=target["base_token"], table_id=target["table_id"], json=missing)
 
@@ -317,10 +341,31 @@ class ExperimentLog:
                     document["experiments"] = state
                 self.store.update(mark_uncertain)
                 try:
-                    result = self.call("+base-create", name="全局概况", table_name="全局概况",
-                                       fields=[{"name": name, "type": kind} for name, kind in EXPERIMENT_FIELDS.values()]
-                                       + [{"name": "人工决策", "type": "text"}]
-                                       + [{"name": "extra_metrics." + name, "type": "number"} for name in metrics])
+                    result = self.call(
+                        "+base-create", name=f"{config['project']} · 实验日志", table_name="Run 记录",
+                        fields=[{"name": name, "type": kind,
+                                 "description": EXPERIMENT_FIELD_DESCRIPTIONS[key]}
+                                for key, (name, kind) in EXPERIMENT_FIELDS.items()]
+                        + [{"name": "人工决策", "type": "select", "multiple": False,
+                            "options": [{"name": "待评审", "hue": "Orange", "lightness": "Light"},
+                                        {"name": "采纳", "hue": "Green", "lightness": "Light"},
+                                        {"name": "拒绝", "hue": "Red", "lightness": "Light"},
+                                        {"name": "需复跑", "hue": "Blue", "lightness": "Light"},
+                                        {"name": "无需决策", "hue": "Gray", "lightness": "Light"}],
+                            "description": "仅人工填写，CLI 不同步。"},
+                           {"name": "决策人", "type": "user", "multiple": False,
+                            "description": "人工决策的负责人；仅人工填写。"},
+                           {"name": "决策时间", "type": "datetime",
+                            "style": {"format": "yyyy-MM-dd HH:mm"},
+                            "description": "人工决策时间；仅人工填写。"},
+                           {"name": "创建时间", "type": "created_at",
+                            "style": {"format": "yyyy-MM-dd HH:mm"},
+                            "description": "系统字段：记录创建时间。"},
+                           {"name": "最后更新时间", "type": "updated_at",
+                            "style": {"format": "yyyy-MM-dd HH:mm"},
+                            "description": "系统字段：记录最后一次被写入的时间。"}]
+                        + [{"name": "extra_metrics." + name, "type": "number",
+                            "description": "额外评测指标；空 = 未测，不是 0。"} for name in metrics])
                 except LarkNotStarted:
                     def clear_uncertain(document):
                         state = validate_experiment_state(document.get("experiments", default_state()))
@@ -394,6 +439,9 @@ class ExperimentLog:
             if "extra_metrics" in patch:
                 merged["extra_metrics"] = {**record.get("extra_metrics", {}), **patch["extra_metrics"]}
             record.update(merged)
+            if (record.get("started_at") and record.get("finished_at")
+                    and date(record["finished_at"]) < date(record["started_at"])):
+                raise PlanError("结束时间不能早于开始时间")
             if any(value is not None for value in record.get("extra_metrics", {}).values()) and not record.get("evidence"):
                 raise PlanError("额外指标需要可信评测 evidence；不从训练 loss 推测")
             if record.get("metric_value") is not None and (not record.get("metric_name") or not record.get("evidence")):
@@ -541,7 +589,7 @@ def experiment_dispatch(args, store, log_cls=None):
 
 
 __all__ = [
-    "EXPERIMENT_FIELDS", "RUN_STATUSES", "RUN_TEXT", "RUN_UPDATE", "LarkNotStarted",
+    "EXPERIMENT_FIELDS", "EXPERIMENT_FIELD_DESCRIPTIONS", "RUN_STATUSES", "RUN_TEXT", "RUN_UPDATE", "LarkNotStarted",
     "ExperimentLog", "experiment_dispatch", "experiment_object", "reject_experiment_secrets",
     "validate_extra_metrics", "validate_experiment_config", "validate_run_patch",
     "validate_experiment_state",
