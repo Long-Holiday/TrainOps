@@ -199,6 +199,36 @@ class SkillTests(unittest.TestCase):
                        "失败后先查真实状态", "防止后续自动拉起"):
             self.assertIn(phrase, protocol)
 
+    def test_rebalancing_guidance_requires_single_agent_execution_loop(self):
+        body = SKILL.read_text(encoding="utf-8")
+        reference = (SKILL_DIR / "references/cli.md").read_text(encoding="utf-8")
+        for document in (body, reference):
+            for phrase in ("单 agent", "任务完成/失败", "实例变为可用", "例行巡检",
+                           "全局待执行任务", "每次启动前重新读取最新计划",
+                           "同一个 agent", "实际启动", "agent 未运行时不再平衡",
+                           "常驻调度器"):
+                with self.subTest(phrase=phrase, entry=document == body):
+                    self.assertIn(phrase, document)
+        self.assertIn("references/cli.md#单-agent-多机再平衡", body)
+        self.assertIn("set F01-T05 --instance I02 --brief", reference)
+        self.assertIn("已改派，未启动", reference)
+        self.assertLess(reference.index("**排除远端抢先启动**"),
+                        reference.index("**同步计划并检查**"))
+        self.assertLess(reference.index("**同步计划并检查**"),
+                        reference.index("**按最新计划实际执行**"))
+
+    def test_rebalancing_guidance_keeps_queue_and_dependency_safety(self):
+        reference = (SKILL_DIR / "references/cli.md").read_text(encoding="utf-8")
+        for phrase in ("尚未启动的 `pending`", "不自动重试 failed 或解除 blocked",
+                       "用户指定节点", "最早开始限制", "GPU 型号/显存",
+                       "环境及数据/checkpoint 兼容", "tmux/screen", "保留其余任务",
+                       "无法确认时不改派", "不会再被旧队列拉起", "没有数据依赖",
+                       "保留真实依赖", "不能提前标 running 占位", "experiment start",
+                       "不能覆盖旧 Run 的实例历史", "不盲目在另一台重试",
+                       "不添加 `reassign` / `claim` 命令"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, reference)
+
     def test_frontmatter_matches_directory_and_limits(self):
         meta = frontmatter(SKILL)
         self.assertEqual(meta["name"], SKILL_DIR.name, "技能名必须与目录名一致，否则客户端找不到")
