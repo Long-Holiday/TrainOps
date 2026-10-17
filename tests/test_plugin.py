@@ -233,6 +233,24 @@ class SkillTests(unittest.TestCase):
         self.assertIn("定时调度器", protocol)
         self.assertNotIn("next_retry_in_seconds", protocol)
 
+    def test_cancel_job_reports_resulting_status(self):
+        """取消开机/切换任务后先读 resulting_status，再决定是否复查实例。"""
+        documents = (("SKILL.md", SKILL.read_text(encoding="utf-8")),
+                     ("autodl.md", (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8")),
+                     ("README.md", (ROOT / "README.md").read_text(encoding="utf-8")))
+        for name, document in documents:
+            for phrase in ("cancel_job", "resulting_status", "resulting_status_error",
+                           "稳定态", "过渡态"):
+                with self.subTest(phrase=phrase, document=name):
+                    self.assertIn(phrase, document)
+        for name, document in documents[1:]:
+            for phrase in ("resulting_start_mode", "resulting_observed_at"):
+                with self.subTest(phrase=phrase, document=name):
+                    self.assertIn(phrase, document)
+        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
+        self.assertIn("resulting_status", protocol)
+        self.assertIn("resulting_status_error", protocol)
+
     def test_rebalancing_guidance_requires_single_agent_execution_loop(self):
         body = SKILL.read_text(encoding="utf-8")
         reference = (SKILL_DIR / "references/cli.md").read_text(encoding="utf-8")
