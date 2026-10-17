@@ -6,233 +6,145 @@
 <meta name="color-scheme" content="light dark">
 <title>TrainOps · 项目计划</title>
 <style>
-/* 视觉：调度台。三条规矩——
-   一、颜色只归"状态/结论"与"容器实例"：读数条与状态点用状态色，主图节点用实例色；
-   二、面板块是凹进去的（内嵌阴影 + 比纸面更深的底），全页只有弹窗有投影；
-   三、任务矩形与箭头只表达依赖，不用位置或面积暗示任务耗时。
-   全部为静态 CSS，不引入外部字体、图片、图标库、JS 库或 canvas 元素，也没有持续动画循环。 */
+/* 视觉：一张纸。只用中性色，颜色只留给状态与结论；不使用实例配色、渐变、图标库或持续动画。
+   全部为静态 CSS，不引外部资源；改完跑 node tests/test_web.cjs。 */
 :root {
   color-scheme:light;
-  --pad:16px;
   --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace;
-  --paper:#eff1ed; --panel:#e6e9e2; --raise:#f8f9f6;
-  --ink:#161a17; --secondary:#5c665e;
-  --rule:#d6dbd2; --rule-strong:#b2baad;
-  --wash:rgba(22,26,23,.045); --hatch:rgba(22,26,23,.08); --scrim:rgba(12,18,14,.45);
-  --running:#1c53c8; --running-tint:rgba(28,83,200,.13);
-  --done:#0e7a3e; --done-tint:rgba(14,122,62,.14);
-  --blocked:#96540a; --blocked-tint:rgba(150,84,10,.14);
-  --failed:#c02a24; --failed-tint:rgba(192,42,36,.12);
-  /* 实例色：主图里节点颜色只表示任务跑在哪台容器实例上，状态另用文字与状态点表达。
-     颜色按实例编号分配（I01 → inst-1，I02 → inst-2 …），编号稳定，刷新不会跳色。 */
-  --inst-1:#2f5fb3; --inst-1-tint:rgba(47,95,179,.12);
-  --inst-2:#0d7a68; --inst-2-tint:rgba(13,122,104,.12);
-  --inst-3:#7a469c; --inst-3-tint:rgba(122,70,156,.12);
-  --inst-4:#a85a12; --inst-4-tint:rgba(168,90,18,.12);
-  --inst-5:#a32c63; --inst-5-tint:rgba(163,44,99,.12);
-  --inst-6:#556b16; --inst-6-tint:rgba(85,107,22,.13);
-  --inst-7:#1b6d8a; --inst-7-tint:rgba(27,109,138,.12);
-  --inst-8:#7b4a2b; --inst-8-tint:rgba(123,74,43,.12);
-  --inst-local:#5c665e; --inst-local-tint:rgba(92,102,94,.12);
-  --inst-none:#6b756d; --inst-none-tint:rgba(107,117,109,.13);
-  --canvas:#ffffff;
-  --recess:inset 0 2px 3px -2px rgba(18,28,20,.24);
-  --r-mark:5px; --r-ctl:6px; --r-panel:8px; --r-dialog:12px;
+  --paper:#f5f4f0; --surface:#fbfaf7; --raise:#ffffff;
+  --ink:#1b1b18; --muted:#716f68;
+  --line:#e0ded7; --line-strong:#c9c6bd;
+  --running:#2f5fd0; --done:#26704a; --blocked:#946411; --failed:#b0342c;
+  --edge:#c2bfb6;
+  --r-ctl:6px; --r-panel:8px; --r-node:6px; --r-dialog:10px;
 }
 :root[data-theme="dark"] {
   color-scheme:dark;
-  --paper:#151816; --panel:#0e1110; --raise:#212523;
-  --ink:#e7eae5; --secondary:#98a59a;
-  --rule:#2a2f2b; --rule-strong:#3e453f;
-  --wash:rgba(231,234,229,.05); --hatch:rgba(231,234,229,.07); --scrim:rgba(0,0,0,.62);
-  --running:#7ba6ff; --running-tint:rgba(123,166,255,.16);
-  --done:#46c07a; --done-tint:rgba(70,192,122,.16);
-  --blocked:#e0a838; --blocked-tint:rgba(224,168,56,.15);
-  --failed:#f0736b; --failed-tint:rgba(240,115,107,.15);
-  --inst-1:#8fb4ff; --inst-1-tint:rgba(143,180,255,.18);
-  --inst-2:#5fd3bb; --inst-2-tint:rgba(95,211,187,.18);
-  --inst-3:#c79bf0; --inst-3-tint:rgba(199,155,240,.18);
-  --inst-4:#f0a862; --inst-4-tint:rgba(240,168,98,.18);
-  --inst-5:#f08bb8; --inst-5-tint:rgba(240,139,184,.18);
-  --inst-6:#b9cc6a; --inst-6-tint:rgba(185,204,106,.18);
-  --inst-7:#6cc4e0; --inst-7-tint:rgba(108,196,224,.18);
-  --inst-8:#d3a17f; --inst-8-tint:rgba(211,161,127,.18);
-  --inst-local:#98a59a; --inst-local-tint:rgba(152,165,154,.18);
-  --inst-none:#9aa79c; --inst-none-tint:rgba(154,167,156,.18);
-  --canvas:#191d1b;
-  --recess:inset 0 2px 4px -2px rgba(0,0,0,.7);
+  --paper:#121310; --surface:#181a16; --raise:#1e201c;
+  --ink:#e9e8e2; --muted:#9c9a91;
+  --line:#292b26; --line-strong:#3e413a;
+  --running:#8aa8ff; --done:#68c18d; --blocked:#d3a44e; --failed:#f0837a;
+  --edge:#454840;
 }
 * { box-sizing:border-box; }
-body {
-  margin:0; min-height:100vh; background:var(--paper); color:var(--ink);
-  font:15px/1.55 var(--sans);
-  -webkit-font-smoothing:antialiased;
-}
-main { max-width:1360px; margin:0 auto; padding:26px 26px 40px; }
-/* 页眉是一块铭牌：底部压一条 2px 墨线，和下面的读数条、计划区分开层次 */
-header { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; flex-wrap:wrap; padding-bottom:14px; border-bottom:2px solid var(--ink); }
-.brand { min-width:0; }
-.eyebrow { display:flex; align-items:center; gap:9px; margin:0 0 7px; font-family:var(--mono); font-size:11.5px; font-weight:600; color:var(--secondary); }
-.eyebrow .mark { color:var(--ink); }
-.eyebrow .sep { width:1px; height:11px; background:var(--rule-strong); }
-h1 { margin:0; font-size:27px; font-weight:700; line-height:1.2; letter-spacing:-.015em; }
-h2 { margin:0; font-size:16px; font-weight:600; line-height:1.35; }
+body { margin:0; min-height:100vh; background:var(--paper); color:var(--ink); font:15px/1.6 var(--sans); -webkit-font-smoothing:antialiased; }
+main { max-width:1240px; margin:0 auto; padding:34px 32px 44px; }
 p { margin:0; }
-.meta,.muted { color:var(--secondary); font-size:13px; }
-.meta { margin-top:5px; font-family:var(--mono); font-variant-numeric:tabular-nums; letter-spacing:.01em; }
-/* 机器标识统一走等宽字体；字号交给上下文决定，别在这里锁死 */
+h1 { margin:0; font-size:30px; font-weight:650; line-height:1.2; letter-spacing:-.02em; }
+h2 { margin:0; font-size:16px; font-weight:600; }
+.meta,.muted { color:var(--muted); font-size:13px; }
 .id { font-family:var(--mono); font-variant-numeric:tabular-nums; }
-.controls { display:flex; gap:8px; align-items:center; }
-button { font:inherit; font-size:13.5px; font-weight:550; color:var(--ink); background:var(--raise); border:1px solid var(--rule-strong); border-radius:var(--r-ctl); padding:7px 13px; cursor:pointer; transition:border-color .12s,background-color .12s,color .12s,transform .08s; }
-button:hover { border-color:var(--ink); background:var(--wash); }
+.hidden { display:none; }
+header { display:flex; justify-content:space-between; align-items:flex-end; gap:24px; flex-wrap:wrap; padding-bottom:20px; }
+.eyebrow { margin:0 0 8px; font-family:var(--mono); font-size:11.5px; font-weight:600; letter-spacing:.04em; color:var(--muted); text-transform:uppercase; }
+.meta { margin-top:7px; font-family:var(--mono); font-variant-numeric:tabular-nums; }
+.controls { display:flex; align-items:center; gap:6px; }
+button { font:inherit; font-size:13px; color:var(--ink); background:transparent; border:1px solid var(--line-strong); border-radius:var(--r-ctl); padding:6px 12px; cursor:pointer; transition:border-color .12s,color .12s,background-color .12s; }
+button:hover { border-color:var(--ink); }
 button:active { transform:translateY(1px); }
 button:disabled { opacity:.45; cursor:progress; }
 button:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
-.hidden { display:none; }
-.notice { display:flex; gap:10px; align-items:flex-start; margin:16px 0 0; padding:11px 15px; border:1px solid var(--failed); border-left-width:3px; border-radius:var(--r-panel); background:var(--failed-tint); font-size:13.5px; }
-.notice::before { content:'!'; flex-shrink:0; width:18px; height:18px; margin-top:1px; border-radius:50%; background:var(--failed); color:var(--paper); font:700 12px/18px var(--mono); text-align:center; }
-/* 关闭态必须提权：上面这条 .notice 的 display:flex 与 .hidden 同为一条类选择器，
-   靠后写的会赢，于是"隐藏"的空通知框会整条盖在读数条上方。DOM 桩看不见层叠，
-   所以 test_web.cjs 只能盯这行字面量（#modal.hidden 是同一个坑的另一半）。 */
+button.ghost { border-color:transparent; color:var(--muted); padding:6px 8px; }
+button.ghost:hover { border-color:transparent; color:var(--ink); background:var(--surface); }
+.notice { display:flex; gap:10px; align-items:flex-start; margin:0 0 18px; padding:10px 14px; border:1px solid var(--line); border-left:3px solid var(--failed); border-radius:var(--r-panel); background:var(--surface); color:var(--failed); font-size:13.5px; }
+/* 关闭态必须压过上面的 display:flex；DOM 桩看不见层叠，test_web.cjs 盯着这行字面量。 */
 .notice.hidden { display:none; }
-/* 读数条：一条被竖线切开的仪表带，不是一堆药丸标签；金额用大号等宽数字顶出来 */
-#summary { display:flex; flex-wrap:wrap; align-items:stretch; border-bottom:1px solid var(--rule); font-size:13px; }
-.summary-total { display:inline-flex; align-items:center; padding:8px 14px 8px 0; color:var(--ink); font-weight:600; }
-.chip { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-left:1px solid var(--rule); color:var(--secondary); line-height:1.25; white-space:nowrap; }
-.chip b { font-family:var(--mono); font-size:14px; font-weight:650; color:var(--ink); font-variant-numeric:tabular-nums; }
-.chip .dot { width:7px; height:7px; }
-/* 余额块：只读、静态，无倒计时也无外部请求；没有观测数据时整块不渲染。
-   金额是全页唯一"允许变大"的数字——它决定今晚还跑不跑得下去 */
-.chip.budget { border-left:2px solid var(--ink); }
-.chip.budget b { font-size:18px; letter-spacing:-.01em; }
-.chip.note b { color:var(--secondary); font-weight:600; }
-/* 余额够不够是判断，不是读数，所以给它底色——全条读数带只有这两块有颜色 */
-.chip.ok,.chip.over { border:0; border-radius:var(--r-mark); align-self:center; margin:0 10px; padding:5px 12px; font-weight:600; }
-.chip.ok { background:var(--done-tint); color:var(--done); }
-.chip.over { background:var(--failed-tint); color:var(--failed); }
-/* 自动结算记录：服务端写好整句文案，面板只显示，不在浏览器里重算任何数字。
-   它是一条带时间戳的记录，所以独占一行、按日志排版 */
-.chip.settled { flex-basis:100%; padding:6px 0 7px; border-left:0; border-top:1px dashed var(--rule); font-family:var(--mono); font-size:12px; color:var(--secondary); font-variant-numeric:tabular-nums; }
-.chip.settled-over { border-top-style:solid; border-top-color:var(--blocked); color:var(--blocked); }
-.instances { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; margin:18px 0 24px; }
-/* 实例是实打实的机器，所以是嵌进面板里的一块，不是浮在页面上的卡片 */
-.instance { position:relative; overflow:hidden; padding:13px 16px 14px 20px; border:1px solid var(--rule); border-radius:var(--r-panel); background:var(--panel); box-shadow:var(--recess); }
-.instance::before { content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--rule-strong); }
-.instance.on::before { background:var(--done); }
-.instance.starting::before { background:var(--blocked); }
-.instance.off::before,.instance.unreachable::before { background:var(--failed); }
-.instance-title { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:15px; font-weight:600; }
-.instance-name { display:inline-flex; align-items:center; gap:7px; min-width:0; }
-.instance p { margin-top:7px; font-size:12.5px; }
-.instance-actions { display:flex; align-items:center; gap:9px; flex-shrink:0; }
-/* 时价按钮与 Token 按钮是面板仅有的两处写入口，都做得低调；没登记时改虚线警示色——
-   缺了它们余额换算不出时长、也算不出还能跑多远。 */
-button.price { padding:4px 10px; border-radius:var(--r-mark); font-family:var(--mono); font-size:12.5px; font-weight:600; font-variant-numeric:tabular-nums; }
-button.price.unset { border-color:var(--blocked); border-style:dashed; color:var(--blocked); background:var(--blocked-tint); }
-button.price.unset:hover { border-style:solid; }
-button.token.unset { border-color:var(--blocked); border-style:dashed; color:var(--blocked); background:var(--blocked-tint); }
-button.token.unset:hover { border-style:solid; }
-/* 时价弹窗：常驻在 #modal（不在重绘范围内），所以 10 秒轮询不会冲掉正在输入的数字。
-   关闭状态必须用 #modal.hidden 压过下面这条 #modal 的 display:flex——id 选择器赢过 .hidden，
-   否则空弹窗会以 fixed 全屏盖在页面上，把整页的点击都吃掉。 */
+/* 读数条：一条细线下面的纯文本读数，不是一排药丸标签 */
+.summary { display:flex; flex-wrap:wrap; align-items:center; border-top:1px solid var(--line); border-bottom:1px solid var(--line); font-size:13px; }
+.summary-total { padding:12px 22px 12px 0; font-weight:600; }
+.metric { display:inline-flex; align-items:center; gap:7px; padding:12px 20px; border-left:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+.metric b { font-family:var(--mono); font-size:14px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+.metric .dot { width:7px; height:7px; }
+.metric.budget { color:var(--ink); font-weight:600; }
+.metric.budget b { font-size:17px; letter-spacing:-.01em; }
+.metric.note b { color:var(--muted); }
+.verdict { padding:12px 20px; border-left:1px solid var(--line); font-weight:600; white-space:nowrap; }
+.verdict.good { color:var(--done); }
+.verdict.bad { color:var(--failed); }
+.settled { flex-basis:100%; padding:9px 0 10px; border-top:1px dashed var(--line); font-family:var(--mono); font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.settled.bad { border-top-style:solid; border-top-color:var(--blocked); color:var(--blocked); }
+/* 实例：和读数条一样的横线列表，不是浮在纸面上的卡片 */
+.instances { margin:4px 0 26px; border-top:1px solid var(--line); }
+.instances:empty { display:none; }
+.instance { display:grid; grid-template-columns:4.2rem minmax(9rem,1fr) auto auto; gap:5px 20px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
+.instance-id { grid-column:1; grid-row:1; font-family:var(--mono); font-size:12.5px; font-weight:600; color:var(--muted); }
+.instance-name { grid-column:2; grid-row:1; min-width:0; font-weight:600; overflow-wrap:anywhere; }
+.instance-meta { grid-column:2 / -1; grid-row:2; min-width:0; color:var(--muted); font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.instance .status { grid-column:3; grid-row:1; justify-self:end; }
+.price { grid-column:4; grid-row:1; justify-self:end; font-family:var(--mono); font-size:12.5px; font-weight:600; font-variant-numeric:tabular-nums; padding:4px 10px; }
+.price.unset { color:var(--blocked); border-color:var(--blocked); border-style:dashed; }
+.price.unset:hover { border-style:solid; }
+button.token.unset,.token.unset { color:var(--blocked); border-color:var(--blocked); border-style:dashed; }
+.status { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; font-size:13px; color:var(--muted); flex-shrink:0; }
+.dot { width:7px; height:7px; border-radius:50%; background:var(--line-strong); flex-shrink:0; }
+.running .dot { background:var(--running); }
+.done .dot,.on .dot { background:var(--done); }
+.blocked .dot,.starting .dot { background:var(--blocked); }
+.failed .dot,.unreachable .dot { background:var(--failed); }
+/* 主图 */
+.diagram { margin-top:26px; }
+.diagram-header { display:flex; justify-content:space-between; align-items:flex-end; gap:10px 20px; flex-wrap:wrap; padding-bottom:12px; }
+.diagram-sub { margin-top:4px; font-family:var(--mono); font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.diagram-hint { font-family:var(--mono); font-size:11.5px; color:var(--muted); }
+.flow-index { display:flex; flex-wrap:wrap; gap:5px 20px; padding:0 0 14px; font-size:12.5px; color:var(--muted); }
+.flow-item { display:inline-flex; align-items:baseline; gap:6px; max-width:100%; flex-wrap:wrap; overflow-wrap:anywhere; }
+.flow-item b { color:var(--ink); font-family:var(--mono); font-weight:600; }
+.flow-progress { color:var(--ink); font-family:var(--mono); font-variant-numeric:tabular-nums; }
+.canvas-viewport { position:relative; max-height:72vh; overflow:auto; border:1px solid var(--line); border-radius:var(--r-panel); background:var(--surface); }
+.canvas { position:relative; }
+/* 连线只表达依赖：中性细线，最后一段带箭头；任务节点始终盖在线上方 */
+.canvas-edge { position:absolute; height:0; border-top:1.5px solid var(--edge); transform-origin:0 0; z-index:0; pointer-events:none; }
+.canvas-edge.arrow::after { content:""; position:absolute; right:-1px; top:-5px; border-top:4.5px solid transparent; border-bottom:4.5px solid transparent; border-left:7px solid var(--edge); }
+.task-node { position:relative; padding:13px 15px; border:1px solid var(--line-strong); border-left-width:3px; border-radius:var(--r-node); background:var(--raise); overflow-wrap:anywhere; }
+.task-node.canvas-node { position:absolute; width:280px; z-index:1; }
+.task-node:target { outline:2px solid var(--ink); outline-offset:3px; }
+.task-node.running { border-left-color:var(--running); }
+.task-node.done { border-left-color:var(--done); }
+.task-node.blocked { border-left-color:var(--blocked); }
+.task-node.failed { border-left-color:var(--failed); }
+.task-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.task-title { display:flex; align-items:baseline; gap:8px; min-width:0; flex:1 1 180px; flex-wrap:wrap; }
+.task-id { flex-shrink:0; font-family:var(--mono); font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.task-name { min-width:0; font-weight:600; font-size:14.5px; white-space:normal; overflow-wrap:anywhere; }
+.tags { display:flex; gap:4px 14px; flex-wrap:wrap; margin-top:8px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.instance-tag { color:var(--ink); font-family:var(--mono); }
+.task-progress { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.task-meter { display:inline-block; width:64px; height:3px; flex-shrink:0; border-radius:2px; background:var(--line); overflow:hidden; }
+.task-meter-fill { display:block; height:100%; background:var(--ink); }
+.task-progress-value { color:var(--ink); font-family:var(--mono); }
+.task-eta { display:flex; gap:4px 12px; flex-wrap:wrap; margin-top:7px; font-size:12px; line-height:1.5; color:var(--muted); font-variant-numeric:tabular-nums; }
+.eta-done { color:var(--done); }
+.eta-failed { color:var(--failed); }
+.eta-cancelled { color:var(--muted); }
+.eta-overdue { color:var(--blocked); font-weight:600; }
+.eta-stale { color:var(--blocked); }
+.empty { padding:34px 16px; color:var(--muted); font-size:13px; font-family:var(--mono); text-align:center; border:1px solid var(--line); border-radius:var(--r-panel); }
+.page-foot { margin-top:18px; padding-top:16px; border-top:1px solid var(--line); font-family:var(--mono); font-size:11.5px; color:var(--muted); }
+.page-foot code { color:var(--ink); }
+/* 弹窗是全页唯一有投影的元素；关闭态必须用 #modal.hidden 压过 #modal 的 display:flex */
 #modal { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; padding:20px; }
 #modal.hidden { display:none; }
-.modal-backdrop { position:absolute; inset:0; background:var(--scrim); }
-.dialog { position:relative; width:100%; max-width:392px; padding:20px 22px; border:1px solid var(--rule-strong); border-radius:var(--r-dialog); background:var(--raise); box-shadow:0 26px 60px -22px rgba(8,16,10,.55); }
-.dialog-title { font-size:15.5px; font-weight:650; margin:0 0 14px; }
-.dialog-row { display:flex; align-items:center; gap:10px; margin-bottom:11px; }
-.dialog input { flex:1; min-width:0; padding:8px 11px; border:1px solid var(--rule-strong); border-radius:var(--r-ctl); background:var(--panel); color:var(--ink); font:15px var(--mono); }
+.modal-backdrop { position:absolute; inset:0; background:rgba(10,10,8,.42); }
+.dialog { position:relative; width:100%; max-width:400px; padding:22px 24px; border:1px solid var(--line-strong); border-radius:var(--r-dialog); background:var(--raise); box-shadow:0 24px 56px -24px rgba(8,8,6,.5); }
+.dialog-title { margin:0 0 14px; font-size:15.5px; font-weight:650; }
+.dialog-hint { margin:0 0 14px; font-size:12.5px; line-height:1.55; color:var(--muted); }
+.dialog-row { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.dialog input { flex:1; min-width:0; padding:8px 11px; border:1px solid var(--line-strong); border-radius:var(--r-ctl); background:var(--surface); color:var(--ink); font:15px var(--mono); }
 .dialog input:focus-visible { outline:2px solid var(--ink); outline-offset:1px; border-color:var(--ink); }
-.dialog-hint { margin:0 0 14px; font-size:12.5px; line-height:1.5; color:var(--secondary); }
 .dialog-error { margin:0 0 14px; font-size:13px; line-height:1.5; color:var(--failed); }
 .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
 .dialog-actions .primary { border-color:var(--ink); background:var(--ink); color:var(--paper); font-weight:600; }
-.dialog-actions .primary:hover { border-color:var(--ink); background:var(--ink); color:var(--paper); opacity:.88; }
-/* 主图区：整份计划只有这一张有向无环图，流程只作为节点标签与上方读数出现 */
-#diagram { margin-top:4px; }
-.diagram { margin:0 0 26px; padding-top:16px; border-top:1px solid var(--rule-strong); }
-.diagram-header { display:flex; justify-content:space-between; align-items:flex-end; gap:10px 18px; flex-wrap:wrap; padding-bottom:12px; }
-.diagram-title { min-width:0; }
-.diagram-sub { margin-top:4px; font-family:var(--mono); font-size:12.5px; color:var(--secondary); font-variant-numeric:tabular-nums; }
-/* 颜色图例把"哪种颜色 = 哪台容器实例"说在图上，不靠猜 */
-.diagram-legend { display:flex; align-items:center; gap:8px 16px; flex-wrap:wrap; padding-bottom:10px; font-size:12.5px; color:var(--secondary); }
-.legend-title { color:var(--ink); font-family:var(--mono); font-size:11.5px; font-weight:600; letter-spacing:.02em; }
-.legend-item { display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:100%; flex-wrap:wrap; overflow-wrap:anywhere; }
-.swatch { width:10px; height:10px; flex-shrink:0; border-radius:3px; background:var(--node,var(--rule-strong)); }
-/* 流程读数条：只给完成计数与总进度，不画第二张图 */
-.flow-index { display:flex; flex-wrap:wrap; gap:8px 10px; padding-bottom:12px; }
-.flow-chip { display:inline-flex; align-items:center; gap:8px; max-width:100%; flex-wrap:wrap; padding:5px 10px; border:1px solid var(--rule); border-radius:var(--r-mark); background:var(--panel); font-size:12.5px; color:var(--secondary); overflow-wrap:anywhere; }
-.flow-chip b { color:var(--ink); font-family:var(--mono); font-weight:600; }
-.flow-chip .flow-percent { color:var(--ink); font-family:var(--mono); font-variant-numeric:tabular-nums; }
-.flow-meter { display:inline-block; width:64px; height:6px; flex-shrink:0; border:1px solid var(--rule-strong); border-radius:3px; background:var(--panel); overflow:hidden; }
-.flow-meter-fill { display:block; height:100%; background:var(--ink); }
-.diagram-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-.diagram-hint { font-size:12px; color:var(--secondary); font-family:var(--mono); }
-/* 画布：一块白色白板。节点按服务端下发的列/行坐标绝对定位，整块画布可以用指针拖动平移。 */
-.canvas-viewport { position:relative; height:clamp(420px,70vh,820px); overflow:hidden; border:1px solid var(--rule-strong); border-radius:var(--r-panel); background:var(--canvas); cursor:grab; touch-action:none; user-select:none; }
-.canvas-viewport.panning { cursor:grabbing; }
-.canvas { position:absolute; left:0; top:0; isolation:isolate; }
-/* 连线按服务端给出的相邻层线段逐段绘制：旋转的 2px 细线，最后一段带箭头。
-   颜色跟随源任务所在的实例；任务节点始终盖在连线上方。 */
-.canvas-edge { position:absolute; height:0; border-top:2px solid var(--node,var(--rule-strong)); transform-origin:0 0; z-index:0; pointer-events:none; }
-.canvas-edge.arrow::after { content:""; position:absolute; right:-1px; top:-6px; border-top:5px solid transparent; border-bottom:5px solid transparent; border-left:8px solid var(--node,var(--rule-strong)); }
-/* 任务节点只有任务本身：名称、实例、流程、进度与预计时间，不嵌套任何子任务 */
-.task-node { position:relative; padding:12px 14px; border:1px solid var(--node,var(--rule-strong)); border-left-width:4px; border-radius:var(--r-mark); background:linear-gradient(90deg,var(--node-tint,transparent),var(--raise) 46%); overflow-wrap:anywhere; }
-.task-node.canvas-node { position:absolute; width:280px; z-index:1; }
-.task-node:target { outline:2px solid var(--ink); outline-offset:3px; }
-.task-node .tags { margin-top:8px; gap:6px 10px; }
-.instance-tag { display:inline-flex; align-items:center; gap:5px; max-width:100%; flex-wrap:wrap; padding:2px 7px; border-radius:999px; background:var(--node-tint,transparent); color:var(--node,var(--secondary)); font-family:var(--mono); font-size:11.5px; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
-.instance-tag::before { content:""; width:6px; height:6px; flex-shrink:0; border-radius:50%; background:var(--node,var(--rule-strong)); }
-.flow-tag { color:var(--secondary); font-size:12.5px; }
-.task-progress { margin-top:8px; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--secondary); }
-.task-meter { width:64px; height:4px; background:var(--rule); border-radius:2px; overflow:hidden; }
-.task-meter-fill { display:block; height:100%; background:var(--ink); }
-.task-progress-value { color:var(--ink); font-family:var(--mono); }
-.task-eta { margin-top:8px; font-size:12.5px; line-height:1.45; color:var(--secondary); display:flex; gap:6px 12px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
-.diagram-caption { margin:0; padding:0 16px 12px; color:var(--secondary); font-size:12px; }
-/* 实例色只在节点与图例上使用；状态仍由文字与状态点表达 */
-.inst-1 { --node:var(--inst-1); --node-tint:var(--inst-1-tint); }
-.inst-2 { --node:var(--inst-2); --node-tint:var(--inst-2-tint); }
-.inst-3 { --node:var(--inst-3); --node-tint:var(--inst-3-tint); }
-.inst-4 { --node:var(--inst-4); --node-tint:var(--inst-4-tint); }
-.inst-5 { --node:var(--inst-5); --node-tint:var(--inst-5-tint); }
-.inst-6 { --node:var(--inst-6); --node-tint:var(--inst-6-tint); }
-.inst-7 { --node:var(--inst-7); --node-tint:var(--inst-7-tint); }
-.inst-8 { --node:var(--inst-8); --node-tint:var(--inst-8-tint); }
-.inst-local { --node:var(--inst-local); --node-tint:var(--inst-local-tint); }
-.inst-none { --node:var(--inst-none); --node-tint:var(--inst-none-tint); }
-.eta-done { color:var(--done); }
-.eta-failed { color:var(--failed); }
-.eta-cancelled { color:var(--secondary); }
-.eta-overdue { color:var(--blocked); font-weight:600; }
-.eta-stale { color:var(--blocked); }
-/* 待执行/已取消/未观测没有专门的状态色：它们既不是好事也不是故障。
-   主图节点另由实例色区分归属，状态仍看文字与状态点。 */
-/* 复制按钮做成键帽：它是"取用这个标识"的操作，属于墨色交互，不该有颜色 */
-.copy { border:1px solid var(--rule-strong); padding:1px 7px; background:var(--raise); color:var(--secondary); border-radius:4px; font-family:var(--mono); font-size:12px; font-weight:600; flex-shrink:0; }
-.copy:hover { border-color:var(--ink); color:var(--ink); background:var(--raise); }
-.status { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; font-size:13px; font-weight:500; flex-shrink:0; }
-.dot { width:8px; height:8px; border-radius:50%; background:var(--rule-strong); flex-shrink:0; }
-.running .dot { background:var(--running); box-shadow:0 0 0 3px var(--running-tint); }
-.done .dot,.on .dot { background:var(--done); box-shadow:0 0 0 3px var(--done-tint); }
-.blocked .dot,.starting .dot { background:var(--blocked); box-shadow:0 0 0 3px var(--blocked-tint); }
-.failed .dot,.unreachable .dot { background:var(--failed); box-shadow:0 0 0 3px var(--failed-tint); }
-/* 长名称完整换行；窄屏状态另起一行，避免编号和状态挤掉名称。 */
-.task-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; flex-wrap:wrap; }
-.task-title { display:flex; align-items:flex-start; gap:8px; min-width:0; flex:1 1 180px; }
-.task-name { min-width:0; font-weight:600; font-size:15px; white-space:normal; overflow-wrap:anywhere; }
-.tags { font-size:12.5px; color:var(--secondary); display:flex; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; }
-.empty { padding:24px 16px; color:var(--secondary); font-size:13px; font-family:var(--mono); text-align:center; }
-.page-foot { margin-top:10px; padding-top:14px; border-top:1px solid var(--rule); font-family:var(--mono); font-size:11.5px; color:var(--secondary); letter-spacing:.01em; }
-.page-foot code { color:var(--ink); }
+.dialog-actions .primary:hover { border-color:var(--ink); opacity:.88; }
 @media(max-width:760px) {
-  :root { --pad:12px; }
-  main { padding:16px 14px 30px; }
-  header { flex-direction:column; align-items:stretch; gap:12px; }
-  h1 { font-size:22px; }
-  #summary,.chip { font-size:12.5px; }
-  .chip.budget b { font-size:16px; }
+  main { padding:22px 16px 32px; }
+  h1 { font-size:24px; }
+  header { align-items:flex-start; gap:14px; }
+  .summary-total,.metric,.verdict { padding-top:9px; padding-bottom:9px; padding-right:14px; }
+  .metric { padding-left:14px; }
+  .instance { grid-template-columns:3.4rem minmax(0,1fr) auto; }
+  .instance .status { grid-column:2; grid-row:3; justify-self:start; }
+  .instance .price { grid-column:3; grid-row:1 / span 2; }
 }
 </style>
 </head>
@@ -240,16 +152,20 @@ button.token.unset:hover { border-style:solid; }
 <main>
 <header>
   <div class="brand">
-    <p class="eyebrow"><span class="mark">TrainOps</span><span class="sep"></span><span>多实例训练计划</span></p>
+    <p class="eyebrow">TrainOps · 多实例训练计划</p>
     <h1 id="title">项目计划</h1>
     <p class="meta" id="updated">正在读取…</p>
   </div>
-  <div class="controls"><button id="token" type="button">Token</button><button id="refresh" type="button">刷新</button><button id="theme" type="button">深色模式</button></div>
+  <div class="controls">
+    <button id="token" class="ghost" type="button">Token</button>
+    <button id="refresh" type="button">刷新</button>
+    <button id="theme" class="ghost" type="button">深色</button>
+  </div>
 </header>
 <div class="notice hidden" id="error" role="alert"></div>
-<div id="summary" aria-live="polite"></div>
-<div class="instances" id="instances"></div>
-<div id="diagram"></div>
+<section class="summary" id="summary" aria-live="polite"></section>
+<section class="instances" id="instances"></section>
+<section class="diagram" id="diagram"></section>
 <p class="page-foot">数据源 <code>.agent/experiment.yaml</code> · 时价与 Token 可在面板登记（Token 只存本进程内存），其余修改请通过 agent / CLI</p>
 <div id="modal" class="hidden"></div>
 </main>
@@ -259,14 +175,13 @@ const $ = id => document.getElementById(id);
 const names = {pending:'待执行',running:'执行中',blocked:'阻塞',done:'已完成',failed:'失败',cancelled:'已取消',unknown:'未观测',off:'已关机',starting:'开机中',on:'开机',unreachable:'不可达'};
 let plan = null;
 let loading = false;
-let canvasEl = null;      // 唯一主图的画布，重绘后按当前平移量重新定位
-let canvasW = 0, canvasH = 0;
-let panX = 0, panY = 0;   // 画布平移量：刷新后保持不变
+let scrollLeft = 0, scrollTop = 0;   // 画布是原生滚动容器，刷新后保留滚动位置
 const CANVAS_PAD = 64;    // 画布四周留白
 const NODE_W = 280;       // 任务节点宽度
 const COL_PITCH = 380;    // 网格列距 = 节点宽 + 100px 连线空隙
 const ROW_PITCH = 210;    // 网格行距
 const PORT_Y = 72;        // 连线在节点行内的接入高度（约为常见节点高度的中线）
+
 function el(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined && text !== null) node.textContent = String(text);
@@ -281,27 +196,98 @@ function when(value) {
   if (!value) return '待估';
   return new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
 }
-function status(value) {
-  const node = el('span',null,'status ' + value);
-  node.append(el('span',null,'dot'),el('span',names[value] || value));
-  return node;
-}
-function copy(value) {
-  const button = el('button',value,'copy id');
-  button.type = 'button';
-  button.title = '复制 ' + value;
-  button.addEventListener('click',async () => {
-    try { await navigator.clipboard.writeText(value); button.textContent = '已复制'; }
-    catch { button.textContent = value; }
-    setTimeout(() => { button.textContent = value; },1200);
-  });
-  return button;
-}
 function money(value) {
   return '¥' + Number(value).toFixed(2);
 }
-/* 登记时价（面板的写入口之一）。无卡开机（含持续请求等待 GPU）没有 GPU 在计费，登记的是另一档
-   无卡费率；GPU 模式开机后才登记 GPU 时价。开机模式由 agent 核实后经 CLI 写进计划，面板只读不写。 */
+function dot() {
+  return el('span',null,'dot');
+}
+function status(value) {
+  const node = el('span',null,'status ' + value);
+  node.append(dot(),el('span',names[value] || value));
+  return node;
+}
+/* 两个弹窗共用一套壳：输入、提示、错误都留在 #modal 里，轮询重绘碰不到正在输入的值。 */
+function closeDialog() {
+  $('modal').replaceChildren();
+  $('modal').classList.add('hidden');
+}
+function openDialog(config) {
+  const backdrop = el('div',null,'modal-backdrop');
+  backdrop.addEventListener('click',closeDialog);
+  const dialog = el('div',null,'dialog');
+  dialog.setAttribute('role','dialog');
+  dialog.setAttribute('aria-modal','true');
+  dialog.append(el('h2',config.title,'dialog-title'));
+  if (config.hint) dialog.append(el('p',config.hint,'dialog-hint'));
+  const input = el('input',null,'dialog-input');
+  input.type = config.type || 'text';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.value = config.value === undefined || config.value === null ? '' : String(config.value);
+  input.setAttribute('aria-label',config.ariaLabel || config.title);
+  if (config.type === 'number') {
+    input.step = '0.01';
+    input.min = '0.001';
+    input.max = '10000';
+  }
+  const row = el('div',null,'dialog-row');
+  row.append(input,el('span',config.unit || '','muted'));
+  const note = el('p',null,'dialog-error hidden');
+  const actions = el('div',null,'dialog-actions');
+  const clear = config.clearText ? el('button',config.clearText) : null;
+  const cancel = el('button','取消');
+  const save = el('button',config.saveText || '保存','primary');
+  for (const button of [clear,cancel,save]) if (button) button.type = 'button';
+  if (clear) actions.append(clear);
+  actions.append(cancel,save);
+  dialog.append(row,note,actions);
+
+  const fail = message => { note.className = 'dialog-error'; note.textContent = message; };
+  const advise = message => { note.className = 'dialog-hint'; note.textContent = message; };
+  const submit = async value => {
+    save.disabled = true;
+    if (clear) clear.disabled = true;
+    note.className = 'dialog-error hidden';
+    try {
+      const response = await fetch(config.url,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(config.body(value))});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '登记失败');
+      plan = data;                     // 服务端回的就是新快照，不必等下一轮轮询
+      closeDialog();
+      $('error').classList.add('hidden');
+      render();
+    } catch (failure) {
+      fail((config.errorPrefix || '登记失败：') + failure.message + (config.errorSuffix || ''));
+    } finally {
+      save.disabled = false;
+      if (clear) clear.disabled = false;
+    }
+  };
+  const commit = () => {
+    const raw = input.value.trim();
+    if (!raw) return advise(config.emptyHint);
+    if (config.validate) {
+      const problem = config.validate(raw);
+      if (problem) return advise(problem);
+    }
+    submit(config.valueFor ? config.valueFor(raw) : raw);
+  };
+  save.addEventListener('click',commit);
+  if (clear) clear.addEventListener('click',() => submit(null));
+  cancel.addEventListener('click',closeDialog);
+  input.addEventListener('keydown',event => {
+    if (event.key === 'Enter') commit();
+    else if (event.key === 'Escape') closeDialog();
+  });
+  $('modal').replaceChildren(backdrop,dialog);
+  $('modal').classList.remove('hidden');
+  input.focus();
+  return input;
+}
+/* 时价是面板的写入口之一。无卡开机（含持续请求等待 GPU）登记的是另一档费率；
+   开机模式由 agent 核实后经 CLI 写进计划，面板只读不写。 */
 function priceButton(item) {
   const noGpu = item.mode === 'no-gpu';
   const current = noGpu ? item.no_gpu_price : item.price;
@@ -318,93 +304,37 @@ function priceButton(item) {
   button.addEventListener('click',() => openPrice(item));
   return button;
 }
-/* 弹窗常驻在 #modal（不在 render() 重绘的范围内），所以 10 秒轮询不会冲掉正在输入的数字。 */
-function closeDialog() {
-  $('modal').replaceChildren();
-  $('modal').classList.add('hidden');
-}
 function openPrice(item) {
   const noGpu = item.mode === 'no-gpu';
   const current = noGpu ? item.no_gpu_price : item.price;
-  const backdrop = el('div',null,'modal-backdrop');
-  backdrop.addEventListener('click',closeDialog);
-  const dialog = el('div',null,'dialog');
-  dialog.setAttribute('role','dialog');
-  dialog.setAttribute('aria-modal','true');
-  dialog.append(el('h2',(noGpu ? '登记无卡费率' : '登记 GPU 时价') + ' · ' + item.id + ' ' + item.name,
-    'dialog-title'));
-  const input = el('input',null,'dialog-input');
-  input.type = 'number';
-  input.step = '0.01';
-  input.min = '0.001';
-  input.max = '10000';
-  input.value = current === null || current === undefined ? '' : String(current);
-  input.setAttribute('aria-label',(noGpu ? '无卡费率' : 'GPU 时价') + '（元/小时）');
-  const row = el('div',null,'dialog-row');
-  row.append(input,el('span','元/小时','muted'));
-  const note = el('p',null,'dialog-error hidden');
-  const actions = el('div',null,'dialog-actions');
-  const clear = el('button','清空时价');
-  const cancel = el('button','取消');
-  const save = el('button','保存','primary');
-  for (const button of [clear,cancel,save]) button.type = 'button';
-  actions.append(clear,cancel,save);
-  dialog.append(
-    row,
-    el('p',noGpu
+  openDialog({
+    title:(noGpu ? '登记无卡费率' : '登记 GPU 时价') + ' · ' + item.id + ' ' + item.name,
+    hint:noGpu
       ? '当前是无卡开机（含持续请求等待 GPU）：没有 GPU 在计费，这里登记的是无卡费率。GPU 模式开机后再登记 GPU 时价。'
       : '登记的是标价，不是一次观测，不会刷新实例的观测时间；不登记就不计算 GPU 时间，余额也算不出还能跑多久。',
-      'dialog-hint'),
-    note,actions
-  );
-  const fail = message => { note.className = 'dialog-error'; note.textContent = message; };
-  const advise = message => { note.className = 'dialog-hint'; note.textContent = message; };
-  const submit = async value => {
-    save.disabled = clear.disabled = true;
-    note.className = 'dialog-error hidden';
-    try {
-      const body = noGpu ? {id:item.id,no_gpu_price:value} : {id:item.id,price:value};
-      const response = await fetch('/api/instance-price',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || '登记失败');
-      plan = data;                       // 服务端回的就是新快照，不必等下一轮轮询
-      closeDialog();
-      $('error').classList.add('hidden');
-      render();
-    } catch (failure) {
-      fail('登记失败：' + failure.message + '（计划未改动）');
-    } finally { save.disabled = clear.disabled = false; }
-  };
-  /* 没填就只提示，不报错、也不写计划：不登记时价的结果是"少给结论"，不是错误。 */
-  const commit = () => {
-    const raw = input.value.trim();
-    if (!raw) return advise('还没填单价：不登记就不计算 GPU 时间，余额也算不出还能跑多久。'
-      + '要撤销已有的登记请点「清空时价」。');
-    if (!Number.isFinite(Number(raw))) return advise('时价要填数字（元/小时）。');
-    submit(Number(raw));                 // 范围由服务端把关，越界会在弹窗里报错而不是悄悄改数
-  };
-  save.addEventListener('click',commit);
-  clear.addEventListener('click',() => submit(null));
-  cancel.addEventListener('click',closeDialog);
-  input.addEventListener('keydown',event => {
-    if (event.key === 'Enter') commit();
-    else if (event.key === 'Escape') closeDialog();
+    type:'number',
+    unit:'元/小时',
+    ariaLabel:(noGpu ? '无卡费率' : 'GPU 时价') + '（元/小时）',
+    value:current,
+    clearText:'清空时价',
+    emptyHint:'还没填单价：不登记就不计算 GPU 时间，余额也算不出还能跑多久。要撤销已有的登记请点「清空时价」。',
+    validate:raw => Number.isFinite(Number(raw)) ? '' : '时价要填数字（元/小时）。',
+    valueFor:raw => Number(raw),
+    url:'/api/instance-price',
+    body:value => noGpu ? {id:item.id,no_gpu_price:value} : {id:item.id,price:value},
+    errorPrefix:'登记失败：',
+    errorSuffix:'（计划未改动）',
   });
-  $('modal').replaceChildren(backdrop,dialog);
-  $('modal').classList.remove('hidden');
-  input.focus();
 }
-/* Token 是面板的另一处写入口，也是唯一与计划无关的写：值只进服务端内存，客户端不留副本
-   （不落 localStorage、不预填、提交成功就清空输入），面板进程一退就没了。
-   状态由服务端给：只有"配没配、什么时候配的"，值本身不经过任何响应。 */
+/* Token 只进服务端内存：客户端不落 localStorage、不预填、提交成功即清空输入。
+   状态由服务端给：只有“配没配、什么时候配的”，值本身不经过任何响应。 */
 function credentials() {
   return (plan && plan.credentials) || {configured:false,set_at:null};
 }
 function renderTokenButton() {
   const view = credentials();
   const button = $('token');
-  button.className = 'token' + (view.configured ? '' : ' unset');
+  button.className = 'ghost token' + (view.configured ? '' : ' unset');
   button.title = view.configured
     ? 'Token 已登记' + (view.set_at ? '（' + when(view.set_at) + '）' : '')
       + '，只在这个面板进程的内存里；点击可更换或清除'
@@ -412,77 +342,27 @@ function renderTokenButton() {
 }
 function openToken() {
   const view = credentials();
-  const backdrop = el('div',null,'modal-backdrop');
-  backdrop.addEventListener('click',closeDialog);
-  const dialog = el('div',null,'dialog');
-  dialog.setAttribute('role','dialog');
-  dialog.setAttribute('aria-modal','true');
-  dialog.append(el('h2','登记开发者 Token','dialog-title'));
-  const input = el('input',null,'dialog-input');
-  input.type = 'password';                 // 不在屏幕上回显，也不预填：面板不留副本
-  input.autocomplete = 'off';
-  input.spellcheck = false;
-  input.value = '';
-  input.setAttribute('aria-label','AutoDL 开发者 Token');
-  const row = el('div',null,'dialog-row');
-  row.append(input,el('span',view.configured ? '已登记，可覆盖' : '未登记','muted'));
-  const note = el('p',null,'dialog-error hidden');
-  const actions = el('div',null,'dialog-actions');
-  const clear = el('button','清除 Token');
-  const cancel = el('button','取消');
-  const save = el('button','保存','primary');
-  for (const button of [clear,cancel,save]) button.type = 'button';
-  actions.append(clear,cancel,save);
-  dialog.append(
-    row,
-    el('p','Token 只存在这个面板进程的内存里：重启面板要重新填写。接口只用它做只读余额查询，'
-      + '不写进计划、日志或任何文件。获取路径：AutoDL 控制台 → 设置 → 开发者Token。','dialog-hint'),
-    note,actions
-  );
-  const fail = message => { note.className = 'dialog-error'; note.textContent = message; };
-  const advise = message => { note.className = 'dialog-hint'; note.textContent = message; };
-  const submit = async value => {
-    save.disabled = clear.disabled = true;
-    note.className = 'dialog-error hidden';
-    try {
-      const response = await fetch('/api/token',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify({token:value})});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || '登记失败');
-      input.value = '';                    // 成功即丢：值只在这次请求里出现过
-      plan = data;                         // 服务端回的是登记后重算的新快照
-      closeDialog();
-      $('error').classList.add('hidden');
-      render();
-    } catch (failure) {
-      fail('登记失败：' + failure.message);
-    } finally { save.disabled = clear.disabled = false; }
-  };
-  /* 没填就只提示，不报错：不登记 Token 的结果是"少给结论"，不是错误。 */
-  const commit = () => {
-    const raw = input.value.trim();
-    if (!raw) return advise('还没填 Token：不登记就不刷新余额，也算不出还能跑多久。'
-      + '要撤销已登记的凭据请点「清除 Token」。');
-    submit(raw);
-  };
-  save.addEventListener('click',commit);
-  clear.addEventListener('click',() => submit(null));
-  cancel.addEventListener('click',closeDialog);
-  input.addEventListener('keydown',event => {
-    if (event.key === 'Enter') commit();
-    else if (event.key === 'Escape') closeDialog();
+  openDialog({
+    title:'登记开发者 Token',
+    hint:'Token 只存在这个面板进程的内存里：重启面板要重新填写。接口只用它做只读余额查询，'
+      + '不写进计划、日志或任何文件。获取路径：AutoDL 控制台 → 设置 → 开发者Token。',
+    type:'password',
+    ariaLabel:'AutoDL 开发者 Token',
+    value:'',
+    clearText:'清除 Token',
+    emptyHint:'还没填 Token：不登记就不刷新余额，也算不出还能跑多久。要撤销已登记的凭据请点「清除 Token」。',
+    url:'/api/token',
+    body:value => ({token:value}),
+    errorPrefix:'登记失败：',
+    errorSuffix:'',
   });
-  $('modal').replaceChildren(backdrop,dialog);
-  $('modal').classList.remove('hidden');
-  input.focus();
 }
 /* 余额与可用时长：数据缺一项就少显示一项，绝不把缺失当成 0。
-   代金券单独标注——否则"2 元现金 + 500 元代金券"会被读成还能跑很久。
-   「观测于多久之前」由服务端算好（与 CLI 的 age_text 同一份口径），面板不做日期减法。 */
+   代金券单独标注——否则“2 元现金 + 500 元代金券”会被读成还能跑很久。 */
 function budgetNodes(budget) {
   if (!budget || budget.assets === null || budget.assets === undefined) return [];
   const nodes = [];
-  const amount = el('span',null,'chip budget');
+  const amount = el('span',null,'metric budget');
   amount.append(el('span','余额 '),el('b',money(budget.assets)));
   if (budget.observed_age) {
     amount.append(el('span','观测于 ' + budget.observed_age));
@@ -490,44 +370,33 @@ function budgetNodes(budget) {
   }
   nodes.push(amount);
   if (budget.voucher) {
-    const voucher = el('span',null,'chip note');
+    const voucher = el('span',null,'metric note');
     voucher.append(el('span','代金券 '),el('b',money(budget.voucher)),el('span','（不计入可用时长）'));
     nodes.push(voucher);
   }
   if (typeof budget.hours_awake === 'number') {
-    const hours = el('span',null,'chip');
+    const hours = el('span',null,'metric');
     hours.append(el('span','现价可跑 '),el('b',budget.hours_awake + ' 小时'));
     hours.title = '按当前开机费率合计 ' + money(budget.burn_rate) + '/h 粗算（无卡实例按无卡费率），未计代金券';
     nodes.push(hours);
   }
   if (typeof budget.plan_gpu_hours === 'number') {
-    const rest = el('span',null,'chip');
+    const rest = el('span',null,'metric');
     rest.append(el('span','跑完剩余计划 '),el('b',budget.plan_gpu_hours + ' GPU 小时'));
     if (typeof budget.plan_cost === 'number') rest.append(el('span','≈ ' + money(budget.plan_cost)));
     nodes.push(rest);
   }
   if (typeof budget.covers_plan === 'boolean') {
-    nodes.push(el('span',budget.covers_plan ? '余额够跑完' : '余额不足以跑完，请充值或缩减计划',
-      'chip ' + (budget.covers_plan ? 'ok' : 'over')));
+    nodes.push(el('span',budget.covers_plan ? '余额够跑完' : '余额不足，请充值或缩减计划',
+      'verdict ' + (budget.covers_plan ? 'good' : 'bad')));
   }
   return nodes;
 }
-/* 自动结算记录：结论与文案都由服务端写进计划，这里只展示；没有结算记录就整块不渲染。 */
 function settlementNode(settlement) {
   if (!settlement || !settlement.text) return null;
-  const node = el('span',settlement.text,'chip settled' + (settlement.over ? ' settled-over' : ''));
+  const node = el('span',settlement.text,'settled' + (settlement.over ? ' bad' : ''));
   if (settlement.computed_at) node.title = '自动结算于 ' + when(settlement.computed_at) + '；由面板进程按周期重算';
   return node;
-}
-/* 实例色跟随实例编号：I01 → inst-1，I02 → inst-2……超过 8 台循环使用同一组颜色。
-   编号比数组位置稳定，重排或删除实例不会让别的实例换色。这是纯展示映射，不参与业务计算。 */
-function instanceClass(id) {
-  if (!id) return 'inst-none';
-  if (id === 'local') return 'inst-local';
-  const match = /^I(\d+)$/.exec(id);
-  if (match) return 'inst-' + ((Number(match[1]) - 1) % 8 + 1);
-  const index = plan.instances.findIndex(item => item.id === id);
-  return index >= 0 ? 'inst-' + (index % 8 + 1) : 'inst-none';
 }
 function instanceLabel(id) {
   if (!id) return '未分配实例';
@@ -535,112 +404,57 @@ function instanceLabel(id) {
   const item = plan.instances.find(entry => entry.id === id);
   return item ? item.id + ' ' + item.name : id;
 }
-function legendItem(label,klass) {
-  const item = el('span',null,'legend-item');
-  item.append(el('span',null,'swatch ' + klass),el('span',label));
-  return item;
-}
-/* 颜色图例 + 各流程完成读数。二者都是主图之外的读数，不画任何第二张图。 */
-function diagramLegend() {
-  const legend = el('div',null,'diagram-legend');
-  legend.append(el('span','颜色 = 容器实例（节点与箭头）','legend-title'));
-  for (const item of plan.instances) legend.append(legendItem(item.id + ' ' + item.name,instanceClass(item.id)));
-  if (plan.tasks.some(task => task.instance === 'local')) legend.append(legendItem('本机','inst-local'));
-  if (plan.tasks.some(task => !task.instance)) legend.append(legendItem('未分配实例','inst-none'));
-  return legend;
-}
+/* 流程读数：只给完成计数与总进度，画布仍只有一张 */
 function flowIndex() {
   const row = el('div',null,'flow-index');
   for (const flow of plan.flows) {
     const view = flow.view;
-    const chip = el('span',null,'flow-chip');
-    chip.append(el('b',flow.id),el('span',flow.name));
+    const item = el('span',null,'flow-item');
+    item.append(el('b',flow.id),el('span',flow.name));
     if (!view.total) {
-      chip.append(el('span','暂无任务'));
+      item.append(el('span','暂无任务'));
     } else if (view.countable) {
-      chip.append(el('span',view.done + '/' + view.countable + ' 完成'
-        + (view.cancelled ? ' · 已取消 ' + view.cancelled : '')));
-      const meter = el('span',null,'flow-meter');
-      meter.title = '总进度 ' + view.progress + '%：已完成 ÷ 未取消任务'
-        + (view.cancelled ? '（已取消 ' + view.cancelled + ' 个不计入）' : '');
-      meter.append(css(el('span',null,'flow-meter-fill'),'width:' + view.progress + '%'));
-      chip.append(meter,el('span',view.progress + '%','flow-percent'));
-      chip.title = view.known && view.finish
+      item.append(el('span',view.done + '/' + view.countable + ' 完成'
+        + (view.cancelled ? ' · 已取消 ' + view.cancelled : ''),'flow-progress'));
+      item.append(el('span',view.progress + '%'));
+      item.title = view.known && view.finish
         ? (view.open ? '预计 ' : '完成 ') + when(view.finish) : '完成待估';
     } else {
-      chip.append(el('span','已全部取消（' + view.cancelled + ' 个任务）'));
+      item.append(el('span','已全部取消（' + view.cancelled + ' 个任务）'));
     }
-    row.append(chip);
+    row.append(item);
   }
   return row;
 }
-/* 画布平移：只改 CSS transform，不触发布局测量；刷新重绘后继续用同一组 panX/panY。 */
-function applyPan() {
-  if (!canvasEl) return;
-  css(canvasEl,'width:' + canvasW + 'px;height:' + canvasH + 'px;'
-    + 'transform:translate(' + panX + 'px, ' + panY + 'px)');
-}
-function mountPan(viewport) {
-  let drag = null;
-  viewport.addEventListener('pointerdown', event => {
-    if (event.button !== 0) return;
-    if (event.target && event.target.closest
-        && event.target.closest('button,a,input,select,textarea')) return;
-    drag = {x:event.clientX, y:event.clientY, panX, panY};
-    viewport.classList.add('panning');
-    if (event.preventDefault) event.preventDefault();
-    if (viewport.setPointerCapture) viewport.setPointerCapture(event.pointerId);
-  });
-  viewport.addEventListener('pointermove', event => {
-    if (!drag) return;
-    panX = drag.panX + (event.clientX - drag.x);
-    panY = drag.panY + (event.clientY - drag.y);
-    applyPan();
-  });
-  const end = () => { drag = null; viewport.classList.remove('panning'); };
-  viewport.addEventListener('pointerup', end);
-  viewport.addEventListener('pointercancel', end);
-}
-function resetPan() {
-  panX = 0;
-  panY = 0;
-  applyPan();
-}
-/* 面板不做业务计算：依赖层级、节点行列、跨层路点、进度与 ETA 都由服务端下发。
-   这里只把一张主图的列/行映射成画布坐标，并把相邻层线段画成带箭头的直线；
-   连线在服务端已排成不交叉，前端不做避让或测量。 */
-function render() {
-  if (!plan) return;
-  $('title').textContent = plan.name;
-  document.title = 'TrainOps · ' + plan.name;
-  $('updated').textContent = '更新 ' + when(plan.updated_at) + ' · rev ' + plan.revision;
-  renderTokenButton();
-  const instanceNodes = plan.instances.map(item => {
-    const node = el('article',null,'instance ' + item.status);
-    const heading = el('div',null,'instance-title');
-    const label = el('span',null,'instance-name');
-    label.append(el('span',null,'swatch ' + instanceClass(item.id)),copy(item.id),
-      document.createTextNode(' ' + item.name));
-    const actions = el('span',null,'instance-actions');
-    actions.append(priceButton(item),status(item.status));
-    heading.append(label,actions);
+function renderInstances() {
+  const nodes = plan.instances.map(item => {
+    const node = el('article',null,'instance');
+    node.append(el('span',item.id,'instance-id'),el('span',item.name,'instance-name'));
     const running = item.view.running;
-    node.append(heading,el('p',item.ssh_alias + ' · ' + (running.length ? '运行 ' + running.join(',') : '空闲')
-      + ' · 待跑 ' + item.view.queued,'muted id'));
+    node.append(el('span',item.ssh_alias + ' · '
+      + (running.length ? '运行 ' + running.join(',') : '空闲')
+      + ' · 待跑 ' + item.view.queued,'instance-meta'));
+    node.append(status(item.status),priceButton(item));
     return node;
   });
-  $('instances').replaceChildren(...instanceNodes);
+  $('instances').replaceChildren(...nodes);
+}
+function renderSummary() {
   const counts = plan.stats.counts;
   const summary = [el('span',plan.stats.flows + ' 条流程 / ' + plan.stats.tasks + ' 个任务','summary-total')];
   for (const key of ['running','pending','done','blocked','failed'].filter(k => counts[k] || k === 'running' || k === 'done')) {
-    const chip = el('span',null,'chip ' + key);
-    chip.append(el('span',null,'dot'),el('span',names[key] + ' '),el('b',counts[key]));
-    summary.push(chip);
+    const item = el('span',null,'metric ' + key);
+    item.append(dot(),el('span',names[key] + ' '),el('b',counts[key]));
+    summary.push(item);
   }
   summary.push(...budgetNodes(plan.budget));
   const settled = settlementNode(plan.settlement);
   if (settled) summary.push(settled);
   $('summary').replaceChildren(...summary);
+}
+/* 面板不做业务计算：依赖层级、节点行列、跨层路点、进度与 ETA 都由服务端下发。
+   这里只把列/行映射成画布坐标，并把相邻层线段画成带箭头的直线。 */
+function renderDiagram() {
   const graph = plan.graph || {nodes:[],edges:[],columns:0,rows:0};
   const taskById = new Map(plan.tasks.map(task => [task.id,task]));
   const flowById = new Map(plan.flows.map(flow => [flow.id,flow]));
@@ -654,41 +468,30 @@ function render() {
   if (!graph.nodes.length) {
     section.append(el('div','暂无任务','empty'));
     $('diagram').replaceChildren(section);
-    canvasEl = null;
-    canvasW = canvasH = 0;
-    panX = panY = 0;
     return;
   }
-  const actions = el('div',null,'diagram-actions');
-  const reset = el('button','复位视图');
-  reset.type = 'button';
-  reset.addEventListener('click',resetPan);
-  actions.append(el('span','拖动空白处平移画布','diagram-hint'),reset);
-  heading.append(actions);
-  section.append(diagramLegend(),flowIndex());
+  heading.append(el('span','画布可横向滚动 · 箭头表示前置依赖','diagram-hint'));
+  section.append(flowIndex());
   const viewport = el('div',null,'canvas-viewport');
   viewport.setAttribute('role','group');
-  viewport.setAttribute('aria-label','任务流程图画布，拖动空白处平移');
-  canvasW = CANVAS_PAD * 2 + Math.max(0, graph.columns - 1) * COL_PITCH + NODE_W;
-  canvasH = CANVAS_PAD * 2 + Math.max(1, graph.rows) * ROW_PITCH;
+  viewport.setAttribute('aria-label','任务流程图画布，可横向滚动');
+  const canvasW = CANVAS_PAD * 2 + Math.max(0, graph.columns - 1) * COL_PITCH + NODE_W;
+  const canvasH = CANVAS_PAD * 2 + Math.max(1, graph.rows) * ROW_PITCH;
   const canvas = el('div',null,'canvas');
   canvas.setAttribute('aria-label','任务依赖画布');
+  css(canvas,'width:' + canvasW + 'px;height:' + canvasH + 'px');
   const positions = new Map(graph.nodes.map(node => [node.id,node]));
   const pointX = position => CANVAS_PAD + position.layer * COL_PITCH;
   const pointY = position => CANVAS_PAD + position.row * ROW_PITCH + PORT_Y;
-  /* 先画连线，再放节点：节点永远盖在线上方；线段颜色跟随源任务所在实例。
-     每段只走「列间空隙」或「不可见路点所在的空行」：斜线跨两列之间的空隙，
-     路点行内用水平线穿过空单元格，因此既不会压到任务节点，也不会互相交叉。 */
+  /* 先画连线，再放节点：节点永远盖在线上方。跨层依赖按服务端路点分段走直线。 */
   for (const edge of graph.edges) {
     const source = positions.get(edge.source), target = positions.get(edge.target);
     if (!source || !target) continue;
-    const sourceTask = taskById.get(edge.source);
-    const klass = 'canvas-edge ' + instanceClass(sourceTask ? sourceTask.instance : null);
     const addSegment = (from, to, arrow) => {
       const dx = to.x - from.x, dy = to.y - from.y;
       const length = Math.hypot(dx,dy);
       if (!(length > 0)) return;
-      const segment = el('span',null,klass + (arrow ? ' arrow' : ''));
+      const segment = el('span',null,'canvas-edge' + (arrow ? ' arrow' : ''));
       css(segment,'left:' + from.x + 'px;top:' + from.y + 'px;width:' + length
         + 'px;transform:rotate(' + Math.atan2(dy,dx) + 'rad)');
       segment.dataset.source = edge.source;
@@ -699,7 +502,6 @@ function render() {
     };
     let from = {x:pointX(source) + NODE_W, y:pointY(source)};
     for (const waypoint of edge.waypoints || []) {
-      // 路点行的左右边缘：斜线只跨列间空隙，水平线只穿过没有任务节点的路点行。
       const left = {x:pointX(waypoint), y:pointY(waypoint)};
       const right = {x:pointX(waypoint) + NODE_W, y:pointY(waypoint)};
       addSegment(from,left,false);
@@ -710,17 +512,17 @@ function render() {
   }
   for (const position of graph.nodes) {
     const task = taskById.get(position.id);
-    const node = el('article',null,'task-node canvas-node ' + task.status + ' ' + instanceClass(task.instance));
+    const node = el('article',null,'task-node canvas-node ' + task.status);
     node.id = 'task-' + task.id;
     css(node,'left:' + pointX(position) + 'px;top:' + (CANVAS_PAD + position.row * ROW_PITCH - 8) + 'px');
     const top = el('div',null,'task-top');
     const titleWrap = el('div',null,'task-title');
-    titleWrap.append(copy(task.id),el('span',task.name,'task-name'));
+    titleWrap.append(el('span',task.id,'task-id'),el('span',task.name,'task-name'));
     top.append(titleWrap,status(task.status));
     const meta = el('div',null,'tags');
-    meta.append(el('span',instanceLabel(task.instance),'instance-tag ' + instanceClass(task.instance)));
+    meta.append(el('span',instanceLabel(task.instance),'instance-tag'));
     const flow = flowById.get(task.flow);
-    if (flow) meta.append(el('span',flow.id + ' ' + flow.name,'flow-tag'));
+    if (flow) meta.append(el('span',flow.id + ' ' + flow.name));
     if (task.note) meta.append(el('span',task.note));
     node.append(top,meta);
     const progress = el('div',null,'task-progress');
@@ -732,23 +534,37 @@ function render() {
     if (task.status === 'done') {
       eta.append(el('span','✓ ' + when(task.finished_at) + ' 完成','eta-done'));
     } else if (['failed','cancelled'].includes(task.status)) {
-      /* 取消不是失败：红色只留给 failed，取消按"已经停下"的中性口径显示 */
+      /* 取消不是失败：红色只留给 failed，取消按“已经停下”的中性口径显示 */
       eta.append(el('span',when(task.finished_at) + ' 结束',task.status === 'cancelled' ? 'eta-cancelled' : 'eta-failed'));
     } else if (task.estimate.overdue) {
       eta.append(el('span','已超过预计完成时间，需重新估计','eta-overdue'));
     } else {
-      eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估') + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
+      eta.append(el('span',(task.estimate.finish ? '预计 ' + when(task.estimate.finish) + ' 完成' : '完成待估')
+        + (task.duration_minutes !== null ? ' (' + task.duration_minutes + 'm)' : '')));
     }
     if (task.estimate.stale) eta.append(el('span','超过 1 小时未巡检','eta-stale'));
     node.append(eta);
     canvas.append(node);
   }
   viewport.append(canvas);
-  mountPan(viewport);
-  section.append(viewport,el('p','箭头表示前置依赖（全部完成）；并行任务从同一节点分叉，跨层依赖按服务端路点分段走直线。节点与箭头颜色表示任务所在的容器实例。','diagram-caption'));
+  viewport.addEventListener('scroll',() => {
+    scrollLeft = viewport.scrollLeft;
+    scrollTop = viewport.scrollTop;
+  });
+  section.append(viewport);
   $('diagram').replaceChildren(section);
-  canvasEl = canvas;
-  applyPan();
+  viewport.scrollLeft = scrollLeft;
+  viewport.scrollTop = scrollTop;
+}
+function render() {
+  if (!plan) return;
+  $('title').textContent = plan.name;
+  document.title = 'TrainOps · ' + plan.name;
+  $('updated').textContent = '更新 ' + when(plan.updated_at) + ' · rev ' + plan.revision;
+  renderTokenButton();
+  renderInstances();
+  renderSummary();
+  renderDiagram();
 }
 async function refresh() {
   if (loading) return;

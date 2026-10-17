@@ -1655,9 +1655,10 @@ class HTTPTests(unittest.TestCase):
             page = response.read().decode()
             self.assertIn("TrainOps", page)
             self.assertIn("canvas-viewport", page)
-            self.assertIn("flow-meter", page)
+            self.assertIn("flow-index", page)
+            self.assertNotIn("--inst-", page, "面板不再按实例分配颜色")
             self.assertNotIn("start-node", page, "面板不再显示开始节点")
-            # 总进度只留表头进度条一处，任务矩形只显示自己的进度
+            # 流程总进度只留主图上方一处，任务矩形只显示自己的进度
             self.assertNotIn("progress-line", page)
             self.assertIn("textContent", page)
             self.assertNotIn("innerHTML", page)

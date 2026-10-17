@@ -1,5 +1,5 @@
 // Dependency-free DOM smoke tests for the task flowchart: the server computes grid
-// columns/rows and cross-layer waypoints; the panel renders one pannable canvas.
+// columns/rows and cross-layer waypoints; the panel renders one scrollable canvas.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -92,7 +92,7 @@ async function main() {
   await new Promise(resolve => setImmediate(resolve));
   const canvases = byClass(nodes.diagram, 'canvas');
   assert.equal(canvases.length, 1, '整份计划只能有一张主图（一块画布）');
-  assert.equal(byClass(nodes.diagram, 'canvas-viewport').length, 1, '画布要有可拖动视口');
+  assert.equal(byClass(nodes.diagram, 'canvas-viewport').length, 1, '画布要有可滚动视口');
   assert.equal(byClass(nodes.diagram, 'start-node').length, 0, '不显示开始节点');
   assert.ok(!nodes.diagram.textContent.includes('开始'), '画布上不出现开始节点文案');
   const taskNodes = byClass(nodes.diagram, 'task-node');
@@ -116,29 +116,22 @@ async function main() {
     '每条依赖只在最后一段画箭头');
   const nodeCSS = html.match(/\.task-node\s*\{([^}]+)\}/)[1];
   assert.ok(!/(?:^|;)\s*(?:max-)?height\s*:/.test(nodeCSS), '节点随正文变高，不能固定或限制高度');
-  assert.match(html, /\.canvas-viewport\s*\{[^}]*overflow:hidden/, '画布视口裁切并支持拖动');
-  assert.match(html, /\.canvas-viewport\s*\{[^}]*cursor:grab/, '画布视口显示可拖动光标');
+  assert.match(html, /\.canvas-viewport\s*\{[^}]*overflow:auto/, '画布视口用原生滚动查看大图');
+  assert.ok(!/\.canvas-viewport\s*\{[^}]*cursor:grab/.test(html), '不再用自定义拖拽平移');
+  assert.ok(!/--inst-|linear-gradient|\.legend-item|\.flow-meter/.test(html),
+    '不保留实例配色、渐变、图例与流程进度读数');
   assert.match(html, /\.canvas-edge\s*\{[^}]*transform-origin:0 0/, '连线按端点坐标旋转绘制');
   // 节点按服务端 layer/row 映射到网格：演示数据中 F01-T01 在 (0,0)，F01-T02 在 (1,0)，F02-T01 在 (1,1)
   assert.equal(taskNodes[0].style, 'left:64px;top:56px', '第一个节点落在网格首格');
   assert.equal(taskNodes[1].style, 'left:444px;top:56px', '同层节点共享列坐标');
   assert.equal(taskNodes[2].style, 'left:444px;top:266px', '不同行按 ROW_PITCH 排布');
-  assert.equal(canvases[0].style,
-    'width:1928px;height:548px;transform:translate(0px, 0px)',
-    '画布尺寸与平移量由服务端行列和固定网格间距推出');
+  assert.equal(canvases[0].style, 'width:1928px;height:548px',
+    '画布尺寸由服务端行列和固定网格间距推出');
   assert.equal(edges[0].classList.contains('arrow'), true);
-  assert.equal(edges[0].classList.contains('inst-local'), true, '连线颜色跟随源任务所在实例');
-  assert.equal(edges[1].classList.contains('inst-1'), true);
-  // 节点颜色表示容器实例：演示计划里两台实例 + 本机任务各自拿到稳定的颜色类
-  assert.deepEqual(taskNodes.map(node => ['inst-1','inst-2','inst-local','inst-none']
-    .find(cls => node.classList.contains(cls))),
-    ['inst-local','inst-1','inst-2','inst-1','inst-2','inst-local','inst-local'],
-    '节点颜色必须跟随任务所在的容器实例');
+  assert.ok(edges.every(edge => !edge.className.includes('inst-')),
+    '连线不再按实例着色');
   assert.equal(byClass(nodes.diagram, 'instance-tag').length, 7, '每个任务节点都标出所在实例');
-  assert.equal(byClass(nodes.diagram, 'legend-item').length, 3, '图例列出两台实例与本机');
-  assert.match(byClass(nodes.diagram, 'legend-title')[0].textContent, /颜色 = 容器实例/);
-  assert.ok(byClass(nodes.diagram, 'legend-item').some(item => byClass(item, 'swatch')[0].classList.contains('inst-2')),
-    '图例的色块与节点使用同一套实例色');
+  assert.equal(byClass(nodes.diagram, 'legend-item').length, 0, '不画实例颜色图例');
   for (const forbidden of ['getBoundingClientRect', 'ResizeObserver', 'requestAnimationFrame',
     'infinite', '<canvas', 'gantt-', 'laneLeft', 'innerHTML'])
     assert.ok(!html.includes(forbidden), `流程图不能包含 ${forbidden}`);
@@ -147,25 +140,25 @@ async function main() {
   assert.equal(values.length, 7);
   assert.ok(values.some(node => node.textContent === '18%'));
   assert.equal(byClass(nodes.diagram, 'task-meter-fill').length, 7);
-  assert.equal(byClass(nodes.diagram, 'flow-meter').length, 3, '每条流程一个总进度读数');
+  assert.equal(byClass(nodes.diagram, 'flow-item').length, 3, '每条流程一条纯文本读数');
   assert.equal(descendants(nodes.diagram, 'a').length, 0, '单主图不需要跨流程跳转链接');
   assert.equal(nodes.instances.children.length, 2);
   assert.match(nodes.summary.textContent, /3 条流程 \/ 7 个任务/);
   assert.match(nodes.diagram.textContent, /F03-T02/);
   assert.match(nodes.diagram.textContent, /待估/);
-  // 流程读数条与进度条共用服务端算好的同一分母，前端不参与任何换算
+  // 流程读数与任务进度共用服务端算好的同一分母，前端不参与任何换算
   assert.match(nodes.diagram.textContent, /1\/3 完成/);
   assert.match(nodes.diagram.textContent, /0\/2 完成/);
-  assert.deepEqual(byClass(nodes.diagram, 'flow-meter-fill').map(fill => fill.style),
-    ['width:33%', 'width:0%', 'width:0%'], '进度条宽度直接取服务端的流程总进度');
+  assert.deepEqual(byClass(nodes.diagram, 'flow-progress').map(node => node.textContent),
+    ['1/3 完成','0/2 完成','0/2 完成'], '流程读数直接取服务端的完成计数');
   // 前端不做业务计算：这几个函数一旦回来，就说明有人又把排程/进度搬进了浏览器
   for (const gone of ['computeSpans', 'taskProgress', 'ageOf'])
     assert.ok(!source.includes(gone), `${gone} 属于服务端的活，面板里不该再有第二份`);
-  console.log('PASS: single pannable canvas / grid nodes / no start node / non-crossing routes / instance colors');
+  console.log('PASS: single scrollable canvas / grid nodes / no start node / non-crossing routes / neutral colors');
 
-  // 面板唯一的写入口：实例卡上的时价按钮 → 弹窗 → POST /api/instance-price
+  // 面板唯一的写入口：实例行上的时价按钮 → 弹窗 → POST /api/instance-price
   const priceButtons = byClass(nodes.instances, 'price');
-  assert.equal(priceButtons.length, 2, '每台实例卡上都要有登记时价的入口');
+  assert.equal(priceButtons.length, 2, '每台实例行上都要有登记时价的入口');
   assert.equal(priceButtons[0].textContent, '¥1.88/h', '已登记的时价直接显示在卡上');
   priceButtons[0].fire('click');
   const dialogNode = () => byClass(nodes.modal, 'dialog')[0];
@@ -292,7 +285,7 @@ async function main() {
   assert.match(nodes.summary.textContent, /现价可跑 37\.1 小时/);
   // 计划剩余时长随真实时间推移而变化，这里只要求它被算出来并带上预估花费
   assert.match(nodes.summary.textContent, /跑完剩余计划 \d+(\.\d+)? GPU 小时≈ ¥\d+\.\d\d/);
-  assert.equal(byClass(nodes.summary, 'ok').length, 1, '余额充足时给出明确的结论徽标');
+  assert.equal(byClass(nodes.summary, 'good').length, 1, '余额充足时给出明确的结论');
   console.log('PASS: balance and affordable GPU hours are shown in the summary');
 
   // 自动结算记录：整句文案由服务端写进计划，面板只显示、只按 over 换样式，不在浏览器里重算
@@ -303,11 +296,11 @@ async function main() {
   data.settlement = {live:false, over:false, computed_at:new Date().toISOString(),
     text:'自动结算于 3 分钟前 · 跑完剩余计划 4.8 GPU 小时、约 ¥9.62 · 余额够'};
   await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.summary, 'settled-over').length, 0, '结论正常时结算徽标不该报警');
+  assert.equal(byClass(nodes.summary, 'bad').length, 0, '结论正常时结算记录不该报警');
   assert.match(nodes.summary.textContent, /自动结算于 3 分钟前 · 跑完剩余计划 4\.8 GPU 小时、约 ¥9\.62 · 余额够/);
   data.settlement = {live:true, over:true, text:'自动结算已过期（3 小时前，超过 2 个周期）· 当前为实时值 · 上次结算失败'};
   await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.summary, 'settled-over').length, 1, '结算过期/失败时必须用醒目样式');
+  assert.ok(byClass(nodes.summary, 'settled')[0].classList.contains('bad'), '结算过期/失败时必须用醒目样式');
   console.log('PASS: scheduled settlement is rendered straight from the server-side text');
 
   // 没有余额观测时整块不渲染：绝不把缺失显示成 0（结算记录同理，一起隐去再看）
@@ -343,7 +336,7 @@ async function main() {
   await nodes.refresh.fire('click');
   const longTitle = byClass(nodes.diagram, 'task-title')[0];
   assert.equal(byClass(longTitle, 'task-name')[0].textContent, longName, '长任务名称必须原样保留');
-  assert.equal(byClass(longTitle, 'copy')[0].textContent, data.tasks[0].id, '名称换行不影响任务编号');
+  assert.equal(byClass(longTitle, 'task-id')[0].textContent, data.tasks[0].id, '名称换行不影响任务编号');
   assert.equal(byClass(byClass(nodes.diagram, 'task-node')[0], 'status').length, 1, '名称换行不移除任务状态');
   data.tasks[0].name = savedLongTaskName;
   await nodes.refresh.fire('click');
@@ -361,7 +354,7 @@ async function main() {
   assert.equal(byClass(shifted, 'task-meter-fill')[0].style, 'width:40%');
   assert.equal(byClass(shifted, 'task-progress-value')[0].textContent, '40%');
   assert.match(nodes.diagram.textContent, /5\/7 完成 · 已取消 2/);
-  assert.equal(byClass(nodes.diagram, 'flow-meter-fill')[0].style, 'width:71%');
+  assert.equal(byClass(nodes.diagram, 'flow-progress')[0].textContent, '5/7 完成 · 已取消 2');
   data.graph.nodes[2] = savedNode;
   data.flows[0].view = savedView;
   await nodes.refresh.fire('click');
@@ -424,42 +417,37 @@ async function main() {
   await nodes.refresh.fire('click');
   console.log('PASS: empty / singleton / fork / cross-layer routing with straight canvas arrows');
 
-  // 画布可以随意拖动；重绘（10 秒轮询）后位置不跳回原点
+  // 画布是原生滚动容器；重绘（10 秒轮询）后保留滚动位置
   const viewport = byClass(nodes.diagram, 'canvas-viewport')[0];
-  viewport.fire('pointerdown',{button:0,clientX:100,clientY:100,pointerId:1,target:{}});
-  viewport.fire('pointermove',{clientX:140,clientY:130,pointerId:1});
-  assert.match(byClass(nodes.diagram, 'canvas')[0].style, /translate\(40px, 30px\)/,
-    '拖动画布立即更新平移量');
-  viewport.fire('pointerup',{pointerId:1});
+  viewport.scrollLeft = 40; viewport.scrollTop = 30;
+  viewport.fire('scroll',{});
   await nodes.refresh.fire('click');
-  assert.match(byClass(nodes.diagram, 'canvas')[0].style, /translate\(40px, 30px\)/,
-    '横向/纵向平移必须在自动刷新后保留');
-  descendants(nodes.diagram, 'button').find(button => button.textContent === '复位视图').fire('click');
-  assert.match(byClass(nodes.diagram, 'canvas')[0].style, /translate\(0px, 0px\)/,
-    '复位视图把画布移回原点');
-  console.log('PASS: pannable canvas keeps its offset across refresh');
+  const viewportAfter = byClass(nodes.diagram, 'canvas-viewport')[0];
+  assert.equal(viewportAfter.scrollLeft, 40, '横向滚动位置必须在自动刷新后保留');
+  assert.equal(viewportAfter.scrollTop, 30, '纵向滚动位置必须在自动刷新后保留');
+  console.log('PASS: scrollable canvas keeps its offset across refresh');
 
-  // 整个流程都被取消（真实计划里常见）：只报这件事，不画进度条，也不写"0/0 完成 · 完成待估"
+  // 整个流程都被取消（真实计划里常见）：只报这件事，不画进度读数，也不写"0/0 完成 · 完成待估"
   const savedSecond = data.flows[1].view;
   data.flows[1].view = {total:2, countable:0, done:0, cancelled:2, open:0, progress:null,
     known:true, finish:null};
   await nodes.refresh.fire('click');
   assert.match(nodes.diagram.textContent, /已全部取消（2 个任务）/);
-  assert.equal(byClass(nodes.diagram, 'flow-meter').length, 2, '没有需要完成的任务时不画进度条');
+  assert.equal(byClass(nodes.diagram, 'flow-progress').length, 2, '没有需要完成的任务时不画进度读数');
   assert.ok(!/0\/0 完成/.test(nodes.diagram.textContent), '不给"0/0 完成"这种空计数');
   data.flows[1].view = savedSecond;
   await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.diagram, 'flow-meter').length, 3);
+  assert.equal(byClass(nodes.diagram, 'flow-progress').length, 3);
   // 空流程只是"暂无任务"，不能报成"已全部取消（0 个任务）"
   const savedEmptyView = data.flows[0].view;
   data.flows[0].view = {total:0, countable:0, done:0, cancelled:0, open:0, progress:null,
     known:true, finish:null};
   await nodes.refresh.fire('click');
-  assert.match(byClass(nodes.diagram, 'flow-chip')[0].textContent, /F01.*暂无任务/);
+  assert.match(byClass(nodes.diagram, 'flow-item')[0].textContent, /F01.*暂无任务/);
   assert.ok(!/已全部取消（0 个任务）/.test(nodes.diagram.textContent));
   data.flows[0].view = savedEmptyView;
   await nodes.refresh.fire('click');
-  console.log('PASS: a fully cancelled flow reports just that, with no progress meter');
+  console.log('PASS: a fully cancelled flow reports just that, with no progress reading');
 
   // 逾期与巡检超时提示（先清干净，避免演示快照本身随时间变旧影响断言）
   data.tasks.forEach(task => { task.estimate.overdue = false; task.estimate.stale = false; });

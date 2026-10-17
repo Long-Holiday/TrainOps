@@ -1,0 +1,206 @@
+"""CLI 简写与参数值解析。"""
+
+import argparse
+import re
+
+from trainops_base import *
+
+
+def nullable(value):
+    """none / ? / - 都表示"不设置"，方便在简写里跳过中间字段。"""
+    return None if value in ("none", "?", "-") else value
+
+
+def duration(value):
+    if value in ("none", "?", "-"):
+        return None
+    try:
+        result = float(value)
+        number(result, "预计分钟数")
+        return result
+    except (ValueError, PlanError) as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def interval_arg(value):
+    """结算周期（分钟）：在解析阶段就拒绝非法值，别等落盘时才发现。"""
+    if not re.fullmatch(r"\d+", value.strip()):
+        raise argparse.ArgumentTypeError(f"结算周期应为分钟数，实际为 {value!r}")
+    result = int(value)
+    try:
+        integer(result, "结算周期", INTERVAL_LIMITS[0])
+        if result > INTERVAL_LIMITS[1]:
+            raise PlanError(f"结算周期必须在 {INTERVAL_LIMITS[0]} 到 {INTERVAL_LIMITS[1]} 分钟之间")
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return result
+
+
+def dependencies(value):
+    return [] if value.strip() in ("", "-") else [part.strip() for part in value.split(",") if part.strip()]
+
+
+def gigabytes(value, label):
+    if value in ("none", "?", "-", ""):
+        return None
+    try:
+        result = float(value)
+    except ValueError as exc:
+        raise PlanError(f"{label}应为 GB 数字，实际为 {value!r}") from exc
+    number(result, label, high=1_000_000)
+    return result
+
+
+def disk_changes(spec):
+    """'data:40/50,fs:5/200' → 字段字典。按盘名逐项合并：没提到的盘保持原值，不会被清空。"""
+    changes = {}
+    for entry in spec.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        prefix, sep, value = entry.partition(":")
+        prefix, value = prefix.strip().lower(), value.strip()
+        if not sep or prefix not in DISK_PREFIXES:
+            raise PlanError(f"磁盘写成 '盘名:已用/总量'（盘名取 {'/'.join(DISK_PREFIXES)}），实际为 {entry!r}")
+        field, label = DISK_PREFIXES[prefix]
+        if value in ("none", "?", "-"):
+            changes[f"{field}_used_gb"] = changes[f"{field}_total_gb"] = None
+            continue
+        used, slash, total = value.partition("/")
+        if not slash:
+            raise PlanError(f"{label}应写成 '已用/总量'（如 {prefix}:40/50），实际为 {value!r}")
+        changes[f"{field}_used_gb"] = gigabytes(used.strip(), f"{label}已用")
+        changes[f"{field}_total_gb"] = gigabytes(total.strip(), f"{label}总量")
+    if not changes:
+        raise PlanError("--disk 未提供任何磁盘，格式如 --disk \"data:40/50,fs:5/200\"")
+    return changes
+
+
+def disk_arg(value):
+    try:
+        return disk_changes(value)
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def price_value(raw):
+    """时价（元/小时）或 None（未登记）。none/?/-/空串表示清空。
+
+    面板接口是唯一写入口，所以这里必须把住边界：0、负数、nan 都拒绝——缺数据不能拿 0 顶替，
+    而"时价 0"会让人以为机器白跑。落盘前 validate() 会再查一遍。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str) and raw.strip() in ("", "none", "?", "-"):
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+        raise PlanError(f"时价应为元/小时数字，实际为 {raw!r}")
+    try:
+        result = float(raw)
+    except ValueError as exc:
+        raise PlanError(f"时价应为元/小时数字，实际为 {raw!r}") from exc
+    number(result, "时价", low=PRICE_LIMITS[0], high=PRICE_LIMITS[1])
+    return result
+
+
+def set_instance_price(plan, instance_id, field, price):
+    """登记时价（元/小时），price 为 None 表示清空。
+
+    field 只能是 price（GPU 时价）或 no_gpu_price（无卡费率）。时价是"标价"，不构成一次对机器的观测，
+    因此不刷新 observed_at——那个字段记录的是"上次有人看过这台机器"。
+    """
+    if field not in ("price", "no_gpu_price"):
+        raise PlanError(f"只能登记 price 或 no_gpu_price，实际为 {field!r}")
+    item = find(plan, "instances", instance_id)
+    item[field] = price
+    return item
+
+
+def money_arg(value):
+    if value in ("none", "?", "-", ""):
+        return None
+    try:
+        result = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"金额应为元数字，实际为 {value!r}") from exc
+    try:
+        number(result, "金额", high=1_000_000)
+    except PlanError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return round(result, 2)
+
+
+def parse_instance_spec(spec):
+    parts = [part.strip() for part in spec.split(":", 2)]
+    if len(parts) != 3 or not all(parts):
+        raise PlanError(f"实例简写格式应为 '名称:autodl_id:ssh_alias'，实际为 {spec!r}")
+    return parts[0], parts[1], parts[2]
+
+
+def parse_task_spec(spec):
+    """任务简写；省略依赖返回 None，显式空依赖返回 []，中间字段用 - 占位。"""
+    fields = spec.split(":", 4)
+    parts = [part.strip() for part in (fields + [""] * 5)[:5]]
+    deps = None if len(fields) < 5 else ([] if parts[4] == "none" else dependencies(parts[4]))
+    if not parts[0] or not parts[1]:
+        raise PlanError(f"任务简写格式应为 '流程ID:名称[:实例[:分钟数[:依赖]]]'（跳过中间字段用 -），实际为 {spec!r}")
+    return parts[0], parts[1], nullable(parts[2]) if parts[2] else None, \
+        duration(parts[3]) if parts[3] else None, deps
+
+
+def parse_set_spec(spec):
+    parts = [part.strip() for part in spec.split(":", 3)]
+    if len(parts) < 2 or not parts[0]:
+        raise PlanError(f"更新简写格式应为 '任务ID:状态[:进度[:备注]]'，实际为 {spec!r}")
+    task_id = parts[0]
+    changes = {}
+    if parts[1]:
+        if parts[1] not in STATUSES:
+            raise PlanError(f"状态无效: {parts[1]!r}")
+        changes["status"] = parts[1]
+    if len(parts) > 2 and parts[2] and parts[2] not in ("none", "?"):
+        try:
+            changes["progress"] = float(parts[2])
+        except ValueError as exc:
+            raise PlanError(f"无效进度: {parts[2]!r}") from exc
+    if len(parts) > 3 and parts[3]:
+        changes["note"] = parts[3]
+    if not changes:
+        raise PlanError(f"未在 {spec!r} 中提供有效更新字段")
+    return task_id, changes
+
+
+def disk_text(disk):
+    """压成一行 '系统 12/30G·数据 40/50G'；≥90% 的盘打 ! ，让巡检的 agent 一眼看到。"""
+    chunks = []
+    for _, field, label in DISK_MOUNTS:
+        used, total = disk[f"{field}_used_gb"], disk[f"{field}_total_gb"]
+        if used is None and total is None:
+            continue
+        name = DISK_SHORT[label]
+        if used is not None and total:
+            chunks.append(f"{name} {used:g}/{total:g}G" + ("!" if used / total >= FULL_RATIO else ""))
+        elif used is not None:
+            chunks.append(f"{name} {used:g}G")
+        else:
+            chunks.append(f"{name} ?/{total:g}G")
+    return "·".join(chunks)
+
+
+
+def structural_edit(args):
+    if args.operation_name == "batch":
+        return bool(args.instance or args.flow or args.task)
+    if getattr(args, "action", None) == "add":
+        return True
+    return args.operation_name in ("set", "task") and any(
+        hasattr(args, key) for key in ("instance", "duration_minutes", "deps", "not_before"))
+
+
+
+
+__all__ = [
+    "nullable", "duration", "interval_arg", "dependencies", "gigabytes", "disk_changes",
+    "disk_arg", "price_value", "set_instance_price", "money_arg", "parse_instance_spec",
+    "parse_task_spec", "parse_set_spec", "structural_edit",
+]
