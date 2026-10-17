@@ -193,7 +193,7 @@ class SkillTests(unittest.TestCase):
         for document in documents:
             for phrase in ("list_instances", "instance_uuids", "switch_mode",
                            "waiting_capacity", "elapsed_seconds", "attempts",
-                           "next_retry_in_seconds", "不是资源可用倒计时",
+                           "suggested_next_poll_seconds", "不是资源可用倒计时",
                            "return_on_capacity=False"):
                 self.assertIn(phrase, document)
             self.assertRegex(document, r"不(?:在缺货返回后)?紧密重复默认调用")
@@ -211,6 +211,27 @@ class SkillTests(unittest.TestCase):
         for phrase in ("switch_mode", "return_on_capacity=False", "elapsed_seconds",
                        "失败后先查真实状态", "防止后续自动拉起"):
             self.assertIn(phrase, protocol)
+
+    def test_capacity_wait_uses_scheduled_timer_instead_of_blind_waiting(self):
+        """缺货返回后按 suggested_next_poll_seconds 挂起，而不是 shell sleep 盲等。
+
+        autodl_mcp 已把 next_retry_in_seconds 换成建议下次拉取间隔；宿主有定时调度器
+        （Antigravity CLI 的 `schedule`）时，agent 应登记一次性唤醒后继续手头工作/结束本轮，
+        到点再复核 job_status，既不盲等也不紧密重复 wait_for_job。
+        """
+        documents = (("SKILL.md", SKILL.read_text(encoding="utf-8")),
+                     ("autodl.md", (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8")),
+                     ("README.md", (ROOT / "README.md").read_text(encoding="utf-8")))
+        for name, document in documents:
+            for phrase in ("suggested_next_poll_seconds", "定时调度器", "schedule",
+                           "DurationSeconds", "盲等"):
+                with self.subTest(phrase=phrase, document=name):
+                    self.assertIn(phrase, document)
+            self.assertNotIn("next_retry_in_seconds", document)
+        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
+        self.assertIn("suggested_next_poll_seconds", protocol)
+        self.assertIn("定时调度器", protocol)
+        self.assertNotIn("next_retry_in_seconds", protocol)
 
     def test_rebalancing_guidance_requires_single_agent_execution_loop(self):
         body = SKILL.read_text(encoding="utf-8")

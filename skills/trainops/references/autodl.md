@@ -17,7 +17,7 @@
 | `switch_mode` | `instance_uuid`, `target_mode="gpu"` 或 `"non_gpu"` | 返回 `job_id`；单个后台任务完成关机、确认关机、目标模式开机并复用缺货重试；须确认中断与计费影响，不是可回滚事务 |
 | `power_on_no_gpu` | `instance_uuid` | 无卡开机，立即返回 `job_id`，任务中 `no_gpu=true`；不会自动把已运行的有卡实例切成无卡 |
 | `power_on` | `instance_uuid` | 有卡开机，立即返回 `job_id`；缺货时后台持续重试，没有另一个“持续开机”工具，也没有每次调用的等待模式参数 |
-| `job_status` | `job_id` | 只读即时查询开机/切换任务的 `phase`、`elapsed_seconds`、`attempts`、`next_retry_in_seconds`、`error`，不是查询训练进度 |
+| `job_status` | `job_id` | 只读即时查询开机/切换任务的 `phase`、`elapsed_seconds`、`attempts`、`suggested_next_poll_seconds`、`error`，不是查询训练进度 |
 | `wait_for_job` | `job_id`, `timeout_seconds=15`, `return_on_capacity=True` | 只读等待，终态或 `waiting_capacity` 默认立即返回，指定 120 秒也不硬等缺货；显式 `return_on_capacity=False` 才继续等缺货；超时返回快照；时长支持 0–300 秒，0 为立即查询 |
 | `cancel_job` | `job_id` | 只取消后续尝试，不撤销已接受的开机请求，不自动关机 |
 | `power_off` | `instance_uuid` | 先取消活动开机/切换任务，防止后续自动拉起，再请求关机；返回接受结果，不代表关机已完成 |
@@ -26,7 +26,7 @@
 
 **规格用于筛选，不是运行资源证明**：`gpu_name`、`gpu_memory_gb`、`cpu_cores` 来自控制台“规格详情”的配置快照；显存是单卡容量，按 1024³ 字节换算，不能当作多卡总量或当前空闲显存；CPU 是实例分配的 vCPU 数。缺失或无效的可选字段为 `null`，保留待核实，不补 0、不猜型号。可在关机时比较候选实例与实验需求，不为查规格开机或 SSH；无卡阶段仍以 0.5 核 CPU、2GB 内存、无 GPU 为准，不能套用快照规格。实际 GPU 就绪仍须运行态验证。
 
-**等待只观察，不控制任务**：优先 `wait_for_job(job_id, timeout_seconds=15)`，即时看进度用 `job_status`。默认进入 `waiting_capacity` 即返回，不受更长 `timeout_seconds` 影响；及时汇报 `phase`、`elapsed_seconds`、`attempts`、`next_retry_in_seconds`，优先推进其他合格实例或准备工作。`elapsed_seconds` 是后台任务耗时，不是训练进度或预计有货时间；`next_retry_in_seconds` 是距下次后台重试的剩余秒数（`null` 表示无待定重试或任务已结束），不是资源可用倒计时。确需继续等待且在授权范围内时用 `wait_for_job(job_id, timeout_seconds=15, return_on_capacity=False)`，不在缺货返回后紧密重复默认调用。单次等待时长不超过用户剩余授权等待范围与调用方工具超时上限（必要时缩短 `timeout_seconds`）；返回后按 `phase` 判断，不把等待超时当作开机失败或成功。等待超时、连接断开或取消等待请求均不会取消后台开机任务，需停止后续尝试时另按授权 `cancel_job`。长轮询不增加上游轮询或开机请求；后台开机重试只查询运行状态，不额外查规格，调用方也不为等结果反复查硬件或重发开机。当前 MCP 未提供该工具时才用 `job_status` 按合理间隔查询，避免密集轮询。
+**等待只观察，不控制任务**：优先 `wait_for_job(job_id, timeout_seconds=15)`，即时看进度用 `job_status`。默认进入 `waiting_capacity` 即返回，不受更长 `timeout_seconds` 影响；及时汇报 `phase`、`elapsed_seconds`、`attempts`、`suggested_next_poll_seconds`，优先推进其他合格实例或准备工作。`elapsed_seconds` 是后台任务耗时，不是训练进度或预计有货时间；`suggested_next_poll_seconds` 是建议下次拉取状态前等待的秒数（单调时钟、向上取整、最小 0；缺货/网络退避时已计入最近一次尝试间隔，约跨两次尝试窗口；`null` 表示无待定等待或任务已结束），不是资源可用倒计时。缺货返回后按该秒数用宿主定时调度器登记一次性唤醒（Antigravity CLI 为 `schedule`：`DurationSeconds` 取建议值、至少 1 秒，`Prompt` 写明到点复核 `job_id`；登记后继续推进其他任务，没有可推进工作时结束本轮等定时通知），到点再 `job_status`/`wait_for_job` 复核；建议值为 `null` 时不登记定时器，按当前 `phase` 处置。不要用 shell `sleep` 盲等，不在缺货返回后紧密重复默认调用，也不登记高频循环唤醒。宿主没有定时能力时，才在授权范围内用 `wait_for_job(job_id, timeout_seconds=15, return_on_capacity=False)`；`wait_for_job` 单次上限 300 秒，建议值更大时按定时器等待或用 `job_status` 分段复核。单次等待时长不超过用户剩余授权等待范围与调用方工具超时上限（必要时缩短 `timeout_seconds`）；返回后按 `phase` 判断，不把等待超时当作开机失败或成功。等待超时、连接断开或取消等待请求均不会取消后台开机任务，需停止后续尝试时另按授权 `cancel_job`。长轮询不增加上游轮询或开机请求；后台开机重试只查询运行状态，不额外查规格，调用方也不为等结果反复查硬件或重发开机。当前 MCP 未提供该工具时才用 `job_status` 按合理间隔查询，避免密集轮询。
 
 1. **接管并核实**：先 `show --brief`，多实例优先 `list_instances(instance_uuids=[...])`，每批 1–100 个完整 UUID，按实验需求筛选候选；单实例、批量工具不可用或操作后定点复核用 `instance_status(instance_uuid)` 核实目标实例、开机模式、计费类型与硬件规格。逐项检查结果，失败项保留待核实，不当作实例不存在，不立即重查整批，也不在调用方另编排硬件并发；运行实例再 SSH 检查已有进程。已有训练运行时直接接管巡检，不为无卡准备而打断；已有 GPU 开机且是否可关机不明时先确认，不擅自重启。
 2. **无卡准备**：需要远端准备时默认调用 `power_on_no_gpu(instance_uuid)`，保留返回的 `job_id` 并用 `wait_for_job(job_id, timeout_seconds=15)` 等待，按返回 `phase` 确认成功；用 `instance_status` 确认 `status="running"` 且 `start_mode="non_gpu"`。SSH 可达后了解项目结构、训练入口、数据与已有产物，检查环境/依赖、磁盘和路径；执行准备脚本前 `source /etc/network_turbo`，完成配置、代码调整及无需 GPU 的导入、语法、数据读取等检查。无卡阶段不启动 GPU 训练，不把待训练任务标为 running，也不因没有 GPU 就认定环境损坏。
