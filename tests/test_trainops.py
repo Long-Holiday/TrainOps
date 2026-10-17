@@ -1773,7 +1773,8 @@ class HTTPTests(unittest.TestCase):
             self.assertIn("TrainOps", page)
             self.assertIn("canvas-viewport", page)
             self.assertIn("flow-index", page)
-            self.assertNotIn("--inst-", page, "面板不再按实例分配颜色")
+            self.assertIn("--inst-0", page, "面板为实例分配身份色")
+            self.assertIn("var(--inst-color", page, "执行中节点取所属实例的颜色")
             self.assertNotIn("start-node", page, "面板不再显示开始节点")
             # 流程总进度只留主图上方一处，任务矩形只显示自己的进度
             self.assertNotIn("progress-line", page)

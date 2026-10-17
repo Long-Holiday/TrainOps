@@ -116,10 +116,22 @@ async function main() {
     '每条依赖只在最后一段画箭头');
   const nodeCSS = html.match(/\.task-node\s*\{([^}]+)\}/)[1];
   assert.ok(!/(?:^|;)\s*(?:max-)?height\s*:/.test(nodeCSS), '节点随正文变高，不能固定或限制高度');
+  assert.match(nodeCSS, /border-left-width:\s*6px/, '任务节点色带要足够醒目');
+  assert.match(html.match(/\.instance\s*\{([^}]+)\}/)[1], /border-left:6px solid var\(--inst-color/,
+    '实例行色带与任务节点同宽');
   assert.match(html, /\.canvas-viewport\s*\{[^}]*overflow:auto/, '画布视口用原生滚动查看大图');
   assert.ok(!/\.canvas-viewport\s*\{[^}]*cursor:grab/.test(html), '不再用自定义拖拽平移');
-  assert.ok(!/--inst-|linear-gradient|\.legend-item|\.flow-meter/.test(html),
-    '不保留实例配色、渐变、图例与流程进度读数');
+  assert.equal((html.match(/--inst-0:/g) || []).length, 2, '实例身份色在深浅主题各有一套');
+  const instanceColors = [...html.matchAll(/--inst-\d+:(#[0-9a-f]{6})/g)].map(match => match[1]);
+  assert.equal(instanceColors.length, 10, '五个实例色在深浅主题各有一套');
+  for (const color of instanceColors) {
+    const [, red, green, blue] = color.match(/^#(..)(..)(..)$/).map(value => parseInt(value, 16));
+    assert.ok(!(green > red && green > blue), `实例身份色 ${color} 不能偏绿，避免和已完成节点撞色`);
+  }
+  assert.match(html, /\.task-node\.running\s*\{[^}]*var\(--inst-color/,
+    '执行中节点使用所属实例的身份色');
+  assert.ok(!/linear-gradient|\.legend-item|\.flow-meter/.test(html),
+    '不保留渐变、图例与流程进度读数');
   assert.match(html, /\.canvas-edge\s*\{[^}]*transform-origin:0 0/, '连线按端点坐标旋转绘制');
   // 节点按服务端 layer/row 映射到网格：演示数据中 F01-T01 在 (0,0)，F01-T02 在 (1,0)，F02-T01 在 (1,1)
   assert.equal(taskNodes[0].style, 'left:64px;top:56px', '第一个节点落在网格首格');
@@ -129,7 +141,7 @@ async function main() {
     '画布尺寸由服务端行列和固定网格间距推出');
   assert.equal(edges[0].classList.contains('arrow'), true);
   assert.ok(edges.every(edge => !edge.className.includes('inst-')),
-    '连线不再按实例着色');
+    '连线仍为中性色，不按实例着色');
   assert.equal(byClass(nodes.diagram, 'instance-tag').length, 7, '每个任务节点都标出所在实例');
   assert.equal(byClass(nodes.diagram, 'legend-item').length, 0, '不画实例颜色图例');
   for (const forbidden of ['getBoundingClientRect', 'ResizeObserver', 'requestAnimationFrame',
@@ -143,6 +155,16 @@ async function main() {
   assert.equal(byClass(nodes.diagram, 'flow-item').length, 3, '每条流程一条纯文本读数');
   assert.equal(descendants(nodes.diagram, 'a').length, 0, '单主图不需要跨流程跳转链接');
   assert.equal(nodes.instances.children.length, 2);
+  const instanceRows = byClass(nodes.instances, 'instance');
+  assert.deepEqual(instanceRows.map(row => [...row.classes].find(name => name.startsWith('inst-color-'))),
+    ['inst-color-0','inst-color-1'], '实例行标出身份色');
+  const runningNodes = taskNodes.filter(node => node.classList.contains('running'));
+  assert.equal(runningNodes.length, 2, '演示计划有两个执行中任务');
+  assert.deepEqual(runningNodes.map(node => [...node.classes].find(name => name.startsWith('inst-color-'))),
+    ['inst-color-0','inst-color-1'], '执行中节点用所属实例的同一身份色');
+  assert.ok(taskNodes.filter(node => !node.classList.contains('running'))
+    .every(node => ![...node.classes].some(name => name.startsWith('inst-color-'))),
+    '非执行中节点不按实例着色');
   assert.match(nodes.summary.textContent, /3 条流程 \/ 7 个任务/);
   assert.match(nodes.diagram.textContent, /F03-T02/);
   assert.match(nodes.diagram.textContent, /待估/);
@@ -154,7 +176,7 @@ async function main() {
   // 前端不做业务计算：这几个函数一旦回来，就说明有人又把排程/进度搬进了浏览器
   for (const gone of ['computeSpans', 'taskProgress', 'ageOf'])
     assert.ok(!source.includes(gone), `${gone} 属于服务端的活，面板里不该再有第二份`);
-  console.log('PASS: single scrollable canvas / grid nodes / no start node / non-crossing routes / neutral colors');
+  console.log('PASS: single scrollable canvas / grid nodes / no start node / non-crossing routes / instance-colored running nodes');
 
   // 面板唯一的写入口：实例行上的时价按钮 → 弹窗 → POST /api/instance-price
   const priceButtons = byClass(nodes.instances, 'price');

@@ -6,7 +6,8 @@
 <meta name="color-scheme" content="light dark">
 <title>TrainOps · 项目计划</title>
 <style>
-/* 视觉：一张纸。只用中性色，颜色只留给状态与结论；不使用实例配色、渐变、图标库或持续动画。
+/* 视觉：一张纸。以中性色为主，颜色只留给状态与结论；执行中节点与实例行共用一组
+   固定的实例身份色，不使用渐变、图标库或持续动画。
    全部为静态 CSS，不引外部资源；改完跑 node tests/test_web.cjs。 */
 :root {
   color-scheme:light;
@@ -16,6 +17,8 @@
   --ink:#1b1b18; --muted:#716f68;
   --line:#e0ded7; --line-strong:#c9c6bd;
   --running:#2f5fd0; --done:#26704a; --blocked:#946411; --failed:#b0342c;
+  --inst-0:#6d28d9; --inst-1:#db2777; --inst-2:#0891b2;
+  --inst-3:#c026d3; --inst-4:#0ea5e9;
   --edge:#c2bfb6;
   --r-ctl:6px; --r-panel:8px; --r-node:6px; --r-dialog:10px;
 }
@@ -25,8 +28,16 @@
   --ink:#e9e8e2; --muted:#9c9a91;
   --line:#292b26; --line-strong:#3e413a;
   --running:#8aa8ff; --done:#68c18d; --blocked:#d3a44e; --failed:#f0837a;
+  --inst-0:#b39dff; --inst-1:#f472b6; --inst-2:#22d3ee;
+  --inst-3:#e879f9; --inst-4:#7dd3fc;
   --edge:#454840;
 }
+/* 实例身份色只做归属提示：相同编号的实例行与执行中节点用同一色条 */
+.inst-color-0 { --inst-color:var(--inst-0); }
+.inst-color-1 { --inst-color:var(--inst-1); }
+.inst-color-2 { --inst-color:var(--inst-2); }
+.inst-color-3 { --inst-color:var(--inst-3); }
+.inst-color-4 { --inst-color:var(--inst-4); }
 * { box-sizing:border-box; }
 body { margin:0; min-height:100vh; background:var(--paper); color:var(--ink); font:15px/1.6 var(--sans); -webkit-font-smoothing:antialiased; }
 main { max-width:1240px; margin:0 auto; padding:34px 32px 44px; }
@@ -67,7 +78,7 @@ button.ghost:hover { border-color:transparent; color:var(--ink); background:var(
 /* 实例：和读数条一样的横线列表，不是浮在纸面上的卡片 */
 .instances { margin:4px 0 26px; border-top:1px solid var(--line); }
 .instances:empty { display:none; }
-.instance { display:grid; grid-template-columns:4.2rem minmax(9rem,1fr) auto auto; gap:5px 20px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
+.instance { display:grid; grid-template-columns:4.2rem minmax(9rem,1fr) auto auto; gap:5px 20px; align-items:center; padding:12px 0 12px 12px; border-bottom:1px solid var(--line); border-left:6px solid var(--inst-color,transparent); }
 .instance-id { grid-column:1; grid-row:1; font-family:var(--mono); font-size:12.5px; font-weight:600; color:var(--muted); }
 .instance-name { grid-column:2; grid-row:1; min-width:0; font-weight:600; overflow-wrap:anywhere; }
 .instance-meta { grid-column:2 / -1; grid-row:2; min-width:0; color:var(--muted); font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
@@ -96,10 +107,10 @@ button.token.unset,.token.unset { color:var(--blocked); border-color:var(--block
 /* 连线只表达依赖：中性细线，最后一段带箭头；任务节点始终盖在线上方 */
 .canvas-edge { position:absolute; height:0; border-top:1.5px solid var(--edge); transform-origin:0 0; z-index:0; pointer-events:none; }
 .canvas-edge.arrow::after { content:""; position:absolute; right:-1px; top:-5px; border-top:4.5px solid transparent; border-bottom:4.5px solid transparent; border-left:7px solid var(--edge); }
-.task-node { position:relative; padding:13px 15px; border:1px solid var(--line-strong); border-left-width:3px; border-radius:var(--r-node); background:var(--raise); overflow-wrap:anywhere; }
+.task-node { position:relative; padding:13px 15px; border:1px solid var(--line-strong); border-left-width:6px; border-radius:var(--r-node); background:var(--raise); overflow-wrap:anywhere; }
 .task-node.canvas-node { position:absolute; width:280px; z-index:1; }
 .task-node:target { outline:2px solid var(--ink); outline-offset:3px; }
-.task-node.running { border-left-color:var(--running); }
+.task-node.running { border-left-color:var(--inst-color,var(--running)); }
 .task-node.done { border-left-color:var(--done); }
 .task-node.blocked { border-left-color:var(--blocked); }
 .task-node.failed { border-left-color:var(--failed); }
@@ -181,6 +192,7 @@ const NODE_W = 280;       // 任务节点宽度
 const COL_PITCH = 380;    // 网格列距 = 节点宽 + 100px 连线空隙
 const ROW_PITCH = 210;    // 网格行距
 const PORT_Y = 72;        // 连线在节点行内的接入高度（约为常见节点高度的中线）
+const INSTANCE_COLORS = 5; // 与 CSS 的 --inst-0..4 对应；实例多时循环复用
 
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -198,6 +210,19 @@ function when(value) {
 }
 function money(value) {
   return '¥' + Number(value).toFixed(2);
+}
+/* 实例身份色：按 I01、I02… 的编号固定分配，新增/删除实例不会打乱其它实例的颜色。
+   仅执行中节点和实例行使用；local、未知编号或无实例的任务不参与。 */
+function instanceColor(id) {
+  if (!id || id === 'local') return null;
+  const match = /^I(\d+)$/.exec(id);
+  if (match) return (Number(match[1]) - 1) % INSTANCE_COLORS;
+  const index = plan && plan.instances ? plan.instances.findIndex(item => item.id === id) : -1;
+  return index >= 0 ? index % INSTANCE_COLORS : null;
+}
+function instanceClass(id) {
+  const index = instanceColor(id);
+  return index === null ? '' : ' inst-color-' + index;
 }
 function dot() {
   return el('span',null,'dot');
@@ -428,7 +453,7 @@ function flowIndex() {
 }
 function renderInstances() {
   const nodes = plan.instances.map(item => {
-    const node = el('article',null,'instance');
+    const node = el('article',null,'instance' + instanceClass(item.id));
     node.append(el('span',item.id,'instance-id'),el('span',item.name,'instance-name'));
     const running = item.view.running;
     node.append(el('span',item.ssh_alias + ' · '
@@ -512,7 +537,8 @@ function renderDiagram() {
   }
   for (const position of graph.nodes) {
     const task = taskById.get(position.id);
-    const node = el('article',null,'task-node canvas-node ' + task.status);
+    const node = el('article',null,'task-node canvas-node ' + task.status
+      + (task.status === 'running' ? instanceClass(task.instance) : ''));
     node.id = 'task-' + task.id;
     css(node,'left:' + pointX(position) + 'px;top:' + (CANVAS_PAD + position.row * ROW_PITCH - 8) + 'px');
     const top = el('div',null,'task-top');
