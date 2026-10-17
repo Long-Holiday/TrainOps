@@ -16,4 +16,4 @@ CLI 与 `-p`（指向**实验项目目录**，不是插件根）：
 python3 "<插件根>/skills/trainops/scripts/trainops.py" -p <实验项目目录> show --brief
 ```
 
-实验日志必须在面板启动后、无卡准备前主动执行 `experiment init`，检查目标及字段核验结果；巡检、完成/失败后维护：通过 `lark-cli` 复用用户指定/项目已有表，均未指定则自动创建“<项目名> · 实验日志”Base 和“Run 记录”首表；非敏感配置与 Run 历史都存实验项目 `.agent/experiment.yaml`，与计划的 `plan` 段互不覆盖。飞书失败不阻断训练或止付，详见[实验日志](../skills/trainops/references/experiments.md)。
+实验日志必须在面板启动后、无卡准备前主动执行 `experiment init`，检查目标及字段核验结果；实验日志先读后写：写入前先 `experiment show` 读取最近的相关 Run（同任务最近一条、基线/同流程最近一次）与 pending，不必全量，新 Run 先核对上次基线与指标口径，恢复用 update、不重复 start、不静默覆盖；巡检、完成/失败后维护：通过 `lark-cli` 复用用户指定/项目已有表，均未指定则自动创建“<项目名> · 实验日志”Base 和“Run 记录”首表；非敏感配置与 Run 历史都存实验项目 `.agent/experiment.yaml`，与计划的 `plan` 段互不覆盖。飞书失败不阻断训练或止付，详见[实验日志](../skills/trainops/references/experiments.md)。

@@ -92,7 +92,17 @@ $CLI experiment update baseline-attempt-1 --json '{"extra_metrics":{"Boundary_F1
 
 Run 对应**一次实际训练/评测尝试**，不是一次会话或一次巡检。与任务关联，但不复制出另一套计划状态机。普通 `set` / `batch` 不会暗中发飞书请求。
 
+**先读后写**：每次 `experiment start` / `update` / `sync` 前，先执行 `experiment show`，但只读最近的相关 Run，不必全量或遍历全部历史；通常看同任务最近一条（含活动 Run）、同流程/基线最近一次，1–3 条即可。不要凭记忆直接写。
+
+- **新 Run**：先看同任务/同流程最近一次 Run（必要时再看它引用的基线）的指标口径、数据版本、评测协议、证据和结论，确认是续跑、重跑还是新尝试；有 running/blocked Run 时用 `update` 恢复，不重复 start。更早的 Run 只按需按 ID 回查，不遍历全部历史。
+- **update**：先读当前 Run，只合并这次新观测；保留已有的 evidence/artifacts/结论，不因没重传就清空或改写。
+- **sync**：先看本地 pending 和目标表现状；同步按 Run ID 精确查询，零条才建、一条才更新、多条先报告冲突。
+- **冲突**：前后内容不一致、上次 Run 未结束或基线/口径不明时，先报告并核实，不静默覆盖、不重复创建。
+
 ```bash
+# 写前先读：确认同任务没有活动 Run，并回顾最近一次 Run 的基线/口径
+$CLI experiment show
+
 # 核实 GPU、真正启动训练后，仍按现有流程更新任务；再记录 Run
 $CLI set F01-T01 --status running --brief
 $CLI experiment start --task F01-T01 --run-id baseline-attempt-1 \

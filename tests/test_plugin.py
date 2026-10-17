@@ -143,6 +143,18 @@ class SkillTests(unittest.TestCase):
                        "关机止付", "Run ID", "extra_metrics", "Run 记录"):
             self.assertIn(phrase, reference)
 
+    def test_experiment_logging_reads_before_write(self):
+        body = SKILL.read_text(encoding="utf-8")
+        reference = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")
+        rules = (ROOT / "rules/trainops.md").read_text(encoding="utf-8")
+        for document in (body, reference, rules):
+            self.assertIn("先读后写", document)
+            self.assertIn("不必全量", document)
+        self.assertIn("写入实验日志前先", body)
+        self.assertIn("活动 Run", reference)
+        self.assertIn("只读最近", reference)
+        self.assertIn("不静默覆盖", reference)
+
     def test_experiment_guidance_does_not_require_event_subscription(self):
         for path in (SKILL, SKILL_DIR / "references/experiments.md",
                      SKILL_DIR / "references/protocol.md", ROOT / "rules/trainops.md"):
