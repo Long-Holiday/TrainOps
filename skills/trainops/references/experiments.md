@@ -97,7 +97,7 @@ $CLI experiment update baseline-attempt-1 --json '{"extra_metrics":{"Boundary_F1
 
 **订阅注册不等于监听已运行**：`subscribed` 仅表示订阅 API 成功，不证明事件已经送达；当前 `lark-cli event` 不提供多维表格消费键，不虚构 consume 命令，也不新增长驻 webhook/监听器。实际事件接收由应用侧配置提供。
 
-`experiment show` 的 `subscription` 独立显示 `base_token/status/checked_at` 或脱敏错误；失败记 `pending`，再次 init 或 sync 先查询后补订阅，不重建 Base，切换目标不复用旧订阅状态。init 返回 `verified:true` 只表示字段核验通过，订阅 pending 仍为 `ok:false`、退出码 1。sync 可继续写记录，但订阅 pending 时整体也返回失败，须分别判读行同步与订阅状态；不阻断训练与止付。
+`experiment show` 的 `subscription` 独立显示 `base_token/status/checked_at` 或脱敏错误；失败记 `pending`，再次 init 或 sync 先查询后补订阅，不重建 Base，切换目标不复用旧订阅状态。init 在目标保存、字段核验通过后返回 `verified:true`、`ok:true`、退出码 0；若仅订阅 pending，以 `warnings` 数组提示待补，详细原因见 `subscription.error`，不会中断 `set -e` 脚本。订阅成功时无告警（CLI 精简 JSON 省略空的 `warnings` 数组）。建表失败、配置损坏或字段核验失败仍返回非零退出码。sync 可继续写记录，但订阅 pending 时整体也返回失败，须分别判读行同步与订阅状态；不阻断训练与止付。
 
 ## 运行与巡检闭环
 

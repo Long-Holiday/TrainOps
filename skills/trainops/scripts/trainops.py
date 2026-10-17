@@ -2116,8 +2116,11 @@ class ExperimentLog:
                 state.pop("creation_uncertain", None)
                 document["experiments"] = state
             self.store.update(finalize)
+            warnings = []
+            if subscription["status"] != "subscribed":
+                warnings.append("实验表初始化成功，但事件订阅待补；请修复飞书权限或网络后重新 experiment init 或 sync")
             return {"config": config, "verified": True, "subscription": subscription,
-                    "ok": subscription["status"] == "subscribed"}
+                    "ok": True, "warnings": warnings}
 
     def run(self, task_id=None, run_id=None, patch=None):
         patch = patch or {}

@@ -1,6 +1,7 @@
 """实验记录：所有飞书操作都用假 CLI，不读取开发机授权或访问网络。"""
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -470,8 +471,10 @@ class ExperimentTests(unittest.TestCase):
     def test_subscription_failure_retry_keeps_target_and_records_sync(self):
         self.fake.failure = "POST"
         result = self.initialize()
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
         self.assertTrue(result["verified"])
+        self.assertTrue(result["warnings"])
+        self.assertEqual(result["subscription"]["error"], "订阅权限或网络失败")
         self.assertEqual(self.log.show()["subscription"]["status"], "pending")
         self.assertNotIn("creation_uncertain", self.log.state())
         self.start()
@@ -483,6 +486,26 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(sum(command == "+base-create" for command, _ in self.fake.calls), 1)
         self.assert_plan_unchanged()
 
+    def test_init_cli_fatal_errors_still_exit_nonzero(self):
+        for failure in ("+base-create", "+field-list", "config"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                store = ops.Store(Path(temp))
+                store.create(ops.new_plan("初始化失败"))
+                log = ops.ExperimentLog(store)
+                fake = FakeLark()
+                fake.failure = failure
+                log.call = fake
+                log.api = fake.api
+                if failure == "config":
+                    store.path.write_text("{broken")
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with mock.patch.object(ops, "ExperimentLog", return_value=log), \
+                        mock.patch.object(sys, "stdout", stdout), mock.patch.object(sys, "stderr", stderr):
+                    code = ops.main(["-p", temp, "experiment", "init"])
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertIn("TrainOps:", stderr.getvalue())
+
     def test_subscription_lost_response_and_target_switch(self):
         api = self.fake.api
         def lost(method, path):
@@ -491,9 +514,11 @@ class ExperimentTests(unittest.TestCase):
                 raise ops.PlanError("订阅响应丢失")
             return result
         self.log.api = lost
-        self.assertFalse(self.initialize()["ok"])
+        self.assertTrue(self.initialize()["warnings"])
         self.log.api = api
-        self.assertTrue(self.initialize()["ok"])
+        result = self.initialize()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"], [])
         self.assertEqual(sum(command == "POST" for command, _ in self.fake.calls), 1)
         self.log.init(url="https://example.feishu.cn/base/existing?table=tbl-existing")
         self.assertEqual(self.log.show()["subscription"]["base_token"], "base-existing")
@@ -502,7 +527,10 @@ class ExperimentTests(unittest.TestCase):
 
     def test_subscription_status_validation_and_network_outside_data_lock(self):
         self.log.api = lambda *args: {"is_subscribe": "false"}
-        self.assertFalse(self.initialize()["ok"])
+        result = self.initialize()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["warnings"])
+        self.assertEqual(result["subscription"]["status"], "pending")
         api = self.fake.api
         def check(method, path):
             with self.store.lock():
@@ -596,6 +624,7 @@ elif args[0] == "api":
     assert json.loads(arg("--params")) == {"file_type":"bitable"}
     assert arg("--as") == "user" and "--data" not in args
     subscribed = root / "subscribed"
+    if (root / "subscription-fail").exists(): sys.exit(3)
     if command == "GET": data = {"is_subscribe":subscribed.exists()}
     elif command == "POST":
         subscribed.touch()
@@ -634,7 +663,26 @@ print(json.dumps({"ok":True, "data":data}))
             cli("init", "--name", "测试", "--flow", "基线", "--task", "F01:训练")
             config_file = project / ".agent/experiment.yaml"
             original = json.loads(config_file.read_text())["plan"]
-            cli("experiment", "init", "--json", '{"extra_metrics":{"Boundary_F1":null}}')
+            (bindir / "subscription-fail").touch()
+            # A warning must not abort bash -e or prevent the following command.
+            result = subprocess.run([
+                "bash", "-e", "-c",
+                '\"$1\" \"$2\" -p \"$3\" experiment init; printf "continued\\n"',
+                "test-init", sys.executable, str(SCRIPT), str(project)],
+                env=env, text=True, capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            lines = result.stdout.splitlines()
+            self.assertEqual(lines[-1], "continued")
+            initialized = json.loads("\n".join(lines[:-1]))
+            self.assertTrue(initialized["ok"])
+            self.assertTrue(initialized["verified"])
+            self.assertTrue(initialized["warnings"])
+            self.assertEqual(initialized["subscription"]["status"], "pending")
+            self.assertEqual(initialized["config"]["lark"]["base_token"], "base-test")
+            (bindir / "subscription-fail").unlink()
+            recovered = cli("experiment", "init", "--json", '{"extra_metrics":{"Boundary_F1":null}}')
+            self.assertNotIn("warnings", recovered)
+            self.assertEqual(recovered["subscription"]["status"], "subscribed")
             self.assertTrue((bindir / "subscribed").exists())
             cli("experiment", "start", "--task", "F01-T01", "--run-id", "run-a", "--json", '{"intent":"基线"}')
             (bindir / "fail").touch()
