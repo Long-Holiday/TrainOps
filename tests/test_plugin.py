@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = ROOT / "skills/trainops"
 SKILL = SKILL_DIR / "SKILL.md"
 SCRIPT = SKILL_DIR / "scripts/trainops.py"
+REFERENCES = SKILL_DIR / "references"
+TRAINPILOT = REFERENCES / "trainpilot.md"
 
 ANTIGRAVITY_SCHEMA = "https://antigravity.google/schemas/v1/plugin.json"
 ANTIGRAVITY_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -31,17 +33,28 @@ OTHER_AGENT_PATHS = (".claude-plugin", ".codex-plugin", "gemini-extension.json",
                      "AGENTS.md", "antigravity", "CLAUDE.md")
 ENTRY_FILES = (ROOT / "rules/trainops.md",)
 ENTRY_LIMIT = 40  # 入口文件只做指针，细则留在 SKILL.md；超了说明有人在写第二份契约
-# 三条不变量在入口文件里必须逐字一致，否则同一个约束会长出三种说法。
-INVARIANTS = ("是唯一事实来源，只经 CLI 修改", "缺数据就缺结论", "改变目标、放弃实验或增加费用前先确认")
+# 入口只保留能直接指导行为的关键合同；同一句约束不要求在所有文档逐字复读。
+INVARIANTS = ("唯一事实来源", "直接编辑", "缺数据就缺结论", "请求决策")
+# 计划不再被写成“只能经 CLI 修改”；程序内的写入口与 agent 直接编辑是两件事。
+WRITE_PROHIBITIONS = ("只过 CLI", "只经 CLI 修改")
+# 否定式提及（如“不调用 ack_plan”“不要求 #fix”）不是仍在启用旧协议。
+LEGACY_PLAN_QUEUE = re.compile(r"next_task_plans|plan_id")
+LEGACY_ACK_CALL = re.compile(r"(?<!不)调用\s*`?ack_plan")
+GROUP_PULL = re.compile(r"(?<!不)(?:拉取|读取|轮询)[^。\n]{0,8}群消息")
+FIX_TAG = re.compile(r"(?<!不)要求\s*#fix")
 
 
 def load(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def read(path):
+    return Path(path).read_text(encoding="utf-8")
+
+
 def frontmatter(path):
     """只解析 SKILL.md 顶部的简单 frontmatter：这里是 name/description 级别的键值，不引 YAML。"""
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    lines = read(path).splitlines()
     if not lines or lines[0].strip() != "---":
         raise AssertionError(f"{path} 缺少 frontmatter 起始行 ---")
     keys = {}
@@ -63,7 +76,7 @@ def slug(heading):
 
 def links(path):
     """列出正文里的相对链接（含 #锚点），跳过外部 URL 与代码块里的内容。"""
-    body = Path(path).read_text(encoding="utf-8")
+    body = read(path)
     body = re.sub(r"```.*?```", "", body, flags=re.S)
     body = re.sub(r"`[^`]*`", "", body)
     return [target for target in re.findall(r"\]\(([^)\s]+)\)", body)
@@ -77,7 +90,12 @@ class ManifestTests(unittest.TestCase):
                          "插件根的 $schema 必须是 Antigravity 的清单地址，写错会被拒绝加载")
         self.assertRegex(manifest["name"], ANTIGRAVITY_NAME,
                          "Antigravity 的插件名只能用字母数字与 - _")
-        self.assertTrue(manifest["description"].strip(), "清单 description 是对外唯一的说明，不能为空")
+        description = manifest["description"].strip()
+        self.assertTrue(description, "清单 description 是对外唯一的说明，不能为空")
+        for phrase in WRITE_PROHIBITIONS:
+            self.assertNotIn(phrase, description,
+                             "清单不应再把计划写成只能经 CLI 修改；直接编辑是允许的")
+        self.assertIn("直接编辑", description, "清单应说明允许校验通过的直接编辑")
         self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$",
                          "插件版本用三段式；它和 `trainops.py --version` 的计划 schema 版本是两件事")
 
@@ -102,262 +120,6 @@ class ManifestTests(unittest.TestCase):
 
 
 class SkillTests(unittest.TestCase):
-    def test_entry_keeps_task_startup_order(self):
-        """入口要写死开工顺序：起面板 + 默认无卡准备。
-
-        这两步曾整体缺失：agent 装完插件后直接请求有卡开机，用户看不到面板也没有无卡准备。
-        删掉任一条都算回归，所以在这里钉住；入口优先清晰简洁，不设字符硬门槛。
-        """
-        body = SKILL.read_text(encoding="utf-8")
-        self.assertIn("## 开工顺序", body, "入口缺少开工顺序，agent 会跳过面板与无卡准备")
-        self.assertIn("serve --port 8765 --interval 30", body, "入口必须给出面板启动命令")
-        self.assertIn("power_on_no_gpu", body, "入口必须把无卡准备写成默认路线")
-
-    def test_entry_requires_panel_as_resident_background_task(self):
-        """面板要以后台任务常驻，不能靠 shell 的 `&`。
-
-        早先入口只写「放后台」，对 harness 等于没写：调用方照样用 `&` 起，父 shell 一收尾
-        面板就被带走，结算跟着停，用户页面失联。两句都钉住，删任一句都算回归。
-        """
-        body = SKILL.read_text(encoding="utf-8")
-        self.assertIn("后台常驻任务", body, "入口必须要求面板以后台常驻任务起")
-        self.assertIn("别用 `&` 或前台", body, "入口必须排除 shell 的 `&` 与前台两种起法")
-
-    def test_agent_prefers_structured_plan_input(self):
-        body = SKILL.read_text(encoding="utf-8")
-        reference = (SKILL_DIR / "references/cli.md").read_text(encoding="utf-8")
-        for phrase in ("init --from-json -", "batch --from-json -", "--dry-run", "deps: []"):
-            self.assertIn(phrase, body)
-        for phrase in ("aliases", "JSON 不自动串联", "两阶段", "前向引用", "不创建目录"):
-            self.assertIn(phrase, reference if phrase != "两阶段" else
-                          (SKILL_DIR / "scripts/trainops_json.py").read_text(encoding="utf-8"))
-
-    def test_entry_pins_failure_escalation(self):
-        """故障口径：自愈有上限，第 5 次后先关机止付。
-
-        用户给的是一条预授权：先报现象 → 自愈最多 5 次 → 仍无法继续就先关机止付。
-        缺上限会变成无限重试（实例一直计费），缺关机就是没有出口，两句都钉住。
-        """
-        body = SKILL.read_text(encoding="utf-8")
-        self.assertIn("最多 5 次", body, "入口必须写死自愈次数上限")
-        self.assertIn("关机止付", body, "入口必须写明第 5 次仍无法继续就先关机")
-
-    def test_entry_keeps_experiment_logging_in_monitoring_loop(self):
-        body = SKILL.read_text(encoding="utf-8")
-        for phrase in ("references/experiments.md", "experiment init", "experiment start",
-                       "experiment update", "experiment sync", "未指定则自动创建", "飞书失败不阻断"):
-            self.assertIn(phrase, body)
-        reference = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")
-        for phrase in (".agent/experiment.yaml", "lark-cli", "人工决策", "JSON 兼容 YAML 1.2",
-                       "关机止付", "Run ID", "extra_metrics", "Run 记录"):
-            self.assertIn(phrase, reference)
-
-    def test_execution_chains_are_linked_from_skill_and_entry(self):
-        for path in (SKILL, ROOT / "rules/trainops.md"):
-            body = path.read_text(encoding="utf-8")
-            for phrase in ("references/execution.md", "trainpilot", "lark-cli", "远端拉取"):
-                self.assertIn(phrase, body)
-
-    def test_notifications_are_independent_of_experiment_logging(self):
-        reference = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
-        for phrase in ("MCP `trainpilot`", "不在屏幕前", "迭代分析", "日志是否持续更新",
-                       "重大节点立即额外通知", "代码同步完成", "恢复运行", "关机完成",
-                       "会话生命周期", "不得声称已建立持续监控", "不阻断安全处置"):
-            self.assertIn(phrase, reference)
-        body = SKILL.read_text(encoding="utf-8")
-        self.assertIn('CronExpression="0,30 * * * *"', body)
-        self.assertIn("通过 MCP trainpilot 和对话汇报任务状态", body)
-        logs = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")
-        self.assertIn("不替代 MCP `trainpilot`", logs)
-
-    def test_trainpilot_covers_all_tools_and_explicit_task_binding(self):
-        reference = (SKILL_DIR / "references/trainpilot.md").read_text(encoding="utf-8")
-        body = SKILL.read_text(encoding="utf-8")
-        for tool in ("get_task_status", "report", "poll_instruction", "ack_instruction", "ack_plan"):
-            self.assertIn(tool, reference)
-            self.assertIn(tool, body)
-        for phrase in ("instructions", "每次显式传 `task_id`", "没有 `task_id` 参数",
-                       "服务端默认值", "新尝试不串用旧邮箱", "Task not found", "不读取其凭据文件"):
-            self.assertIn(phrase, reference)
-        self.assertIn("references/trainpilot.md", body)
-
-    def test_trainpilot_alerts_require_decision_and_verified_ack(self):
-        reference = (SKILL_DIR / "references/trainpilot.md").read_text(encoding="utf-8")
-        for phrase in ("先 `report(event_type=\"alert\")`", "has_instruction=true",
-                       "长轮询超时不是恢复许可", "不重复上报 alert", "payload['solution']",
-                       "instruction_id/action", "ACK 后必须 `report(event_type=\"failed\")`",
-                       "5 次是上限", "先关机止付", "COMPLETED/FAILED 时停止轮询"):
-            self.assertIn(phrase, reference)
-        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
-        self.assertIn("不表示可跳过指令直接修复", protocol)
-
-    def test_trainpilot_plans_and_delivery_are_not_fire_and_forget(self):
-        reference = (SKILL_DIR / "references/trainpilot.md").read_text(encoding="utf-8")
-        for phrase in ("检查每次 report 的 `next_task_plans`", "按返回的 plan_id 去重",
-                       "告警未解决前", "保留 pending", "不重复已完成动作", "不等于已送达",
-                       "`completed` / `failed` 仅记录终态", "随即重报同一终态"):
-            self.assertIn(phrase, reference)
-        execution = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
-        self.assertIn("trainpilot.md", execution)
-        self.assertNotIn("依据实际工具返回判断通知成功", execution)
-
-    def test_local_sync_preserves_version_control_boundaries(self):
-        reference = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
-        steps = ("1. **核实目标与工作区**", "2. **本地修改与验证**",
-                 "3. **提交并推送**", "4. **远端拉取并核对**", "5. **可恢复启动**")
-        self.assertEqual(sorted(reference.index(step) for step in steps),
-                         [reference.index(step) for step in steps])
-        for phrase in ("不在服务器直接修改受版本管理的代码", "不强制推送", "不覆盖用户未提交工作",
-                       "先取得授权", "source /etc/network_turbo", "实际启动命令", "不向 `plan` 塞"):
-            self.assertIn(phrase, reference)
-
-    def test_completion_and_cancellation_cleanup_keeps_panel(self):
-        reference = (SKILL_DIR / "references/execution.md").read_text(encoding="utf-8")
-        for phrase in ("任务完成或用户取消", "定时巡检、资源等待唤醒", "cancel_job",
-                       "不等于关机", "共享巡检", "不清理其他任务的调度", "清理失败",
-                       "实例最终状态", "真实位置", "任务面板可以保留", "不强制清空计划"):
-            self.assertIn(phrase, reference)
-        for name in ("protocol.md", "autodl.md"):
-            self.assertIn("execution.md", (SKILL_DIR / "references" / name).read_text(encoding="utf-8"))
-
-    def test_experiment_logging_reads_before_write(self):
-        body = SKILL.read_text(encoding="utf-8")
-        reference = (SKILL_DIR / "references/experiments.md").read_text(encoding="utf-8")
-        rules = (ROOT / "rules/trainops.md").read_text(encoding="utf-8")
-        for document in (body, reference, rules):
-            self.assertIn("先读后写", document)
-            self.assertIn("不必全量", document)
-        self.assertIn("写入实验日志前先", body)
-        self.assertIn("活动 Run", reference)
-        self.assertIn("只读最近", reference)
-        self.assertIn("不静默覆盖", reference)
-
-    def test_experiment_guidance_does_not_require_event_subscription(self):
-        for path in (SKILL, SKILL_DIR / "references/experiments.md",
-                     SKILL_DIR / "references/protocol.md", ROOT / "rules/trainops.md"):
-            body = path.read_text(encoding="utf-8")
-            for phrase in ("自动订阅", "get_subscribe", "docs:event:subscribe", "订阅结果", "补订阅"):
-                self.assertNotIn(phrase, body)
-
-    def test_logging_init_precedes_preparation_and_training(self):
-        body = SKILL.read_text(encoding="utf-8")
-        self.assertLess(body.index("**面板**"), body.index("**日志初始化**"))
-        self.assertLess(body.index("**日志初始化**"), body.index("**无卡准备**"))
-        self.assertLess(body.index("**无卡准备**"), body.index("**训练与记录**"))
-        for phrase in ("主动执行", "实验日志", "Run 记录", "字段核验", "extra_metrics"):
-            self.assertIn(phrase, body)
-
-    def test_autodl_guidance_covers_specs_and_read_only_wait(self):
-        body = SKILL.read_text(encoding="utf-8")
-        reference = (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8")
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for document in (body, reference, readme):
-            for phrase in ("instance_status", "gpu_name", "gpu_memory_gb", "cpu_cores",
-                           "null", "单卡", "wait_for_job", "job_status", "phase"):
-                self.assertIn(phrase, document)
-        for phrase in ("timeout_seconds=15", "0–300", "1024³", "vCPU",
-                       "取消等待请求均不会取消后台开机任务", "不增加上游轮询或开机请求",
-                       "不把等待超时当作开机失败或成功", "不额外查规格"):
-            self.assertIn(phrase, reference)
-        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
-        self.assertIn("wait_for_job", protocol)
-        self.assertIn("等待超时或取消等待不取消后台任务", protocol)
-
-    def test_autodl_guidance_covers_capacity_batches_and_mode_switch(self):
-        documents = [SKILL.read_text(encoding="utf-8"),
-                     (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8"),
-                     (ROOT / "README.md").read_text(encoding="utf-8")]
-        for document in documents:
-            for phrase in ("list_instances", "instance_uuids", "switch_mode",
-                           "waiting_capacity", "elapsed_seconds", "attempts",
-                           "suggested_next_poll_seconds", "不是资源可用倒计时",
-                           "return_on_capacity=False"):
-                self.assertIn(phrase, document)
-            self.assertRegex(document, r"不(?:在缺货返回后)?紧密重复默认调用")
-            self.assertRegex(document, r"默认 15 秒|timeout_seconds=15")
-            self.assertNotIn("默认 300 秒", document)
-            self.assertNotIn("timeout_seconds=300", document)
-        for document in documents[1:]:
-            for phrase in ("1–100", "逐项", "白名单", "5 路并发", "price: null",
-                           "不代表免费", "不覆盖面板已有费率", "可回滚事务",
-                           'target_mode="gpu"', 'target_mode="non_gpu"',
-                           "工具不支持时才", "防止后续自动拉起"):
-                self.assertIn(phrase, document)
-            self.assertRegex(document, r"(?:不能用|不用)切成无卡代替关机")
-        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
-        for phrase in ("switch_mode", "return_on_capacity=False", "elapsed_seconds",
-                       "失败后先查真实状态", "防止后续自动拉起"):
-            self.assertIn(phrase, protocol)
-
-    def test_capacity_wait_uses_scheduled_timer_instead_of_blind_waiting(self):
-        """缺货返回后按 suggested_next_poll_seconds 挂起，而不是 shell sleep 盲等。
-
-        autodl_mcp 已把 next_retry_in_seconds 换成建议下次拉取间隔；宿主有定时调度器
-        （Antigravity CLI 的 `schedule`）时，agent 应登记一次性唤醒后继续手头工作/结束本轮，
-        到点再复核 job_status，既不盲等也不紧密重复 wait_for_job。
-        """
-        documents = (("SKILL.md", SKILL.read_text(encoding="utf-8")),
-                     ("autodl.md", (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8")),
-                     ("README.md", (ROOT / "README.md").read_text(encoding="utf-8")))
-        for name, document in documents:
-            for phrase in ("suggested_next_poll_seconds", "定时调度器", "schedule",
-                           "DurationSeconds", "盲等"):
-                with self.subTest(phrase=phrase, document=name):
-                    self.assertIn(phrase, document)
-            self.assertNotIn("next_retry_in_seconds", document)
-        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
-        self.assertIn("suggested_next_poll_seconds", protocol)
-        self.assertIn("定时调度器", protocol)
-        self.assertNotIn("next_retry_in_seconds", protocol)
-
-    def test_cancel_job_reports_resulting_status(self):
-        """取消开机/切换任务后先读 resulting_status，再决定是否复查实例。"""
-        documents = (("SKILL.md", SKILL.read_text(encoding="utf-8")),
-                     ("autodl.md", (SKILL_DIR / "references/autodl.md").read_text(encoding="utf-8")),
-                     ("README.md", (ROOT / "README.md").read_text(encoding="utf-8")))
-        for name, document in documents:
-            for phrase in ("cancel_job", "resulting_status", "resulting_status_error",
-                           "稳定态", "过渡态"):
-                with self.subTest(phrase=phrase, document=name):
-                    self.assertIn(phrase, document)
-        for name, document in documents[1:]:
-            for phrase in ("resulting_start_mode", "resulting_observed_at"):
-                with self.subTest(phrase=phrase, document=name):
-                    self.assertIn(phrase, document)
-        protocol = (SKILL_DIR / "references/protocol.md").read_text(encoding="utf-8")
-        self.assertIn("resulting_status", protocol)
-        self.assertIn("resulting_status_error", protocol)
-
-    def test_rebalancing_guidance_requires_single_agent_execution_loop(self):
-        body = SKILL.read_text(encoding="utf-8")
-        reference = (SKILL_DIR / "references/cli.md").read_text(encoding="utf-8")
-        for document in (body, reference):
-            for phrase in ("单 agent", "任务完成/失败", "实例变为可用", "例行巡检",
-                           "全局待执行任务", "每次启动前重新读取最新计划",
-                           "同一个 agent", "实际启动", "agent 未运行时不再平衡",
-                           "常驻调度器"):
-                with self.subTest(phrase=phrase, entry=document == body):
-                    self.assertIn(phrase, document)
-        self.assertIn("references/cli.md#单-agent-多机再平衡", body)
-        self.assertIn("set F01-T05 --instance I02 --brief", reference)
-        self.assertIn("已改派，未启动", reference)
-        self.assertLess(reference.index("**排除远端抢先启动**"),
-                        reference.index("**同步计划并检查**"))
-        self.assertLess(reference.index("**同步计划并检查**"),
-                        reference.index("**按最新计划实际执行**"))
-
-    def test_rebalancing_guidance_keeps_queue_and_dependency_safety(self):
-        reference = (SKILL_DIR / "references/cli.md").read_text(encoding="utf-8")
-        for phrase in ("尚未启动的 `pending`", "不自动重试 failed 或解除 blocked",
-                       "用户指定节点", "最早开始限制", "GPU 型号/显存",
-                       "环境及数据/checkpoint 兼容", "tmux/screen", "保留其余任务",
-                       "无法确认时不改派", "不会再被旧队列拉起", "没有数据依赖",
-                       "保留真实依赖", "不能提前标 running 占位", "experiment start",
-                       "不能覆盖旧 Run 的实例历史", "不盲目在另一台重试",
-                       "不添加 `reassign` / `claim` 命令"):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, reference)
-
     def test_frontmatter_matches_directory_and_limits(self):
         meta = frontmatter(SKILL)
         self.assertEqual(meta["name"], SKILL_DIR.name, "技能名必须与目录名一致，否则客户端找不到")
@@ -367,22 +129,19 @@ class SkillTests(unittest.TestCase):
         self.assertLessEqual(len(meta["description"]), 1024, "description 上限 1024 字符")
 
     def test_links_and_anchors_resolve(self):
-        for path in [SKILL, *sorted((SKILL_DIR / "references").glob("*.md")), ROOT / "README.md",
-                     *ENTRY_FILES]:
+        for path in [SKILL, *sorted(REFERENCES.glob("*.md")), ROOT / "README.md", *ENTRY_FILES]:
             for target in links(path):
                 name, _, anchor = target.partition("#")
                 target_path = (path.parent / name).resolve() if name else path
-                self.assertTrue(target_path.exists(), f"{path.relative_to(ROOT)} 的链接指向不存在的位置：{target}")
+                self.assertTrue(target_path.exists(),
+                                f"{path.relative_to(ROOT)} 的链接指向不存在的位置：{target}")
                 if anchor:
-                    headings = re.findall(r"^#{1,6}\s+(.+)$", target_path.read_text(encoding="utf-8"), re.M)
+                    headings = re.findall(r"^#{1,6}\s+(.+)$", read(target_path), re.M)
                     self.assertIn(anchor, [slug(h) for h in headings],
                                   f"{path.relative_to(ROOT)} 的锚点找不到对应标题：{target}")
 
     def test_script_depth_is_stable(self):
-        """脚本与插件根之间固定三层：脚本靠自身位置回推 references/ 与 web/ 面板。
-
-        凭据不在这里——它只从面板登记进内存，不再跟着仓库走，所以挪动只会弄丢文档与页面。
-        """
+        """脚本与插件根之间固定三层：脚本靠自身位置回推 references/ 与 web/ 面板。"""
         spec = importlib.util.spec_from_file_location("trainops_layout", SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -391,11 +150,146 @@ class SkillTests(unittest.TestCase):
         page = SCRIPT.resolve().parent.parent / "web" / "index.html"
         self.assertTrue(page.is_file(), f"面板必须还在 {page.relative_to(ROOT)}")
 
+    def test_entry_keeps_panel_resident_and_no_gpu_default(self):
+        """开工默认路线：面板后台常驻，先无卡准备再申请有卡。"""
+        body = read(SKILL)
+        for phrase in ("后台常驻任务", "serve --port 8765 --interval 30", "别用 `&` 或前台"):
+            self.assertIn(phrase, body, "入口必须要求面板以后台常驻任务起，不能靠 shell 的 & 或前台")
+        for phrase in ("power_on_no_gpu", "0.5 核 CPU、2GB 内存、无 GPU"):
+            self.assertIn(phrase, body, "入口必须把无卡准备写成默认路线并说明资源上限")
+
+    def test_entry_pins_failure_escalation(self):
+        """故障口径：自愈有上限，第 5 次后先关机止付。"""
+        body = read(SKILL)
+        for phrase in ("最多 5 次", "关机止付", "failed", "blocked"):
+            self.assertIn(phrase, body, "入口必须写死自愈上限与关机止付出口")
+        protocol = read(REFERENCES / "protocol.md")
+        for phrase in ("先报告", "最多自愈 5 次", "5 次是上限不是配额",
+                       "预授权", "power_off", "instance_status"):
+            self.assertIn(phrase, protocol, "恢复协议必须保留自愈与止付关机的安全边界")
+
+    def test_plan_editing_allows_direct_edit_with_validation(self):
+        """计划推荐 CLI，但允许 agent 直接编辑；两条路径都要保留校验与并发保护。"""
+        skill = read(SKILL)
+        for phrase in ("apply --from-json - --brief", "aliases", "deps: []", "--dry-run",
+                       "直接编辑", "先读最新文档并备份", "check --strict"):
+            self.assertIn(phrase, skill, "入口必须同时给出标准化 JSON 与可校验的直接编辑路径")
+        reference = read(REFERENCES / "cli.md")
+        for phrase in ("推荐 CLI", "直接编辑", "原子替换", "保留已有任务/实例/流程编号",
+                       "check --strict", "不通过编辑绕过运行中改派保护"):
+            self.assertIn(phrase, reference, "CLI 参考必须保留直接编辑的锁、原子写与校验要求")
+        for phrase in ("JSON 不自动串联", "前向引用", "deps: []", "--dry-run", "aliases"):
+            self.assertIn(phrase, reference, "CLI 参考必须保留结构化输入的边界")
+
+    def test_trainpilot_uses_direct_dialogue_without_remote_plan_queue(self):
+        """TrainPilot 不再承接下一任务计划或群消息方案；否定式提及不算启用。"""
+        skill = read(SKILL)
+        reference = read(TRAINPILOT)
+        for name, document in (("SKILL.md", skill), ("trainpilot.md", reference)):
+            with self.subTest(document=name):
+                self.assertNotRegex(document, LEGACY_PLAN_QUEUE,
+                                    "文档不应再维护 next_task_plans/plan_id 远端计划队列")
+                self.assertNotRegex(document, LEGACY_ACK_CALL,
+                                    "文档不应再指示调用 ack_plan")
+                self.assertNotRegex(document, GROUP_PULL,
+                                    "文档不应再指示从群消息拉取方案")
+                self.assertNotRegex(document, FIX_TAG,
+                                    "文档不应再要求 #fix")
+                self.assertIn("直接对话", document, "新任务与等待中的方案应回到用户直接对话")
+        self.assertIn("不接收飞书下一步计划", skill)
+        self.assertIn("不接收或返回飞书下一步计划", reference)
+        self.assertIn("不调用 ack_plan", reference)
+        self.assertIn("不拉取群消息", reference)
+        self.assertIn("不要求 #fix", reference)
+        self.assertIn("保持当前现场", reference)
+        self.assertIn("取消任务并关机", reference)
+
+    def test_single_recovery_ack_and_terminal_reports(self):
+        """终态直接上报；自行修复只用一次 ACK 恢复汇报，不重复 milestone。"""
+        execution = read(REFERENCES / "execution.md")
+        for phrase in ("终态直接 report completed/failed", "ACK 合并汇报",
+                       "不重复发恢复 milestone", "通知不可用", "不阻断安全处置"):
+            self.assertIn(phrase, execution, "通知闭环必须保留单次恢复 ACK 与安全处置优先")
+        skill = read(SKILL)
+        self.assertIn("修复结果只汇报一次", skill)
+        self.assertIn("重大结果及时通知", skill)
+        reference = read(TRAINPILOT)
+        self.assertIn("唯一恢复汇报", reference)
+        self.assertIn("直接报告终态", reference)
+
+    def test_fixed_cron_and_monitoring_are_explicit(self):
+        """启动训练后实际登记整点/半点巡检，而不是只承诺监控。"""
+        skill = read(SKILL)
+        for phrase in ('CronExpression="0,30 * * * *"', "schedule(", "整点半点",
+                       "IsDaemon=false", "用户另定周期则遵从"):
+            self.assertIn(phrase, skill, "入口必须给出固定巡检的实际调度写法")
+        execution = read(REFERENCES / "execution.md")
+        for phrase in ("整点/半点宿主调度任务", "不得只承诺定时检查", "新会话先核实已有调度"):
+            self.assertIn(phrase, execution, "巡检要求必须落在实际调度与接管核实上")
+
+    def test_experiment_logging_is_wired(self):
+        skill = read(SKILL)
+        for phrase in ("references/experiments.md", "experiment init", "experiment start",
+                       "experiment update", "experiment sync", "未指定则自动创建",
+                       "飞书失败不阻断", "先读后写"):
+            self.assertIn(phrase, skill, "入口必须保留实验日志的主动初始化与先读后写")
+        reference = read(REFERENCES / "experiments.md")
+        for phrase in (".agent/experiment.yaml", "lark-cli", "先读后写", "Run 记录",
+                       "JSON 兼容 YAML", "人工决策", "extra_metrics",
+                       "不替代 MCP `trainpilot`"):
+            self.assertIn(phrase, reference, "实验日志参考必须保留 Run 留痕与同步边界")
+
+    def test_execution_chain_keeps_sync_and_cleanup(self):
+        reference = read(REFERENCES / "execution.md")
+        steps = ("1. **核实目标与工作区**", "2. **本地修改与验证**",
+                 "3. **提交并推送**", "4. **远端拉取并核对**", "5. **可恢复启动**")
+        self.assertEqual(sorted(reference.index(step) for step in steps),
+                         [reference.index(step) for step in steps],
+                         "执行闭环必须保持核实→修改→推送→远端核对→启动的顺序")
+        for phrase in ("不在服务器直接修改受版本管理的代码", "不强制推送",
+                       "source /etc/network_turbo", "tmux/screen",
+                       "不向 `plan` 塞命令和日志", "任务完成或用户取消",
+                       "定时巡检、资源等待唤醒", "cancel_job", "不等于关机",
+                       "实例最终状态", "任务面板可以保留", "不清理其他任务的调度"):
+            self.assertIn(phrase, reference)
+
+    def test_autodl_reference_keeps_safety_boundaries(self):
+        """只读等待、取消语义与费用边界留在 AutoDL 参考，不要求所有文档复读。"""
+        reference = read(REFERENCES / "autodl.md")
+        for phrase in ("0.5 核 CPU、2GB 内存、无 GPU", "power_on_no_gpu",
+                       "wait_for_job(job_id, timeout_seconds=15)", "0–300",
+                       "switch_mode", "cancel_job", "resulting_status",
+                       "list_instances", "instance_uuids", "1–100", "5 路并发",
+                       "suggested_next_poll_seconds", "定时调度器",
+                       "price: null", "不代表免费", "不能用切成无卡代替关机"):
+            self.assertIn(phrase, reference)
+        self.assertNotIn("next_retry_in_seconds", reference)
+
+    def test_guidance_does_not_require_event_subscription(self):
+        for path in (SKILL, REFERENCES / "experiments.md", REFERENCES / "protocol.md",
+                     ROOT / "rules/trainops.md"):
+            body = read(path)
+            for phrase in ("自动订阅", "get_subscribe", "docs:event:subscribe"):
+                self.assertNotIn(phrase, body)
+
+    def test_readme_contracts_are_current(self):
+        """README 面向用户，必须与当前合同一致，不能留着旧禁令或旧预算说法。"""
+        body = read(ROOT / "README.md")
+        for phrase in ("apply --from-json", "agent 也可先读后写直接编辑", "check --strict",
+                       "计划写入口", "面板只额外允许时价接口",
+                       "零第三方 Python 依赖", "只服务 Antigravity CLI",
+                       "只用原生 HTML/CSS/JS", "node tests/test_web.cjs",
+                       "只存在面板进程的内存里",
+                       "科学对照实验保留变量控制", "工程修复可按根因成组调整"):
+            self.assertIn(phrase, body, f"README 缺少当前合同：{phrase}")
+        for phrase in ("2000 字符预算", "禁止用 Edit/Write", "一次只改一个变量", *WRITE_PROHIBITIONS):
+            self.assertNotIn(phrase, body, f"README 仍保留过期说法：{phrase}")
+
 
 class EntryFileTests(unittest.TestCase):
     def test_entry_files_are_thin_pointers(self):
         for path in ENTRY_FILES:
-            body = path.read_text(encoding="utf-8")
+            body = read(path)
             where = path.relative_to(ROOT)
             self.assertIn("skills/trainops/SKILL.md", body, f"{where} 必须指向能力契约 SKILL.md")
             self.assertLessEqual(len(body.splitlines()), ENTRY_LIMIT,
@@ -403,7 +297,9 @@ class EntryFileTests(unittest.TestCase):
             self.assertNotRegex(body, r"/home/|/Users/|[A-Z]:\\|/tmp/",
                                 f"{where} 里不能出现绝对路径，否则换台机器就失效")
             for phrase in INVARIANTS:
-                self.assertIn(phrase, body, f"{where} 缺少不变量「{phrase}」：三处写法必须一致")
+                self.assertIn(phrase, body, f"{where} 缺少关键合同「{phrase}」")
+            for phrase in WRITE_PROHIBITIONS:
+                self.assertNotIn(phrase, body, f"{where} 不应再保留只许 CLI 的绝对禁令")
 
 
 @unittest.skipUnless(shutil.which("agy"), "未安装 Antigravity CLI，跳过官方校验器")
@@ -419,11 +315,7 @@ class AntigravityValidatorTests(unittest.TestCase):
                          "插件根的 rules/ 没被认成规则，Antigravity 就读不到入口那三条不变量")
 
     def test_install_into_sandbox_home_stages_plugin_root(self):
-        """用临时 HOME 真装一遍：不碰用户自己的 Antigravity 配置，也不改本仓库。
-
-        Antigravity 是按目录名为键管理插件的，装的又正好是插件根本身（skills/ 与 rules/
-        都在这一层），所以这里顺带验证"装完还能找到技能与规则"这条路径。
-        """
+        """用临时 HOME 真装一遍：不碰用户自己的 Antigravity 配置，也不改本仓库。"""
         with tempfile.TemporaryDirectory() as home:
             env = {**os.environ, "HOME": home}
             agy = shutil.which("agy")

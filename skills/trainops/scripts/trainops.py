@@ -204,6 +204,40 @@ def dispatch(args, store):
             payload = read_request(args.from_json, args.operation_name)
         elif args.operation_name == "init" and args.name is None:
             raise PlanError("init 需要 --name 或 --from-json")
+    if args.operation_name == "apply":
+        payload = read_request(args.from_json, "apply")
+        report = None
+
+        def create_plan():
+            # 只有文件不存在时才会走到这里；存在性判断与提交都在 Store.apply 的同一把锁内。
+            if "name" not in payload:
+                raise PlanError("apply 新建计划需要 JSON 的 name 字段；已有计划时 name 可省略")
+            return new_plan(payload["name"])
+
+        def operation(plan, created):
+            nonlocal report
+            if created:
+                if payload.get("updates"):
+                    raise PlanError("apply 新建计划时不能包含 updates（没有可更新的任务）")
+            else:
+                name = payload.get("name")
+                if name is not None and name != plan["name"]:
+                    raise PlanError(f"apply 不会改计划名（当前为 {plan['name']}）；"
+                                    "请去掉 name，或改成与现有名称一致")
+                if not any(payload.get(key) for key in ("instances", "flows", "tasks", "updates")):
+                    raise PlanError("apply 更新已有计划至少需要一项新增或更新；name 不会改动现有计划")
+            added = apply_request(plan, payload, set_task)
+            if args.brief or dry_run:
+                report = check_structure(plan)
+            return {**added, "name": plan["name"]}
+
+        outcome = store.apply(create_plan, operation, dry_run=dry_run)
+        result = {"created": outcome["created"], "revision": outcome["revision"], **outcome["item"]}
+        if dry_run:
+            result.update(dry_run=True, proposed_revision=result["revision"] + 1)
+        if report is not None:
+            result["check"] = report
+        return result
     if args.operation_name == "init":
         plan = new_plan(payload["name"] if payload is not None else args.name)
         added = (apply_request(plan, payload, set_task) if payload is not None else

@@ -41,6 +41,20 @@ def parser():
     for target in (init, batch):
         target.add_argument("--from-json", metavar="PATH|-", help="结构化 JSON；- 从标准输入读取，不与简写字段混用")
         target.add_argument("--dry-run", action="store_true", help="仅校验和预览，不写文件；编号不保留")
+    apply = commands.add_parser(
+        "apply", help="创建或更新计划（只写计划账本，不执行训练）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=("一次创建或增量修改计划：\n"
+                     "  无计划 → 按 JSON 新建（必须有 name，不能带 updates）\n"
+                     "  有计划 → 按 batch 语义原子新增/更新（name 可省略；若提供必须与当前名称一致，不会改名）\n"
+                     "key 只在本次请求内生效，不按 key 持久匹配：重复提交新增项会再次创建，已有对象用 updates。\n"
+                     "只记录计划，不执行或停止训练，也不改 config/experiments/wallet。"),
+        epilog=("JSON 键：name（仅新建生效）、instances、flows、tasks、updates；\n"
+                "字段、别名与校验规则同 init/batch --from-json。\n"
+                "--dry-run 不创建目录、锁或文件，编号不保留。"))
+    apply.add_argument("--from-json", metavar="PATH|-", required=True,
+                       help="结构化 JSON；- 从标准输入读取")
+    apply.add_argument("--dry-run", action="store_true", help="仅校验和预览，不写文件；编号不保留")
     demo = commands.add_parser("demo", help="在空目录生成演示计划，无远程操作")
     demo.add_argument("--force", action="store_true", help="覆盖已有计划（仅演示数据，慎用）")
     check = commands.add_parser("check", help="执行结构性检查（依赖拓扑、实例分配与耗时就绪情况）")
@@ -94,7 +108,7 @@ def parser():
     wallet_set = wallet_actions.add_parser("set", help="面板没开或需要人工核对时登记余额")
     wallet_set.add_argument("--assets", type=money_arg, default=argparse.SUPPRESS, help="余额（元）；none 清空")
     wallet_set.add_argument("--voucher", type=money_arg, default=argparse.SUPPRESS, help="代金券（元）；单独展示不计入可用时长")
-    for target in (init, batch, instance_add, instance_set, flow_add, flow_set, task_add,
+    for target in (init, batch, apply, instance_add, instance_set, flow_add, flow_set, task_add,
                    task_set, quick_set, wallet_set):
         target.add_argument("--brief", action="store_true", help="输出紧凑文本回执，不改变保存及退出码语义")
     return root

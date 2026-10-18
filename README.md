@@ -7,17 +7,17 @@
 - **任务流程图 Web 面板**：整份计划只有一张有向无环主图，所有流程的任务都在这张图里。节点按列/行网格排布，跨层依赖在中间层插入不可见路点，服务端用重心排序与局部相邻交换减少连线交叉，并把未完成任务排在每列上半部、独立完成节点沉到底部；不显示开始节点，无前置任务就是最左侧一列的起点。画布是原生滚动容器，支持横向/纵向滚动查看大图。节点与箭头以中性色为主，颜色只用于任务状态；执行中节点的左侧色条取所属实例的身份色，实例行用同一色条对应；每个任务只画成一个叶子矩形节点，不嵌套子任务，完整显示任务名称、实例、流程、实际子进度与预计时间。流程完成度以一行纯文本读数展示「已完成 ÷ 未取消任务」。仅展示现有依赖，不提供条件分支执行；面板上可登记实例时价与开发者 Token。
 - **自主优化调度**：agent 以目标、验收和硬约束为准，可按依赖、资源、成本与实验结果自主重排、拆并任务和调整实例分配，不机械照搬任务顺序；改变目标、放弃必需实验或增加未授权费用时先确认。
 - **单 agent 多机再平衡**：任务完成/失败、实例可用及巡检时检查全局待执行任务，借助现有 `set --instance` 改派合格任务；先排除原远端队列重复启动，再由同一个 agent 按最新计划在目标机实际启动并核实，不只更新面板。只搬尚未启动的任务，不绕过真实依赖或节点约束；agent 未运行时不再平衡，不新增常驻调度器。见[执行闭环](skills/trainops/references/cli.md#单-agent-多机再平衡)。
-- **极简 Agent 操作**：单次命令完成建表/批量更新，只填核心字段（状态、进度、耗时、依赖），免填冗余记录，避免上下文过长产生幻觉。
+- **标准化 Agent 操作**：首选 `apply --from-json` 一次完成建表或增量更新，只填核心字段（状态、进度、耗时、依赖），临时 `key` 自动映射为稳定编号；需要时也可先读后写直接编辑账本并跑 `check --strict` 校验，避免上下文过长产生幻觉。
 - **只做 Antigravity CLI 插件**：仓库根就是插件根（`plugin.json` 清单 + `rules/` 规则入口 + `skills/trainops/` 能力契约），一条 `agy plugin install` 装完即用；不提供别家 agent 的清单，也不维护第二份会漂移的规则。
 - **无卡准备再训练**：通过外部 `autodl_mcp` 先无卡开机，完成项目/环境了解、配置与代码调整；准备就绪后关机，再按需正常开机或持续请求 GPU，验证就绪后正式训练，减少 GPU 空等。
 - **AutoDL 存储与花销**：按三盘规范登记磁盘用量、TensorBoard 事件落数据盘；面板进程按周期结算账户余额与「跑完剩余计划还需多少 GPU 小时 / 多少钱 / 余额够不够」，开发者 Token 在面板上登记。
 - **飞书实验日志**：agent 巡检同时用 `lark-cli` 维护多维表格；复用用户指定/项目已有表，未指定则自动创建。项目配置、计划账本与 Run 历史统一存实验项目 `.agent/experiment.yaml`，不覆盖人工决策。见[实验日志](skills/trainops/references/experiments.md)。
-- **执行与通知闭环**：MCP `trainpilot` 在固定巡检和重大节点即时推送训练状态，独立于 `lark-cli` 实验日志；按实时协议使用全部五个 MCP 工具完成状态检查、上报、异常决策、执行回执和下一任务计划确认（见[TrainPilot 接入](skills/trainops/references/trainpilot.md)）；代码本地修改验证、提交推送后远端拉取核对；完成/取消清理本任务不再需要的巡检与资源等待任务，汇报结果位置和实例最终状态，面板可保留。见[执行与通知闭环](skills/trainops/references/execution.md)。
+- **执行与通知闭环**：MCP `trainpilot` 在固定巡检和重大节点即时推送训练状态，终态直接上报，独立于 `lark-cli` 实验日志；异常按实时协议取得决定，自行修复只做一次 ACK 恢复汇报；用户选择等待时保持现场、等直接对话，不从飞书或群消息拉取方案。取消任务同时停止本任务进程并按授权关机；完成/取消清理本任务不再需要的巡检与资源等待，汇报结果位置和实例最终状态，面板可保留。代码本地修改验证、提交推送后远端拉取核对。见[TrainPilot 接入](skills/trainops/references/trainpilot.md)与[执行与通知闭环](skills/trainops/references/execution.md)。
 - **零第三方 Python 依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）；飞书同步另需已安装并授权的 `lark-cli`。
 
 ## 1. 安装到 Antigravity CLI
 
-本插件**只服务 Antigravity CLI**，仓库根就是插件根：根目录 `plugin.json`（清单）+ `rules/trainops.md`（规则入口：开工顺序与三条不变量）+ `skills/trainops/`（完整能力契约）。规则只做指针，细则只有 `SKILL.md` 一份——不存在第二份会漂移的规则。
+本插件**只服务 Antigravity CLI**，仓库根就是插件根：根目录 `plugin.json`（清单）+ `rules/trainops.md`（规则入口：开工顺序与关键不变量）+ `skills/trainops/`（完整能力契约）。规则只做指针，细则只有 `SKILL.md` 一份——不存在第二份会漂移的规则。
 
 ### 1.1 装成插件（推荐）
 
@@ -43,7 +43,7 @@ ln -s <仓库路径>/skills/trainops <实验项目>/.agents/skills/trainops     
 
 在 Antigravity 会话里说一句即可（把两处路径换成你自己的）：
 
-> 启用 TrainOps：读取 `<仓库路径>/skills/trainops/SKILL.md`，保留原有角色。实验项目目录为 `<实验项目路径>`。当前仅加载能力，不创建计划、不启动进程；收到任务后按 SKILL.md 的开工顺序执行：先以后台常驻任务起任务流程图面板（`serve`）并报出地址，再走无卡准备（本次开机配置为 0.5 核 CPU、2GB 内存、无 GPU，仅做适配该资源的轻量准备），之后才按授权申请有卡开机。以目标、验收标准和明确硬约束为准，自主优化调度，不必机械照搬我列出的步骤或顺序。动态调度的最终目的是加快实验迭代：在预算、验收标准和资源授权范围内，缩短从实验假设到可用于下一轮决策的有效结果的时间，而不是单纯追求 GPU 利用率或并行任务数量。优先推进能验证关键假设、解除后续依赖或决定下一轮实验方向的任务；每轮结果出来后及时复盘并调整后续安排，避免为了占满资源而运行低价值或重复实验。我可能提供多个 AutoDL 实例及各自对应的 SSH 名称；这些实例是候选资源，不保证当前都有空闲 GPU。先核实实例与 SSH 的对应关系、实际 GPU 可用性及已有任务，再按依赖、GPU 型号/显存、环境与数据就绪情况、成本和预计耗时动态调整实验顺序、并行度与实例分配。某台暂时缺卡时，优先用已就绪且满足要求的实例推进可执行实验，同时完成不依赖 GPU 的准备，不让单台缺卡阻塞整个计划；资源变化后继续重排，迁移前核实环境、数据和 checkpoint 兼容性，不重复启动或擅自中断已有训练。SSH 可达或开机请求已提交不代表 GPU 就绪，验证通过后才启动训练并标记 running。常规优化直接同步计划并简述理由，改变目标、放弃必需实验、增加未授权费用、中断已有任务或超出约定的缺卡等待范围时先确认。其他参考按需读取。
+> 启用 TrainOps：读取 `<仓库路径>/skills/trainops/SKILL.md` 并保留原有角色。实验项目目录为 `<实验项目路径>`；当前仅加载能力，不创建计划、不启动进程。收到任务后按 SKILL.md 的开工顺序执行：先以后台常驻任务起任务流程图面板（`serve`）并报出地址，再走无卡准备（0.5 核 CPU、2GB 内存、无 GPU，仅做适配该资源的轻量准备），之后才按授权申请有卡开机。以目标、验收标准和明确硬约束为准，在预算与资源授权内自主优化调度，优先推进能验证关键假设、解除依赖或决定下一轮方向的任务，不必机械照搬我列出的步骤或顺序。我可能提供多台 AutoDL 实例及各自对应的 SSH 名称；先核实实例与 SSH 的对应关系、实际 GPU 可用性及已有任务，再按依赖、显存、环境、成本和预计耗时动态分配。常规重排直接同步计划并简述理由；改变目标、放弃必需实验、增加未授权费用或中断已有任务前先确认。其他参考按需读取。
 
 ### 1.4 两个容易踩的坑
 
@@ -68,12 +68,12 @@ python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --por
 
 设 `CLI="python3 skills/trainops/scripts/trainops.py -p /你的路径/my-experiment"`。
 
-### JSON 建表与批量修改（agent 首选）
+### 标准化 JSON 输入（agent 首选）
 
-无需拼接冒号字段或预先计算任务编号，直接从 stdin 提交结构化输入：
+首选 `apply --from-json`，无需拼接冒号字段或预先计算任务编号：目录里还没有计划时按 `name/instances/flows/tasks` 创建，已有计划时按 `instances/flows/tasks/updates` 增量更新，不覆盖原计划、不改计划名。也支持 `--from-json /路径/输入.json`；`--dry-run` 只校验和预览，不创建目录/锁/计划文件、不改变 revision。显式 `init --from-json` / `batch --from-json` 仍然可用，分别只创建、只增量。
 
 ```bash
-$CLI init --from-json - <<'JSON'
+$CLI apply --from-json - --brief <<'JSON'
 {
   "name": "基线实验",
   "instances": [{"key": "gpu", "name": "训练机", "autodl_id": "实例ID", "ssh_alias": "gpu-a"}],
@@ -87,18 +87,19 @@ $CLI init --from-json - <<'JSON'
 JSON
 
 # 核实训练完成后一次修改状态、预计耗时及巡检记录
-$CLI batch --from-json - --brief <<'JSON'
+$CLI apply --from-json - --brief <<'JSON'
 {"updates": [{"id": "F01-T02", "status": "done"}, {"id": "F01-T03", "minutes": 15, "checked": true}]}
 JSON
 ```
 
-- init 顶层为 `name/instances/flows/tasks`；batch 为 `instances/flows/tasks/updates`，可以一次追加并更新新/旧任务。updates 用 `id` 定位，支持名称、状态、进度、实例、耗时、依赖、开始限制、备注与巡检标记。
-- `key` 仅本次请求有效，回执 `aliases`（batch 为 `item.aliases`）返回系统编号映射，后续用真实编号。允许依赖后面的任务或跨流程任务；名称可以含冒号。**JSON 不自动串联**，新增省略 deps 或写 `[]` 都是无依赖，更新 `deps: []` 表示清空。
+- `apply` 顶层为 `name/instances/flows/tasks/updates`；无计划时 `name` 必填且不能包含非空 `updates`，已有计划时 `name` 可省略或与当前同名，写不同名会被拒绝。`init` 顶层为 `name/instances/flows/tasks`；`batch` 为 `instances/flows/tasks/updates`。
+- `apply` 回执的 `created`、`revision`、`aliases` 都在顶层；batch 的别名映射在 `item.aliases`。
+- `key` 仅本次请求有效，回执 `aliases` 返回系统编号映射，后续用真实编号。`apply` 是增量操作，重复提交新增项会再次创建；修改已有任务用 updates 和真实 ID。允许依赖后面的任务或跨流程任务；名称可以含冒号。**JSON 不自动串联**，新增省略 deps 或写 `[]` 都是无依赖，更新 `deps: []` 表示清空。
 - 更新省略字段保持原值；`instance/minutes/progress/not_before` 可用 `null` 清空或表示待估。数字使用 JSON 数字，不使用 `?`/`-`/`none`。同任务每批最多一项更新；运行中保护、状态机与真实观测要求不变。
-- `--from-json /路径/输入.json` 也可用，不与原简写字段混用。加 `--dry-run` 只校验和预览，不创建目录/锁/计划文件、不改变 revision；回执含 `dry_run` 和 `proposed_revision`，编号不保留。正式提交时去掉该参数。
-- 真实 batch 持锁读取最新账本、按最终拓扑校验、一次原子提交；硬错误不保存，成功只推进一次 revision，保留 config/experiments 和面板费率。不直接 Edit/Write 账本，Token 入口不变。
+- 真实写入持锁读取最新账本、按最终拓扑校验、一次原子提交；硬错误不保存，成功只推进一次 revision，保留 config/experiments 和面板费率。
+- 也允许 agent 直接编辑 `.agent/experiment.yaml`：先读最新文档并备份，保留三段结构、编号、Run 历史与无关字段，避开面板结算等并发写入，用临时文件原子替换，改完 `check --strict` 通过后再启动受影响任务。CLI 自带锁、原子提交和自动编号，通常更省事；不得借直接编辑绕过运行中改派保护。
 
-完整字段、空值和前向引用规则见 [JSON 用法](skills/trainops/references/cli.md#json-建表与批量修改agent-首选)。少量手动修改仍可用以下简写。
+完整字段、空值和前向引用规则见 [JSON 用法](skills/trainops/references/cli.md#json-建表与批量修改agent-首选)，直接编辑规范见[直接编辑](skills/trainops/references/cli.md#直接编辑计划文件)。少量手动修改仍可用以下简写。
 
 ### 简写一次创建完整计划（兼容）
 
@@ -154,7 +155,8 @@ brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒�
 
 | 命令 | 说明 |
 |---|---|
-| `init --from-json <path|-> [--dry-run]` / `batch --from-json <path|-> [--dry-run]` | agent 首选；具名字段、临时别名及前向依赖，新增/更新原子提交；dry-run 不落盘、不保留编号 |
+| `apply --from-json <path|-> [--dry-run]` | agent 首选；无计划时创建、已有计划时增量更新；具名字段、临时别名及前向依赖，一次原子提交；dry-run 不落盘、不保留编号 |
+| `init --from-json <path|-> [--dry-run]` / `batch --from-json <path|-> [--dry-run]` | 兼容入口：init 只创建，batch 只增量；字段与校验规则同 apply |
 | `init --name ... [--instance ...] [--flow ...] [--task ...]` | 新建计划，支持一次传入全部实例、流程和任务（仅同流程同实例默认串联，可显式留空依赖以并行）；已有计划时拒绝覆盖 |
 | `demo [--force]` | 在空目录生成演示计划，不涉及任何远程操作；`--force` 用于重置演示目录或已被改动的计划 |
 | `check [--strict]` | 结构性检查：返回问题（阻断性）与提醒（如 pending 任务耗时待估、依赖间时间空隙过大）两组结果；`--strict` 在存在问题时不返回 0 退出码，便于脚本或 CI 拦截 |
@@ -168,6 +170,14 @@ brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒�
 | `serve --port 8765 [--interval 30]` | 启动本地任务流程图 Web 面板（仅监听 `127.0.0.1`）；面板上**能写的只有实例时价与开发者 Token**，其余路径与写动词一律拒绝；带 `--interval` 时同一进程内再跑一个结算线程。它是前台进程，**要常驻就由调用方以后台任务起**（别用 shell 的 `&`：父 shell 一退进程就被带走），CLI 自己不后台化、不写 PID、不碰 systemd |
 
 几个容易被忽略的约束：同一实例同时只允许一个 `running` 任务（`local` 不占 GPU，可并行）；依赖未完成的任务不能被标记为 `running`；实例上仍有任务运行时不能把该实例标为 `off` / `unreachable`。
+
+### 执行、通知与取消
+
+- 训练通过 SSH 在 tmux/screen 等断线后可恢复的会话中运行；代码先本地修改验证，按授权提交推送，远端拉取核对 commit 后再启动。
+- MCP `trainpilot` 负责即时通知与按钮决定，终态直接 `report` completed/failed；异常修复验证后用一次 ACK 合并汇报，不重复 milestone。`lark-cli` 实验日志记录 Run 与证据，两者互不替代。
+- 用户选择等待时保持现场与任务状态，结束轮询，把控制交还直接对话；不接收 `next_task_plans`、不调用 `ack_plan`，也不要求 `#fix` 或从群消息拉取方案。
+- 取消任务并关机：停止本任务进程、保全必要产物、清理本任务的资源等待，按授权关机并核实物理终态；有其他任务共享实例时先说明冲突，不误停其他训练。
+- 完成/取消后清理本任务不再需要的定时巡检与唤醒，汇报结果位置、实例最终状态和未决事项；任务面板可以保留。
 
 ## 5. AutoDL 存储、TensorBoard 与余额
 
@@ -192,7 +202,7 @@ brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒�
 训练或准备出问题（进程崩溃、OOM、依赖/数据缺失、SSH 断、盘满、GPU 不可用、checkpoint 损坏）时走这条固定路线：
 
 1. **先报告**：说清现象与已核实的证据（进程、日志、`nvidia-smi`、盘用量、实例状态）以及影响哪个任务，不静默重试、不伪造进度。
-2. **自愈**：定位原因后对症处理——调参数、补依赖、清盘、重下数据、重启训练进程；一次只改一个变量，每次核实真实结果（进程在跑、GPU 在用、checkpoint 在写），同一个动作不重复第二遍。**最多 5 次：5 次是上限不是配额，修好就继续训练。**
+2. **自愈**：定位原因后对症处理——调参数、补依赖、清盘、重下数据、重启训练进程；科学对照实验保留变量控制，工程修复可按根因成组调整相关配置，每次尝试后核实真实结果（进程在跑、GPU 在用、checkpoint 在写）。避免没有新证据的重复，瞬时故障可合理退避重试。**最多 5 次：5 次是上限不是配额，修好就继续训练。**
 3. **第 5 次仍无法继续 → 先关机止付**：结束训练/准备进程、确认必要产物与日志已落盘，`power_off` 后用 `instance_status` 确认真已关机；任务按真实结果记 `failed`（在等你拍板时记 `blocked`），不标 done、不留 running。
 
 这一步关机是你对「5 次自愈失败」给出的**预授权中间关机**，agent 不必再等一轮确认——它止的是空转计费，代价只是保留实例与后续任务，重新开机仍走原来的授权与无卡准备流程。已经明确无法继续的情形（实例不健康、长时间缺货、数据缺失、验收口径变化、要加钱）不必凑满 5 次，可直接止付关机并说明理由。**其它关口不变**：最终关机、释放实例、超出约定的持续请求等待仍须先获授权。细则见 [异常与恢复协议](skills/trainops/references/protocol.md#故障自愈与止付关机)。
@@ -259,7 +269,7 @@ node tests/test_web.cjs                    # 面板渲染：原生滚动画布/�
 ### 硬约束
 
 - **零第三方依赖**：只用 Python 标准库；测试用 Node 内置模块（没有 `package.json`，不装 npm 包）。
-- **写计划只有两条入口**：CLI，以及面板的时价接口（`POST /api/instance-price`，只能改时价）。两条都走 `Store.change()`；项目文件 `$PROJECT/.agent/experiment.yaml` 的 `plan` 段是唯一事实来源，禁止用 Edit/Write 直接改。面板另有一个 `POST /api/token`，只把开发者 Token 写进面板进程内存——不经过 `Store`，也不落任何文件。
+- **计划写入口**：推荐 CLI（`apply --from-json` 等，统一走 `Store.change()`），面板只额外允许时价接口（`POST /api/instance-price`）。项目文件 `$PROJECT/.agent/experiment.yaml` 的 `plan` 段是唯一事实来源；agent 也可先读后写直接编辑，但必须保留三段结构、编号与无关字段，避开并发写入并原子替换，改完跑 `check --strict`，不得借编辑绕过运行中保护。面板另有一个 `POST /api/token`，只把开发者 Token 写进面板进程内存——不经过 `Store`，也不落任何文件。
 - **缺数据就缺结论**：算不出的数字（缺费率、缺耗时、缺余额）一律不显示，绝不用 0 顶替或自行估算。这条口径同时约束 CLI 文本、`/api/plan` 与面板三处。
 
 ### 常用命令
@@ -331,13 +341,14 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 
 `SKILL.md` 是热插拔入口（外部 agent 读的那份）、`rules/trainops.md` 是 Antigravity 的规则入口、`references/protocol.md` 是异常与恢复的按需参考、`README.md`（本文件）面向用户。CLI 行为变了，这几处要同步。
 
-外部 agent 反复踩过的两条默认路线，改入口时别丢（`test_plugin.SkillTests.test_entry_keeps_task_startup_order` 盯着）：
+外部 agent 反复踩过的默认路线，改入口时别丢（`test_plugin.SkillTests.test_entry_keeps_panel_resident_and_no_gpu_default` 等用例盯着）：
 
 - **收到任务就要起面板**：`serve --port 8765 --interval 30`（一个进程顺带结算，也是唯一的结算方式）；必须**以后台任务常驻起**——用 harness 的后台任务机制，别用 shell 的 `&` 或前台，父 shell 一退面板就被带走。
 - **无卡准备是默认**：先 `power_on_no_gpu` 准备再申请有卡，只有用户明确要求持续请求或已核实无需准备才直接 `power_on`。
-- **故障自愈有上限**：先报告再自愈，最多 5 次，仍无法继续即先关机止付（唯一预授权的关机情形，见 [协议](skills/trainops/references/protocol.md#故障自愈与止付关机)）。
+- **故障自愈有上限**：先报告再自愈，最多 5 次，仍无法继续即先关机止付（5 次自愈失败本身有预授权；TrainPilot 的“取消任务并关机”按钮也授权对应专属实例关机。见 [协议](skills/trainops/references/protocol.md#故障自愈与止付关机)）。
+- **计划首选标准化 JSON**：`apply --from-json`，也允许按规范直接编辑并校验；不要为“只走 CLI”或字符预算牺牲已有规则。
 
-`SKILL.md` 有 2000 字符预算（`test_trainops` 的入口用例；2026-10-16 由 1800 放宽，当时只剩 4 字符，新规则只能靠削减别处硬挤），新约束先看能不能挤进这个预算，别靠加长入口来写第二份细则。
+入口与规则保持简短、只做指针；细则留在 `SKILL.md` 与 `references/`，同一份约束不要在多处分叉。SKILL 以讲清合同为准，不设字符硬门槛。
 
 ### 插件打包
 
@@ -346,7 +357,7 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 | 文件 | 作用 |
 |---|---|
 | `plugin.json` | 插件清单：`$schema` 指向 Antigravity 的 schema，`name` 决定装到 `~/.gemini/config/plugins/<name>/`，`version` 是插件版本 |
-| `rules/trainops.md` | 规则入口（≤40 行）：只做指针 + 三条不变量，细则留在 `SKILL.md` 与 `references/` |
+| `rules/trainops.md` | 规则入口（≤40 行）：只做指针 + 关键不变量，细则留在 `SKILL.md` 与 `references/` |
 | `skills/trainops/` | 技能本体；不要移动这一层——脚本靠 `parents[3]` 回推插件根 |
 
 三条不能破的规矩：

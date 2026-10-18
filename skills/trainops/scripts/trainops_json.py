@@ -84,9 +84,15 @@ def validate_fields(item, path):
 
 
 def validate_request(payload, operation):
-    allowed = set(CREATES) | ({"name"} if operation == "init" else {"updates"})
+    allowed = set(CREATES)
+    if operation in ("init", "apply"):
+        allowed.add("name")
+    if operation != "init":
+        allowed.add("updates")
     object_fields(payload, allowed, {"name"} if operation == "init" else set(), "JSON")
     if operation == "init":
+        input_text(payload["name"], "name", True)
+    elif operation == "apply" and "name" in payload:
         input_text(payload["name"], "name", True)
     keys = set()
     for collection in (*CREATES, "updates"):
@@ -109,6 +115,8 @@ def validate_request(payload, operation):
                 keys.add(key)
     if operation == "batch" and not any(payload.values()):
         raise PlanError("JSON batch 至少需要一项新增或更新")
+    if operation == "apply" and not any(payload.values()):
+        raise PlanError("JSON apply 至少需要 name、instances、flows、tasks 或 updates 之一")
     return payload
 
 

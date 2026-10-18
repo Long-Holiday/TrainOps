@@ -2,5 +2,5 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "trainops",
   "version": "0.1.0",
-  "description": "AutoDL 多实例训练计划账本：用 CLI 维护实例、流程、任务依赖、真实进度与余额结算，按需起任务流程图面板；agent 巡检时通过 lark-cli 维护飞书实验日志。项目配置、计划账本与 Run 历史统一随实验项目持久化。本身不跑训练，项目文件只过 CLI。"
+  "description": "AutoDL 多实例训练计划账本：用 CLI 维护实例、流程、任务依赖、真实进度与余额结算，按需起任务流程图面板；agent 巡检时通过 lark-cli 维护飞书实验日志。项目配置、计划账本与 Run 历史统一随实验项目持久化。本身不跑训练，计划推荐用 CLI 规范化维护，也允许校验通过的直接编辑。"
 }

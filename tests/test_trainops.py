@@ -1662,8 +1662,8 @@ class BriefTests(unittest.TestCase):
     def test_entry_safety_and_reference_links(self):
         entry = ROOT / "skills/trainops/SKILL.md"
         text = entry.read_text()
-        for rule in ("禁止直接 Edit/Write JSON", "用户授权", "释放前先转存", "Token", "--checked", "--brief",
-                     "自主优化调度", "验收标准", "硬约束", "未授权费用"):
+        for rule in ("也允许 agent 直接编辑", "check --strict", "释放实例前转存", "Token", "--brief",
+                     "缩短假设到有效结果", "验收", "保留真实依赖", "超出费用授权"):
             self.assertIn(rule, text)
         docs = [ROOT / "README.md", entry, *entry.parent.glob("references/*.md")]
         for doc in docs:

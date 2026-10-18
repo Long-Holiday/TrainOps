@@ -12,7 +12,7 @@
 - 优先做能及早暴露环境、数据或方案问题的低成本验证；独立任务在已授权实例间并行，GPU 等待期间推进无需 GPU 的准备或分析，避免为了守原顺序付费空等。实例间共用的数据集与中间产物走共享的文件存储（`/root/autodl-fs` 对所有实例可见），不必重复上传或实例间互传，但共享盘上要按实例/任务分目录，别让并发写入互相覆盖。不擅自新增付费实例，也不把远端无卡任务冒充 `local`（本地任务）。
 - 根据实验结果重排后续工作、拆分过大任务、合并不影响验收的重复步骤；已有可信产物可核实后复用。对失效或低收益任务说明判断与替代方案；放弃用户明确要求的实验、改变验收、扩大费用授权或中断运行任务须先确认，不以“优化”为由静默缩减范围。
 - `show --brief` 只是限量候选，不是必须执行的队首命令；有省略或需比较其他候选时再用 `show` 查看完整任务。缺耗时/费率时可以依据已知依赖和资源决策，但不编造最优时长、节约金额或进度。
-- 执行调整前用 CLI 同步实例、耗时与真实依赖；保留编号和历史。JSON 批量新增不隐含串联；仅简写模式在同流程同实例内默认串联，独立任务可显式留空依赖；不要为“优先级”伪造依赖、删除真实依赖或清除用户指定的最早开始限制。CLI 无法表达的调整应说明限制，不直接改 JSON 或虚构参数。
+- 执行调整前用 CLI 同步实例、耗时与真实依赖；保留编号和历史。JSON 批量新增不隐含串联；仅简写模式在同流程同实例内默认串联，独立任务可显式留空依赖；不要为“优先级”伪造依赖、删除真实依赖或清除用户指定的最早开始限制。CLI 无法表达的调整可按下文直接编辑规范处理，不虚构参数。
 - 结构调整后检查最终问题并修正，再启动受影响任务；不要因为 CLI 已保存就视为排程可执行。运行中任务改实例/依赖/开始限制仍遵守 [恢复协议](protocol.md#状态与依赖)。被合并或取消的任务不冒充 done，受影响下游依赖须按真实产物关系核对；改变方案的理由在对话简述，不往计划塞调度长文。
 
 ## 单 agent 多机再平衡
@@ -35,10 +35,10 @@ $CLI set F01-T05 --instance I02 --brief
 
 ## JSON 建表与批量修改（agent 首选）
 
-直接用 stdin 提交，不需要人工编辑输入文件，更不能直接 Edit/Write `.agent/experiment.yaml`。也支持 `--from-json /路径/计划.json`，它是输入文档，不是账本或凭据配置。JSON 不与 `--name/--instance/--flow/--task/--set/--dep` 混用。
+推荐统一用 `apply --from-json - --brief` 从 stdin 提交：无计划时按 init 规则创建，已有计划时按 batch 规则增量更新，不覆盖原计划。不需要先编排编号、拼冒号字段或自行生成流程图几何。也支持 `--from-json /路径/计划.json`。显式 `init` / `batch` 保留；JSON 不与 `--name/--instance/--flow/--task/--set/--dep` 混用。apply 是增量请求，不是重复提交整份计划的幂等 upsert；请求内 key 不跨调用保存。允许直接编辑账本，见下文规范。
 
 ```bash
-$CLI init --from-json - <<'JSON'
+$CLI apply --from-json - --brief <<'JSON'
 {
   "name": "基线实验",
   "instances": [{"key": "gpu", "name": "训练机", "autodl_id": "实例ID", "ssh_alias": "gpu-a"}],
@@ -52,7 +52,7 @@ $CLI init --from-json - <<'JSON'
 JSON
 
 # 已核实训练完成后，批量更新、改派并追加任务；只推进一个 revision
-$CLI batch --from-json - --brief <<'JSON'
+$CLI apply --from-json - --brief <<'JSON'
 {
   "tasks": [{"key": "report", "flow": "F01", "name": "整理报告", "instance": "local", "minutes": 10, "deps": ["F01-T03"]}],
   "updates": [
@@ -68,6 +68,7 @@ JSON
 
 | 部分 | 字段 |
 |---|---|
+| apply 顶层 | 新建时 `name` 必填，不接受非空 `updates`；已有计划时 name 可省略，提供则须与当前名称相同，其余按 batch 增量规则；回执 created 表示是否创建，aliases 在顶层 |
 | init 顶层 | `name` 必填；`instances`、`flows`、`tasks` 为可省略的数组 |
 | batch 顶层 | `instances`、`flows`、`tasks`、`updates` 为可省略的数组，至少一项新增/更新；不修改计划名 |
 | instances 新增项 | `name`、`autodl_id`、`ssh_alias` 必填；`key` 可选 |
@@ -86,7 +87,7 @@ JSON
 
 ### 只校验不保存
 
-对同一条 init/batch 增加 `--dry-run` 即可（简写模式同样支持），例如：
+对同一条 apply/init/batch 增加 `--dry-run` 即可（简写模式同样支持），例如：
 
 ```bash
 $CLI init --from-json /路径/计划.json --dry-run --brief
@@ -94,6 +95,17 @@ $CLI batch --from-json /路径/修改.json --dry-run
 ```
 
 预览执行同样的硬校验和结构检查，**不创建目录、锁或计划文件，不修改账本字节或 revision**；JSON 返回 `dry_run: true`、当前 `revision`、预计提交的 `proposed_revision` 与编号映射，brief 明示「未保存」。编号仅供预览、不保留，别的写入后可能变化。init 预览也拒绝覆盖已有计划。issues/warnings 沿用原结构诊断语义，不自动升级为硬错误；真实提交需要去掉 `--dry-run`，按最新账本重新校验。
+
+## 直接编辑计划文件
+
+agent 可以直接编辑 `<实验项目>/.agent/experiment.yaml`；推荐 CLI，因为它自动编号、校验并持锁原子写入。
+
+1. 读取最新完整文档并备份。文件必须保持 JSON 兼容 YAML 1.2：顶层 schema_version/config/plan/experiments 三段结构和版本均保留，不写任意缩进式 YAML。
+2. 避开其他写入，包括面板周期结算和时价登记。需要暂停面板时先说明 Token 仅在进程内存、重开要在面板重填；不要为编辑未经核实地结束旧面板。也可使用现有 experiment.lock 的排他锁完成读改写，所有读改写均应在锁内，不把锁外旧副本覆盖到新文档。
+3. 保留已有任务/实例/流程编号、counter、Run 历史及无关配置；新编号须与计数器一致，实际状态和依赖必须有依据。修改 plan 时递增 revision 并更新 updated_at；不把执行队列顺序伪造为 deps，不通过编辑绕过运行中改派保护。
+4. 采用临时文件加原子替换，避免面板读取半份内容。完成后执行 `$CLI check --strict`；若硬校验失败，依据备份修复本次改动，不能覆盖期间其他人的新修改。通过后再执行受影响的训练。
+
+结构检查中的未知耗时是数据不足，不要求为通过校验编造数字。手工整理不代表远端训练已启动或停止，仍需真实核实。Token 仍只进面板内存，不进入此文件；时价人工输入仍走面板。
 
 ## 简写建表（兼容快捷方式）
 

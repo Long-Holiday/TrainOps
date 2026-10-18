@@ -173,14 +173,17 @@ def brief_receipt(args, result):
     lines = ([f"预览 · 当前 rev {result['revision']} → 提交后 rev {result['proposed_revision']}（未保存）",
               "编号仅为预览，不保留；实际提交前可能变化"] if preview else
              [f"已保存 · rev {result['revision']}"])
+    if operation == "apply":
+        lines.append("新建计划（只记录，不执行训练）" if result.get("created")
+                     else "更新已有计划（只记录，不执行训练）")
     if operation == "wallet":
         wallet = result.get("wallet", result.get("item"))
         for key, label in (("assets", "余额"), ("voucher", "代金券（不计入可用时长）")):
             lines.append(f"{label}: ¥{wallet[key]:.2f}" if wallet.get(key) is not None else f"{label}: 未登记")
         if wallet.get("observed_at"):
             lines.append("余额观测于 " + age_text(wallet["observed_at"]))
-    elif operation in ("init", "batch"):
-        item = result if operation == "init" else result["item"]
+    elif operation in ("init", "batch", "apply"):
+        item = result if operation in ("init", "apply") else result["item"]
         for key, label in (("instances", "实例"), ("flows", "流程"), ("tasks", "任务"),
                            ("updated", "更新"), ("deps", "依赖变更"), ("inferred", "自动串联")):
             entries = item.get(key, [])
@@ -219,7 +222,7 @@ def brief_receipt(args, result):
         lines.append(f"结构检查: {len(report['issues'])} 个问题，{len(report['warnings'])} 个提醒（{saved}）")
         lines.extend(brief_group("结构问题", report["issues"]))
         lines.extend(brief_group("提醒", report["warnings"]))
-    if operation in ("init", "batch") or "check" in result:
+    if operation in ("init", "batch", "apply") or "check" in result:
         lines.append("完整计划用 show；完整问题与提醒用 check")
     return "\n".join(lines)
 

@@ -1,4 +1,8 @@
-"""`.agent/experiment.yaml` 的唯一读写入口。"""
+"""`.agent/experiment.yaml` 的加锁读写与整份文档校验。
+
+CLI 与面板经由这里读写；也允许备份后直接编辑这份 JSON 兼容 YAML（保留三段），
+但 CLI 仍会在锁内校验整份文档，非法内容不会被自动导入或静默修复。
+"""
 
 from contextlib import contextmanager, nullcontext
 import json
@@ -37,9 +41,9 @@ def validate_document(document):
         raise PlanError(f"项目配置 schema {document['schema_version']} 与当前 {FILE_VERSION} 不符"
                         "（开发阶段不提供迁移）；请备份并核对文件，不会自动覆盖")
     if not isinstance(document.get("plan"), dict):
-        raise PlanError("项目配置缺少 plan 段；禁止直接编辑文件，请备份后重新 init")
+        raise PlanError("项目配置缺少 plan 段；可先备份，再按 config/plan/experiments 三段修复，或重新 init")
     if "config" not in document or "experiments" not in document:
-        raise PlanError("项目配置缺少 config 或 experiments 段；禁止直接编辑文件，请备份后重新 init")
+        raise PlanError("项目配置缺少 config 或 experiments 段；可先备份补齐三段，或重新 init")
     config = document["config"]
     if config is not None:
         validate_experiment_config(config)
@@ -48,11 +52,12 @@ def validate_document(document):
 
 
 class Store:
-    """`.agent/experiment.yaml` 的唯一读写入口。
+    """`.agent/experiment.yaml` 的加锁读写入口。
 
     计划、实验配置与 Run 历史在同一个文件里，所以也只有一把文件锁：任何写路径都走
     lock() → 读整份文档 → 只改自己那一段 → 原子替换。计划命令只动 plan 段；
     experiment 命令只动 config/experiments 段，因此不会推进计划的 revision。
+    也允许备份后直接编辑：提交前仍会整份校验，非法文档不会被自动导入。
     """
 
     def __init__(self, project):
@@ -81,7 +86,7 @@ class Store:
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise PlanError(f"项目配置损坏，未覆盖: {exc}") from exc
         if isinstance(document, dict) and "plan" not in document:
-            raise PlanError("项目配置缺少 plan 段；禁止直接编辑文件，请备份后重新 init")
+            raise PlanError("项目配置缺少 plan 段；可先备份，再按 config/plan/experiments 三段修复，或重新 init")
         validate_document(document)
         return document
 
@@ -129,6 +134,42 @@ class Store:
             else:
                 self.write_document(document)
         return plan
+
+    def apply(self, create, operation, dry_run=False):
+        """无计划则创建、已存在则更新；存在性判断与提交在同一把锁内。
+
+        create() 只在文件不存在时调用并返回全新计划；operation(plan, created) 复用
+        调用方的两阶段编辑逻辑。dry-run 不碰 lock()、不建目录、不写文件，与
+        change()/create() 的预览语义一致。
+        """
+        if dry_run:
+            if self.path.exists():
+                document = self.read_document()
+                plan = document["plan"]
+                created = False
+            else:
+                plan = create()
+                document = new_document(plan)
+                created = True
+            item = operation(plan, created)
+            validate_document(document)
+            return {"revision": plan["revision"], "item": item, "created": created}
+        with self.lock():
+            if self.path.exists():
+                document = self.read_document()
+                plan = document["plan"]
+                plan["revision"] += 1
+                created = False
+            else:
+                plan = create()
+                document = new_document(plan)
+                plan["revision"] = 1
+                created = True
+            item = operation(plan, created)
+            if not created:
+                plan["updated_at"] = stamp()
+            self.write_document(document)
+            return {"revision": plan["revision"], "item": item, "created": created}
 
     def update(self, operation):
         """只改 plan 以外的段（config / experiments），不推进计划 revision。"""

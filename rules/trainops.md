@@ -1,21 +1,9 @@
 # TrainOps
 
-本规则位于插件根的 `rules/` 下，其上一级即 TrainOps 插件根（也就是本仓库）。TrainOps 是按需使用的 **AutoDL 多实例训练管理能力**：本地计划账本（实例 / 流程 / 任务依赖 / 真实进度）+ 任务流程图面板 + 余额结算。它本身不跑训练、不是服务，只记录与展示实验计划；保留原有角色，**"不建表、不启动进程"只约束加载阶段**（没有具体实验任务时不要创建项目配置文件）：**收到任务后按 SKILL.md 的开工顺序起面板（`serve`）并走无卡准备**，不直接申请有卡开机。训练或准备出故障时，先报告现象再自愈，**最多 5 次**；仍无法继续任务就**先关机止付**——这是用户预授权的中间关机，随后报告并等决策，细则见 SKILL.md 与 [协议](../skills/trainops/references/protocol.md#故障自愈与止付关机)。
+TrainOps 为 Antigravity CLI 提供实验计划、任务面板、Run 日志和周期汇报能力。收到具体实验任务时读取 [`skills/trainops/SKILL.md`](../skills/trainops/SKILL.md)，仅加载时不启动实验。
 
-**执行闭环**：MCP `trainpilot` 即时通知与 `lark-cli` 实验日志互不替代；本地提交推送、远端拉取核对后执行；完成/取消清理本任务调度并汇报结果位置及实例最终状态，面板可保留。TrainPilot 按实时协议使用全部五个 MCP 工具，接收异常指令、核实后回执并处理下一任务计划。细则见[执行与通知闭环](../skills/trainops/references/execution.md)。
+在目标、验收、预算和资源授权内自主推进与优化，不逐项请示；改变目标、放弃必需实验或增加未授权费用时请求决策。尽早以后台常驻任务起面板，默认先做必要的无卡准备；最多 5 次自愈仍无法继续则关机止付。
 
-**能力契约（完整细则）：[`skills/trainops/SKILL.md`](../skills/trainops/SKILL.md)** —— 交办训练或计划任务时先读它并按其中的日常闭环操作；CLI 参数、AutoDL 配置与异常恢复按需读同目录 `references/`，不要一次全读。
+项目 `.agent/experiment.yaml` 是计划与 Run 的唯一事实来源，推荐 CLI 规范化创建/更新，也允许先读后写直接编辑并校验。面板候选队列不等于已执行，缺数据就缺结论，不补 0。
 
-三条不变量在任何情况下都成立：
-
-1. 计划账本 `$PROJECT/.agent/experiment.yaml` 的 `plan` 段是唯一事实来源，只经 CLI 修改（时价例外：在 `serve` 面板的实例行上登记）。
-2. 缺数据就缺结论：算不出的数字不显示，不补 0。
-3. 自主优化排程不必逐项请示；改变目标、放弃实验或增加费用前先确认。
-
-CLI 与 `-p`（指向**实验项目目录**，不是插件根）：
-
-```bash
-python3 "<插件根>/skills/trainops/scripts/trainops.py" -p <实验项目目录> show --brief
-```
-
-实验日志必须在面板启动后、无卡准备前主动执行 `experiment init`，检查目标及字段核验结果；实验日志先读后写：写入前先 `experiment show` 读取最近的相关 Run（同任务最近一条、基线/同流程最近一次）与 pending，不必全量，新 Run 先核对上次基线与指标口径，恢复用 update、不重复 start、不静默覆盖；巡检、完成/失败后维护：通过 `lark-cli` 复用用户指定/项目已有表，均未指定则自动创建“<项目名> · 实验日志”Base 和“Run 记录”首表；非敏感配置与 Run 历史都存实验项目 `.agent/experiment.yaml`，与计划的 `plan` 段互不覆盖。飞书失败不阻断训练或止付，详见[实验日志](../skills/trainops/references/experiments.md)。
+MCP trainpilot 负责通知和按钮决定，lark-cli 负责实验日志；用户通过直接对话安排任务和提供等待中的方案。代码修改、本地同步与远端拉取、训练核实和收尾见[执行与通知闭环](../skills/trainops/references/execution.md)。参数与故障细节按需读 references，不一次加载全部文档。
