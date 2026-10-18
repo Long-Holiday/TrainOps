@@ -93,10 +93,20 @@ async function main() {
   assert.ok(nodes.diagram.textContent.includes('任务执行队列'), '默认显示执行队列');
   assert.equal(byClass(nodes.diagram, 'task-node').length, 7, '队列包含全部任务且不重复');
   assert.ok(nodes.diagram.textContent.includes('不是前置依赖'));
+  const queueHeading = byClass(nodes.diagram, 'diagram-header')[0];
+  assert.deepEqual(queueHeading.children.map(node => node.className), ['diagram-title', 'diagram-switch'],
+    '队列标题栏只保留标题与右侧切换按钮');
   const viewButtons = byClass(nodes.diagram, 'diagram-view');
   assert.equal(viewButtons[0]['aria-pressed'], 'true');
   viewButtons[1].fire('click');
   assert.equal(byClass(nodes.diagram, 'diagram-view')[1]['aria-pressed'], 'true');
+  const dependencyHeading = byClass(nodes.diagram, 'diagram-header')[0];
+  assert.deepEqual(dependencyHeading.children.map(node => node.className), ['diagram-title', 'diagram-switch'],
+    '依赖视图使用相同标题栏结构，提示不能作为第三项挤走按钮');
+  assert.ok(byClass(dependencyHeading, 'diagram-sub')[0].textContent.includes('画布可横向滚动'));
+  const switchCSS = html.match(/\.diagram-switch\s*\{([^}]+)\}/)[1];
+  assert.match(switchCSS, /margin-left:\s*auto/, '切换按钮靠右对齐，换行后仍保持一致');
+  assert.match(switchCSS, /flex-shrink:\s*0/, '窄屏优先换行，不能压缩切换按钮');
   const canvases = byClass(nodes.diagram, 'canvas');
   assert.equal(canvases.length, 1, '整份计划只能有一张主图（一块画布）');
   assert.equal(byClass(nodes.diagram, 'canvas-viewport').length, 1, '画布要有可滚动视口');

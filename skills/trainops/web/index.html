@@ -104,7 +104,8 @@ button.token.unset,.token.unset { color:var(--blocked); border-color:var(--block
 .flow-progress { color:var(--ink); font-family:var(--mono); font-variant-numeric:tabular-nums; }
 .canvas-viewport { position:relative; max-height:72vh; overflow:auto; border:1px solid var(--line); border-radius:var(--r-panel); background:var(--surface); }
 .canvas { position:relative; }
-.diagram-switch { display:flex; gap:6px; }
+.diagram-title { min-width:0; }
+.diagram-switch { display:flex; flex-shrink:0; gap:6px; margin-left:auto; }
 .diagram-view[aria-pressed="true"] { color:var(--ink); border-color:var(--ink); background:var(--raise); }
 .queue-viewport { margin-top:12px; padding:20px 16px; }
 .queue-lane + .queue-lane { margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
@@ -597,7 +598,7 @@ function renderDiagram() {
   const heading = el('div',null,'diagram-header');
   const title = el('div',null,'diagram-title');
   title.append(el('h2','任务流程图'));
-  title.append(el('p',plan.stats.flows + ' 条流程 · ' + plan.stats.tasks + ' 个任务 · 从左到右为依赖方向','diagram-sub'));
+  title.append(el('p',plan.stats.flows + ' 条流程 · ' + plan.stats.tasks + ' 个任务 · 画布可横向滚动 · 箭头表示前置依赖','diagram-sub'));
   heading.append(title);
   diagramSwitch(heading);
   section.append(heading);
@@ -606,7 +607,6 @@ function renderDiagram() {
     $('diagram').replaceChildren(section);
     return;
   }
-  heading.append(el('span','画布可横向滚动 · 箭头表示前置依赖','diagram-hint'));
   section.append(flowIndex());
   if (!graph.edges.length) section.append(el('p','未登记前置依赖；独立实验的同机先后安排见执行队列。','diagram-hint'));
   const viewport = el('div',null,'canvas-viewport');
