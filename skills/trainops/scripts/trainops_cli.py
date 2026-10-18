@@ -3,7 +3,7 @@
 import argparse
 
 from trainops_base import *
-from trainops_specs import dependencies, disk_arg, duration, interval_arg, money_arg, nullable
+from trainops_specs import dependencies, disk_arg, duration, interval_arg, money_arg, nullable, progress_arg
 
 
 def parser():
@@ -123,7 +123,10 @@ def add_task_args(target, is_set=False):
     target.add_argument("--not-before", type=nullable, default=default, help="带时区时间；none 清空")
     if is_set:
         target.add_argument("--status", choices=STATUSES)
-        target.add_argument("--progress", type=float)
+        progress = target.add_mutually_exclusive_group()
+        progress.add_argument("--progress", type=progress_arg, help="百分比 0–100 或 当前迭代数/总迭代数，如 800/7500")
+        progress.add_argument("--iter", dest="iteration", type=int, help="当前迭代数，须同时提供 --max-iter")
+        target.add_argument("--max-iter", type=int, help="总迭代数，与 --iter 配合使用")
         target.add_argument("--checked", action="store_true", help="记录实际巡检时间")
         target.add_argument("--note")
 

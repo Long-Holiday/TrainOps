@@ -52,7 +52,7 @@ from trainops_experiments import (
     validate_experiment_state,
 )
 from trainops_specs import (
-    dependencies, disk_arg, disk_changes, duration, gigabytes, interval_arg, money_arg, nullable,
+    dependencies, disk_arg, disk_changes, duration, gigabytes, interval_arg, iteration_progress, money_arg, nullable,
     parse_dep_spec, parse_instance_spec, parse_set_spec, parse_task_spec, price_value,
     set_instance_price,
     structural_edit,
@@ -394,6 +394,12 @@ def main(argv=None):
     cli = parser()
     args = cli.parse_args(raw)
     try:
+        if getattr(args, "iteration", None) is not None or getattr(args, "max_iter", None) is not None:
+            if args.iteration is None or args.max_iter is None:
+                raise PlanError("--iter 和 --max-iter 必须同时提供")
+            if args.progress is not None:
+                raise PlanError("--progress 不能与 --iter/--max-iter 同时使用")
+            args.progress = iteration_progress(args.iteration, args.max_iter)
         result = dispatch(args, Store(args.project))
     except (PlanError, OSError, OverflowError) as exc:
         print(f"TrainOps: {exc}", file=sys.stderr)

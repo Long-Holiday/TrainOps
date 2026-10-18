@@ -22,6 +22,26 @@ def duration(value):
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def iteration_progress(current, total):
+    if current < 0 or total <= 0 or current > total:
+        raise PlanError("迭代数须满足 0 <= iter <= max-iter，且 max-iter > 0")
+    return current / total * 100
+
+
+def progress_arg(value):
+    try:
+        if "/" in value:
+            parts = value.split("/")
+            if len(parts) != 2 or not all(re.fullmatch(r"[0-9]+", part.strip()) for part in parts):
+                raise PlanError("进度应为 0–100 的百分比或 当前迭代数/总迭代数（如 800/7500）")
+            return iteration_progress(*(int(part) for part in parts))
+        result = float(value)
+        number(result, "进度", high=100)
+        return result
+    except (ValueError, PlanError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def interval_arg(value):
     """结算周期（分钟）：在解析阶段就拒绝非法值，别等落盘时才发现。"""
     if not re.fullmatch(r"\d+", value.strip()):

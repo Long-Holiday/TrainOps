@@ -33,6 +33,17 @@ $CLI set F01-T05 --instance I02 --brief
 
 处理回执问题并重新读计划后，agent 才在 I02 实际启动训练、核实成功并登记状态与 Run。向用户简述改派原因、原/目标实例及实际启动结果；只改派尚未启动时明确说“已改派，未启动”。不添加 `reassign` / `claim` 命令，不把 SSH 命令、队列脚本或日志路径塞进计划。
 
+## 从训练日志更新进度
+
+`set` 和 `task set` 均接受百分比或迭代数，日志中的 `Iter [800/7500]` 可直接传入：
+
+```bash
+$CLI set F01-T01 --progress 800/7500 --brief
+$CLI set F01-T01 --iter 800 --max-iter 7500 --brief
+```
+
+两种写法均自动换算为约 10.67%，保存完整浮点百分比并更新进度采样与巡检时间，可与 `--status running` 同用。原有 `--progress 35` / `35.5` 保持可用。迭代数必须为非负整数、总数须大于零，且当前数不能超过总数；`--iter` 与 `--max-iter` 必须成对提供，不能和 `--progress` 混用。达到总迭代数仅记录 100% 进度，核实进程与产物后再标记 done。JSON 的 `progress` 仍为 0–100 数字或 `null`。
+
 ## JSON 建表与批量修改（agent 首选）
 
 推荐统一用 `apply --from-json - --brief` 从 stdin 提交：无计划时按 init 规则创建，已有计划时按 batch 规则增量更新，不覆盖原计划。不需要先编排编号、拼冒号字段或自行生成流程图几何。也支持 `--from-json /路径/计划.json`。显式 `init` / `batch` 保留；JSON 不与 `--name/--instance/--flow/--task/--set/--dep` 混用。apply 是增量请求，不是重复提交整份计划的幂等 upsert；请求内 key 不跨调用保存。允许直接编辑账本，见下文规范。

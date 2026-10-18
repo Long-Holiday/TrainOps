@@ -122,6 +122,8 @@ $CLI show --brief  # 需要决策时看摘要，建表回执已含结构检查
 # 启动、更新进度、标记完成（无需填写额外字段）
 $CLI set F01-T01 --status running --brief
 $CLI set F01-T01 --progress 35 --brief
+$CLI set F01-T01 --progress 800/7500 --brief  # 日志迭代数自动换算百分比
+# 等价写法：$CLI set F01-T01 --iter 800 --max-iter 7500 --brief
 $CLI set F01-T01 --checked --brief  # 已真实巡检，但没有可靠百分比
 $CLI set F01-T01 --status done --brief
 

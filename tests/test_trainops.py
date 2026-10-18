@@ -765,6 +765,54 @@ class CLITests(unittest.TestCase):
         self.assertEqual(final["tasks"][0]["status"], "done")
         self.assertEqual(final["flows"][0]["id"], "F01")
 
+    def test_progress_accepts_percentages_and_iteration_counts(self):
+        self.setup_plan()
+        for prefix in (("set",), ("task", "set")):
+            for arguments, expected in (
+                (("--progress", "35.5"), 35.5),
+                (("--progress", "800/7500"), 800 / 7500 * 100),
+                (("--iter", "800", "--max-iter", "7500"), 800 / 7500 * 100),
+                (("--progress", "0/7500"), 0),
+                (("--progress", "7500/7500"), 100),
+                (("--iter", "0", "--max-iter", "7500"), 0),
+                (("--iter", "7500", "--max-iter", "7500"), 100),
+            ):
+                with self.subTest(prefix=prefix, arguments=arguments):
+                    result = self.command(*prefix, "F01-T01", "--status", "running", *arguments)
+                    task = self.store.read()["tasks"][0]
+                    self.assertAlmostEqual(result["item"]["progress"], expected)
+                    self.assertAlmostEqual(task["progress"], expected)
+                    self.assertIsNotNone(task["checked_at"])
+                    self.assertIsNotNone(task["progress_at"])
+                    self.assertEqual(task["status"], "running")
+                    self.assertNotIn("iteration", task)
+                    self.assertNotIn("max_iter", task)
+
+    def test_invalid_iteration_progress_does_not_change_plan(self):
+        self.setup_plan()
+        original = self.store.path.read_bytes()
+        invalid = [("--progress", value) for value in (
+            "800/0", "0/0", "-1/7500", "800/-7500", "7501/7500",
+            "800.5/7500", "800/7500.5", "800/", "/7500", "800/7500/9000",
+            "nan/7500", "800/inf", "abc", "nan", "inf", "-1", "101",
+        )]
+        invalid += [
+            ("--iter", "800"), ("--max-iter", "7500"),
+            ("--iter", "-1", "--max-iter", "7500"),
+            ("--iter", "800", "--max-iter", "0"),
+            ("--iter", "800", "--max-iter", "-1"),
+            ("--iter", "7501", "--max-iter", "7500"),
+            ("--iter", "800.5", "--max-iter", "7500"),
+            ("--progress", "20", "--iter", "800", "--max-iter", "7500"),
+            ("--progress", "20", "--max-iter", "7500"),
+        ]
+        for prefix in (("set",), ("task", "set")):
+            for arguments in invalid:
+                with self.subTest(prefix=prefix, arguments=arguments):
+                    result = self.command(*prefix, "F01-T01", "--status", "running", *arguments, success=False)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertEqual(original, self.store.path.read_bytes())
+
     def test_show_marks_ready_overdue_and_stale(self):
         self.setup_plan()
         self.command("instance", "add", "--name", "B", "--autodl-id", "test-b", "--ssh-alias", "gpu-b")
