@@ -180,6 +180,28 @@ class ExperimentTests(unittest.TestCase):
         self.assertTrue(shown["runs"]["offline"]["pending"])
         self.assert_plan_unchanged()
 
+    def test_unknown_patch_fields_report_invalid_and_allowed_fields(self):
+        original = self.store.path.read_bytes()
+        for patch in ({"notes": "说明"}, {"notes": "说明", "run_id": "new", "task_id": "F01-T01"}):
+            with self.subTest(patch=patch), self.assertRaises(ops.PlanError) as error:
+                self.log.run(task_id="F01-T01", patch=patch)
+            invalid_fields = ", ".join(sorted(repr(key) for key in patch))
+            allowed_fields = ", ".join(sorted(ops.RUN_UPDATE))
+            self.assertEqual(str(error.exception),
+                             f"实验记录含未知或不可修改字段: {invalid_fields}；允许字段: [{allowed_fields}]")
+            self.assertEqual(self.store.path.read_bytes(), original)
+        self.assertFalse(self.fake.calls)
+
+    def test_invalid_defaults_report_only_allowed_default_fields(self):
+        original = self.store.path.read_bytes()
+        with self.assertRaises(ops.PlanError) as error:
+            self.log.init(settings={"defaults": {"notes": "说明", "intent": "默认意图"}})
+        self.assertEqual(str(error.exception),
+                         "实验记录含未知或不可修改字段: 'intent', 'notes'；允许字段: "
+                         "[dataset_version, direction, eval_protocol, metric_name]")
+        self.assertEqual(self.store.path.read_bytes(), original)
+        self.assertFalse(self.fake.calls)
+
     def test_invalid_patch_is_atomic_and_unknown_task_rejected(self):
         self.initialize()
         self.start()
@@ -659,6 +681,45 @@ class ExperimentTests(unittest.TestCase):
 
 
 class SubprocessTests(unittest.TestCase):
+    def test_start_without_run_id_generates_and_persists_unique_ids(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def cli(*args, code=0):
+                result = subprocess.run([sys.executable, str(SCRIPT), "-p", temp, *args],
+                                        text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                return json.loads(result.stdout)
+
+            cli("init", "--name", "测试", "--flow", "基线", "--task", "F01:训练")
+            run_ids = []
+            for _ in range(2):
+                result = cli("experiment", "start", "--task", "F01-T01", code=1)
+                self.assertTrue(result["local_saved"])
+                run_id = result["run"]["run_id"]
+                self.assertRegex(run_id, r"^[0-9a-f]{32}$")
+                shown = cli("experiment", "show")
+                self.assertEqual(shown["runs"][run_id]["task_id"], "F01-T01")
+                cli("experiment", "update", run_id, "--json", '{"status":"done"}', code=1)
+                run_ids.append(run_id)
+            self.assertEqual(len(set(run_ids)), 2)
+            self.assertEqual(set(cli("experiment", "show")["runs"]), set(run_ids))
+
+    def test_start_unknown_field_reports_actionable_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ops.Store(Path(temp))
+            plan = ops.new_plan("测试")
+            ops.add_flow(plan, "基线")
+            ops.add_task(plan, "F01", "训练")
+            store.create(plan)
+            original = store.path.read_bytes()
+            result = subprocess.run([
+                sys.executable, str(SCRIPT), "-p", temp, "experiment", "start",
+                "--task", "F01-T01", "--json", '{"notes":"说明"}'],
+                text=True, capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("'notes'", result.stderr)
+            self.assertIn(f"允许字段: [{', '.join(sorted(ops.RUN_UPDATE))}]", result.stderr)
+            self.assertEqual(store.path.read_bytes(), original)
+
     def test_fake_cli_end_to_end_without_real_auth(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -10,6 +10,7 @@ import json
 import math
 import re
 import subprocess
+import uuid
 
 try:
     import fcntl
@@ -142,8 +143,13 @@ def validate_experiment_config(config):
 def validate_run_patch(patch, defaults_only=False):
     reject_experiment_secrets(patch)
     allowed = {"metric_name", "direction", "dataset_version", "eval_protocol"} if defaults_only else RUN_UPDATE
-    if not isinstance(patch, dict) or set(patch) - allowed:
-        raise PlanError("实验记录含未知或不可修改字段")
+    if not isinstance(patch, dict):
+        raise PlanError("实验数据必须是 JSON 对象")
+    unknown = set(patch) - allowed
+    if unknown:
+        invalid_fields = ", ".join(sorted(repr(key) for key in unknown))
+        allowed_fields = ", ".join(sorted(allowed))
+        raise PlanError(f"实验记录含未知或不可修改字段: {invalid_fields}；允许字段: [{allowed_fields}]")
     if "extra_metrics" in patch:
         validate_extra_metrics(patch["extra_metrics"])
     for key, value in patch.items():
