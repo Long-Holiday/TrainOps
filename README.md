@@ -176,7 +176,8 @@ brief 新增或结构编辑会随回执附带最终结构检查，问题/提醒�
 ### 执行、通知与取消
 
 - 训练通过 SSH 在 tmux/screen 等断线后可恢复的会话中运行；代码先本地修改验证，按授权提交推送，远端拉取核对 commit 后再启动。
-- MCP `trainpilot` 负责即时通知与按钮决定，终态直接 `report` completed/failed；异常修复验证后用一次 ACK 合并汇报，不重复 milestone。`lark-cli` 实验日志记录 Run 与证据，两者互不替代。
+- 新训练启动前必须实际执行 [TrainPilot 开工探针](skills/trainops/references/trainpilot.md#调用与开工探针)并判读返回；Lazy MCP 通过 `call_mcp_tool(ServerName="trainpilot", ToolName="…", Arguments={…})` 调用，不能因没有独立原生工具而跳过。
+- MCP `trainpilot` 负责即时通知与按钮决定，终态直接 `report` completed/failed；异常修复验证后用一次 ACK 合并汇报，不重复 milestone。`lark-cli` 实验日志记录 Run 与证据，`synced to Feishu` 只代表写表成功。巡检按顺序更新计划/Run、实际调用 TrainPilot、最后对话总结；写表失败仍继续即时通知。
 - 用户选择等待时保持现场与任务状态，结束轮询，把控制交还直接对话；不接收 `next_task_plans`、不调用 `ack_plan`，也不要求 `#fix` 或从群消息拉取方案。
 - 取消任务并关机：停止本任务进程、保全必要产物、清理本任务的资源等待，按授权关机并核实物理终态；有其他任务共享实例时先说明冲突，不误停其他训练。
 - 完成/取消后清理本任务不再需要的定时巡检与唤醒，汇报结果位置、实例最终状态和未决事项；任务面板可以保留。

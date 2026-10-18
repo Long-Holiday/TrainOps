@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # TrainOps
 
 TrainOps 为 Antigravity CLI 提供实验计划、任务面板、Run 日志和周期汇报能力。收到具体实验任务时读取 [`skills/trainops/SKILL.md`](../skills/trainops/SKILL.md)，仅加载时不启动实验。
