@@ -1,12 +1,10 @@
-"""排程、依赖图、余额与结算这些派生计算。
+"""排程、流程汇总、余额与结算这些派生计算。
 
 所有函数都只读计划，不写文件；面板、CLI 与结算线程共用同一份口径。
 """
 
-import bisect
 from datetime import timedelta
 import hashlib
-import heapq
 import json
 import math
 
@@ -149,25 +147,18 @@ def node_progress(task):
     return max(0, min(100, rounded(task["progress"])))
 
 
-def layout(plan, now=None, estimates=None):
-    """把所有流程的任务排成一张尽量少交叉的有向无环图，并给出各流程的完成结论。
+def flow_views(plan, now=None, estimates=None):
+    """各流程的完成结论：计数、总进度、预计完成时间与是否都有估计。
 
-    整份计划只有一个主图：跨流程依赖与流程内依赖一样，都是图中的一条边。
-    节点按层（列）与行排成网格；跨层依赖在中间层插入不可见的走线节点。
-    排序用重心法 + 相邻交换：每次只计算受影响的两层局部交叉数，
-    不再为每个候选交换重算整张图。每列内未完成任务占上半部，已完成节点下沉；
-    完成但仍被未完成任务直接依赖的前置节点留在中间，更早的上游随链一起下沉。
-    浏览器只按行列摆节点、按路点画箭头。
+    总进度是已完成 ÷ 未取消任务，不累加任务时间；取消不计入分母，全部取消时不下结论。
+    known 只检查尚未结束的任务，已结束的任务没有"预计完成时间"。
     """
     now = now or utcnow()
     estimates = forecast(plan, now) if estimates is None else estimates
-    tasks_by_id = {task["id"]: task for task in plan["tasks"]}
-    order = {key: natural_id(key) for key in tasks_by_id}
     grouped = {flow["id"]: [] for flow in plan["flows"]}
-    views = {}
-    ordered = sorted(plan["tasks"], key=lambda task: order[task["id"]])
-    for task in ordered:
+    for task in plan["tasks"]:
         grouped[task["flow"]].append(task)
+    views = {}
     for flow in plan["flows"]:
         tasks = grouped[flow["id"]]
         countable = [task for task in tasks if task["status"] != "cancelled"]
@@ -178,226 +169,11 @@ def layout(plan, now=None, estimates=None):
         views[flow["id"]] = {
             "total": len(tasks), "countable": len(countable), "done": len(done),
             "cancelled": len(tasks) - len(countable), "open": len(open_tasks),
-            # 取消不计入分母；全取消时无进度结论。known 只检查尚未结束的任务。
             "progress": rounded(100 * len(done) / len(countable)) if countable else None,
             "known": all(estimates[task["id"]]["finish"] for task in open_tasks),
             "finish": stamp(max(finishes)) if finishes else None,
         }
-    if not tasks_by_id:
-        return {"nodes": [], "edges": [], "columns": 0, "rows": 0}, views
-
-    children = {key: [] for key in tasks_by_id}
-    degrees = {key: len(task["deps"]) for key, task in tasks_by_id.items()}
-    layers = {key: 0 for key in tasks_by_id}
-    for task in ordered:
-        for dep in task["deps"]:
-            children[dep].append(task["id"])
-    ready = [(order[key], key) for key, count in degrees.items() if count == 0]
-    heapq.heapify(ready)
-    while ready:
-        _, key = heapq.heappop(ready)
-        for child in children[key]:
-            layers[child] = max(layers[child], layers[key] + 1)
-            degrees[child] -= 1
-            if degrees[child] == 0:
-                heapq.heappush(ready, (order[child], child))
-    columns = max(layers.values()) + 1
-
-    # 行优先级：未完成任务置顶；完成但仍被未完成任务直接依赖的前置节点居中；
-    # 其余已完成节点（含更早的上游）沉底。行只表达可读性，不表达时间或资源。
-    open_tasks = {key for key, task in tasks_by_id.items()
-                  if task["status"] not in ("done", "cancelled")}
-    needed = {dep for key in open_tasks for dep in tasks_by_id[key]["deps"]}
-    row_group = {key: 0 if key in open_tasks else (1 if key in needed else 2)
-                 for key in tasks_by_id}
-
-    # 每条依赖一条边；跨层的边在中间层各插入一个不可见路点，保证每条线段只连接相邻两层。
-    edges = []
-    for task in ordered:
-        for dep in sorted(task["deps"], key=order.__getitem__):
-            edges.append((dep, task["id"]))
-    per_layer = [[] for _ in range(columns)]
-    for task in tasks_by_id:
-        per_layer[layers[task]].append(task)
-    dummy_keys = {}
-    chains = []
-    for index, (source, target) in enumerate(edges):
-        chain = [source]
-        for layer in range(layers[source] + 1, layers[target]):
-            node = f"@{index}:{layer}"
-            dummy_keys[node] = (index, layer)
-            chain.append(node)
-            per_layer[layer].append(node)
-        chain.append(target)
-        chains.append(chain)
-
-    def node_key(node):
-        if node in tasks_by_id:
-            return (0,) + order[node]
-        index, layer = dummy_keys[node]
-        return (1, index, layer)
-
-    def node_group(node):
-        """路点跟随它要通往的任务：未完成目标的连线同样留在上半部。"""
-        if node in row_group:
-            return row_group[node]
-        index, _ = dummy_keys[node]
-        return row_group[edges[index][1]]
-
-    for layer in per_layer:
-        layer.sort(key=lambda node: (node_group(node), node_key(node)))
-
-    # 相邻层连线先按列归组，数交叉时只需要扫这一列的线段。
-    nexts, prevs = {}, {}
-    segments = [[] for _ in range(columns - 1)]
-    for chain in chains:
-        for source, target in zip(chain, chain[1:]):
-            nexts.setdefault(source, []).append(target)
-            prevs.setdefault(target, []).append(source)
-            column = dummy_keys[source][1] if source in dummy_keys else layers[source]
-            segments[column].append((source, target))
-
-    def positions():
-        return [{node: index for index, node in enumerate(layer)} for layer in per_layer]
-
-    def order_layer(layer, neighbor_positions, neighbors):
-        base = {node: index for index, node in enumerate(layer)}
-
-        def key(node):
-            values = [neighbor_positions[item] for item in neighbors.get(node, [])]
-            center = sum(values) / len(values) if values else base[node]
-            return node_group(node), center, base[node], node_key(node)
-
-        layer.sort(key=key)
-
-    # 重心排序：向下、向上各两轮。只排序，不做全图交叉计数。
-    for _ in range(4):
-        for column in range(1, columns):
-            order_layer(per_layer[column],
-                        {node: index for index, node in enumerate(per_layer[column - 1])}, prevs)
-        for column in range(columns - 2, -1, -1):
-            order_layer(per_layer[column],
-                        {node: index for index, node in enumerate(per_layer[column + 1])}, nexts)
-    pos = positions()
-
-    def crossing_count():
-        """相邻层线段交叉数；同一源或同一目标的两段不算交叉。"""
-        total = 0
-        for column, group in enumerate(segments):
-            if not group:
-                continue
-            left, right = pos[column], pos[column + 1]
-            size = len(per_layer[column + 1])
-            tree = [0] * (size + 1)
-
-            def add(index):
-                index += 1
-                while index <= size:
-                    tree[index] += 1
-                    index += index & -index
-
-            def prefix(index):
-                count = 0
-                index += 1
-                while index > 0:
-                    count += tree[index]
-                    index -= index & -index
-                return count
-
-            groups = {}
-            for source, target in group:
-                groups.setdefault(left[source], []).append(right[target])
-            seen = 0
-            for left_index in sorted(groups):
-                for right_index in groups[left_index]:
-                    total += seen - prefix(right_index)
-                for right_index in groups[left_index]:
-                    add(right_index)
-                    seen += 1
-        return total
-
-    def swap_delta(layer, index, neighbors, neighbor_positions):
-        """交换相邻两行后，只统计它们与一侧相邻层之间的交叉数变化。"""
-        first, second = layer[index], layer[index + 1]
-        xs = [neighbor_positions[node] for node in neighbors.get(first, [])]
-        ys = [neighbor_positions[node] for node in neighbors.get(second, [])]
-        if not xs or not ys:
-            return 0
-        ys.sort()
-        greater = equal = 0
-        for value in xs:
-            left = bisect.bisect_left(ys, value)
-            greater += left
-            equal += bisect.bisect_right(ys, value) - left
-        total = len(xs) * len(ys)
-        less = total - greater - equal
-        return less - greater
-
-    def transpose(allow_equal):
-        """相邻交换下降：delta < 0 才换；allow_equal 用于走出等代价平台。"""
-        changed = False
-        for column, layer in enumerate(per_layer):
-            index = 0
-            while index < len(layer) - 1:
-                if node_group(layer[index]) != node_group(layer[index + 1]):
-                    index += 1
-                    continue
-                delta = 0
-                if column + 1 < columns:
-                    delta += swap_delta(layer, index, nexts, pos[column + 1])
-                if column:
-                    delta += swap_delta(layer, index, prevs, pos[column - 1])
-                if delta < 0 or (allow_equal and delta == 0):
-                    layer[index], layer[index + 1] = layer[index + 1], layer[index]
-                    pos[column][layer[index]] = index
-                    pos[column][layer[index + 1]] = index + 1
-                    changed = True
-                index += 1
-        return changed
-
-    best_order = [list(layer) for layer in per_layer]
-    best = crossing_count()
-    for _ in range(4):
-        if not transpose(False):
-            break
-        current = crossing_count()
-        if current < best:
-            best, best_order = current, [list(layer) for layer in per_layer]
-        if current == 0:
-            break
-    if best:
-        # 等代价侧移可以走出重心排序的平台；一轮等代价交换不改变交叉数，
-        # 之后的严格下降再决定是否保留更好的结果。
-        if transpose(True):
-            best_order = [list(layer) for layer in per_layer]
-            best = crossing_count()
-            while best and transpose(False):
-                current = crossing_count()
-                if current < best:
-                    best, best_order = current, [list(layer) for layer in per_layer]
-                if current == 0:
-                    break
-    per_layer = best_order
-    positions_out = {}
-    for column, layer in enumerate(per_layer):
-        for row, node in enumerate(layer):
-            positions_out[node] = (column, row)
-    nodes = []
-    for column, layer in enumerate(per_layer):
-        for row, node in enumerate(layer):
-            if node in tasks_by_id:
-                nodes.append({"id": node, "row": row, "layer": column,
-                              "progress": node_progress(tasks_by_id[node])})
-    graph_edges = []
-    for (source, target), chain in zip(edges, chains):
-        waypoints = [{"layer": positions_out[node][0], "row": positions_out[node][1]}
-                     for node in chain[1:-1]]
-        graph_edges.append({"source": source, "target": target, "waypoints": waypoints})
-    graph = {
-        "nodes": nodes, "edges": graph_edges,
-        "columns": columns, "rows": max((len(layer) for layer in per_layer), default=0),
-    }
-    return graph, views
+    return views
 
 
 def budget(plan, now=None, estimates=None):
@@ -530,13 +306,14 @@ def settlement(plan, now=None, estimates=None, live_values=None):
 
 
 def snapshot(plan, now=None):
-    """面板与 show --json 看到的完整视图：账本 + 排程 + 依赖图 + 预算 + 结算。
+    """面板与 show --json 看到的完整视图：账本 + 排程 + 流程汇总 + 预算 + 结算。
 
     凡是"算出来的"都在这里算完：面板不做业务计算，只把字段摆到页面上。
+    任务节点进度放在 view.progress，原 progress 字段保持计划里的登记值不变。
     """
     now = now or utcnow()
     estimates, sequence = _forecast(plan, now)
-    graph, views = layout(plan, now, estimates)
+    views = flow_views(plan, now, estimates)
     spend = budget(plan, now, estimates)
     counts = {status: 0 for status in STATUSES}
     running, queued = {}, {}
@@ -557,8 +334,9 @@ def snapshot(plan, now=None):
                           for item in plan["instances"]],
             "flows": [{**flow, "view": views[flow["id"]]}
                       for flow in plan["flows"]],
-            "graph": graph, "queues": execution_queues(plan, sequence),
-            "tasks": [{**task, "estimate": estimates[task["id"]]}
+            "queues": execution_queues(plan, sequence),
+            "tasks": [{**task, "estimate": estimates[task["id"]],
+                       "view": {"progress": node_progress(task)}}
                       for task in plan["tasks"]]}
 
 
@@ -645,7 +423,7 @@ def age_text(moment, now=None):
 
 
 __all__ = [
-    "forecast", "rounded", "node_progress", "layout", "budget", "estimate_view",
+    "forecast", "rounded", "node_progress", "flow_views", "budget", "estimate_view",
     "plan_fingerprint", "settlement_summary", "settlement", "snapshot", "check_structure",
     "age_text",
 ]

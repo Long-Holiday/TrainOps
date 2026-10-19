@@ -7,7 +7,7 @@ No instance commands, no model API.
 - trainops_base   常量、时钟、通用校验
 - trainops_model  计划文档、校验、实例/流程/任务操作
 - trainops_store  文件锁与原子写
-- trainops_graph  排程、依赖图、预算与结算
+- trainops_graph  排程、流程汇总、预算与结算
 - trainops_web    本机面板、Token、AutoDL 余额
 - trainops_experiments  实验配置、Run 历史与飞书同步
 - trainops_json   结构化 JSON 计划输入与别名
@@ -37,7 +37,7 @@ from trainops_base import *
 from trainops_model import *
 from trainops_store import Store, sync_directory, validate_document
 from trainops_graph import (
-    age_text, budget, check_structure, estimate_view, forecast, layout, node_progress,
+    age_text, budget, check_structure, estimate_view, flow_views, forecast, node_progress,
     plan_fingerprint, rounded, settlement, settlement_summary, snapshot,
 )
 from trainops_web import (
@@ -430,7 +430,7 @@ __all__ = [
     "natural_id", "find", "new_plan", "validate_estimate", "validate_monitor", "validate",
     "default_config", "default_state", "new_document", "add_instance", "instance_mode",
     "instance_rate", "add_flow", "add_task", "set_task", "forecast", "rounded",
-    "node_progress", "layout", "budget", "estimate_view", "plan_fingerprint",
+    "node_progress", "flow_views", "budget", "estimate_view", "plan_fingerprint",
     "settlement_summary", "settlement", "snapshot", "check_structure", "age_text",
     "demo_plan", "Store", "validate_document", "sync_directory", "Credential", "check_token",
     "set_wallet", "sanitize_error", "api_base", "NoRedirect", "opener", "api_post",

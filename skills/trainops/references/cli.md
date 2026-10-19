@@ -46,7 +46,7 @@ $CLI set F01-T01 --iter 800 --max-iter 7500 --brief
 
 ## JSON 建表与批量修改（agent 首选）
 
-推荐统一用 `apply --from-json - --brief` 从 stdin 提交：无计划时按 init 规则创建，已有计划时按 batch 规则增量更新，不覆盖原计划。不需要先编排编号、拼冒号字段或自行生成流程图几何。也支持 `--from-json /路径/计划.json`。显式 `init` / `batch` 保留；JSON 不与 `--name/--instance/--flow/--task/--set/--dep` 混用。apply 是增量请求，不是重复提交整份计划的幂等 upsert；请求内 key 不跨调用保存。允许直接编辑账本，见下文规范。
+推荐统一用 `apply --from-json - --brief` 从 stdin 提交：无计划时按 init 规则创建，已有计划时按 batch 规则增量更新，不覆盖原计划。不需要先编排编号、拼冒号字段或自行计算执行队列。也支持 `--from-json /路径/计划.json`。显式 `init` / `batch` 保留；JSON 不与 `--name/--instance/--flow/--task/--set/--dep` 混用。apply 是增量请求，不是重复提交整份计划的幂等 upsert；请求内 key 不跨调用保存。允许直接编辑账本，见下文规范。
 
 ```bash
 $CLI apply --from-json - --brief <<'JSON'
@@ -159,7 +159,7 @@ $CLI instance set I01 --status on --mode no-gpu --observed --brief
 ## 输出与检查
 
 - `show --brief`：当前运行、依赖就绪候选、待处置/待估、实例和问题/提醒。每组最多 3 条，长文本折成单行并标 `…`；总数和省略数在截断前计算。GPU 每实例仅列一个候选，local 不去重；依赖就绪不保证实例在线，执行前核实远端。
-- `show`：完整文本计划，包含历史任务。`show --json`：完整机器快照；与 --brief 互斥。
+- `show`：完整文本计划，包含历史任务。`show --json`：完整机器快照；与 --brief 互斥。与面板共用 `queues`、`flows[].view` 和 `tasks[].view.progress`，不再输出依赖图 `graph`；任务原始 `progress` 仍保留，显示进度另行取整，不写回账本。
 - 写命令无 --brief 时保持原 JSON 回执；有 --brief 时输出版本、编号和本次更新。新增编号超限也会注明省略，可用 show 查询，不要重跑写命令取编号。
 - brief 新建/结构编辑自动检查最终状态：JSON init、JSON batch 含新增或结构字段，以及简写 init、新增实例/流程/任务、batch 含新增项或 `--dep`，或 set 改实例/耗时/依赖/开始限制（含清空）。诊断对应同次保存，只增一个版本，不额外读盘；不写进账本。
 - 纯状态/进度/巡检/备注/改名、实例观测/开机模式/磁盘、钱包及结算不自动做全计划结构检查；需要全局诊断时用 show --brief 或 check。

@@ -7,7 +7,7 @@ from trainops_specs import dependencies, disk_arg, duration, interval_arg, money
 
 
 def parser():
-    root = argparse.ArgumentParser(description="TrainOps：本地训练计划账本、任务依赖主图与本机面板")
+    root = argparse.ArgumentParser(description="TrainOps：本地训练计划账本与执行队列面板")
     root.add_argument("--version", action="version", version=f"%(prog)s schema {SCHEMA_VERSION}")
     root.add_argument("-p", "--project", default=".", help="使用项目目录，不是能力包目录")
     commands = root.add_subparsers(dest="operation_name", required=True)

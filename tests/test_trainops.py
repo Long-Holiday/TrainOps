@@ -447,12 +447,20 @@ class ForecastTests(unittest.TestCase):
     def test_demo_snapshot(self):
         plan = ops.demo_plan(NOW)
         ops.validate(plan)
+        before = copy.deepcopy(plan)
         view = ops.snapshot(plan, NOW)
         self.assertEqual(len(view["tasks"]), 7)
-        self.assertTrue(all("estimate" in t for t in view["tasks"]))
+        self.assertTrue(all("estimate" in t and "view" in t for t in view["tasks"]))
         self.assertTrue(all("view" in f for f in view["flows"]))
-        self.assertIn("graph", view, "整份计划只下发一张主图")
-        self.assertNotIn("graph", view["flows"][0], "流程只保留完成结论，不再各自下发子图")
+        self.assertNotIn("graph", view, "快照不再下发依赖图几何")
+        self.assertNotIn("graph", view["flows"][0], "流程只保留完成结论")
+        by_id = {task["id"]: task for task in view["tasks"]}
+        self.assertEqual(by_id["F01-T01"]["view"], {"progress": 100}, "done 一律满格")
+        self.assertEqual(by_id["F01-T02"]["view"], {"progress": 18}, "登记进度四舍五入取整")
+        self.assertEqual(by_id["F01-T03"]["view"], {"progress": 0}, "未知进度不猜")
+        self.assertEqual(by_id["F01-T02"]["progress"], 18, "视图不覆盖原 progress")
+        self.assertIsNone(by_id["F01-T03"]["progress"])
+        self.assertEqual(plan, before, "快照不能写回原计划")
         self.assertFalse(any("estimate" in t for t in plan["tasks"]))
         self.assertFalse(any("bar" in t for t in plan["tasks"]))
 
@@ -483,7 +491,7 @@ class ExecutionQueueTests(unittest.TestCase):
         view = ops.snapshot(self.plan, NOW)
         self.assertEqual([lane["tasks"] for lane in view["queues"]["lanes"]], [first, second])
         self.assertEqual(sum(len(lane["tasks"]) - 1 for lane in view["queues"]["lanes"]), 13)
-        self.assertEqual(view["graph"]["edges"], [])
+        self.assertNotIn("graph", view, "独立实验不再生成图几何")
         self.assertEqual(len({key for lane in view["queues"]["lanes"] for key in lane["tasks"]}), 15)
         self.assertEqual(self.plan, before, "展示不能改变 deps、状态或 revision")
         self.assertIsNone(view["tasks"][2]["estimate"]["finish"], "不猜测未知耗时")
@@ -524,18 +532,18 @@ class ExecutionQueueTests(unittest.TestCase):
         self.assertEqual(self.lane(), [inactive[0]])
 
 
-class LayoutTests(unittest.TestCase):
-    """依赖层级与流程总进度由服务端统一下发。"""
+class FlowViewTests(unittest.TestCase):
+    """流程总进度与任务节点进度由服务端统一下发。"""
 
     def setUp(self):
         self.plan = base()
 
-    def layout(self):
+    def views(self):
         ops.validate(self.plan)
-        return ops.layout(self.plan, NOW)
+        return ops.flow_views(self.plan, NOW)
 
     def finish(self, flow, count, minutes=30, status="done"):
-        """往 flow 里塞 count 个同时起止的任务：它们的时间区间完全重叠，正是旧公式算错的前提。"""
+        """往 flow 里塞 count 个同时起止的任务：它们的时间区间完全重叠，旧公式会算错。"""
         for index in range(count):
             task = ops.add_task(self.plan, flow, f"{status}{index}", "I01", minutes)
             if status == "done":
@@ -546,150 +554,26 @@ class LayoutTests(unittest.TestCase):
         return task
 
     def test_total_progress_counts_tasks_not_bar_widths(self):
-        """5 个并行完成 + 2 个取消：旧公式把重叠宽度累加成 187% 再钳到 100%，现在按任务数算。"""
+        """5 个并行完成 + 2 个取消：按任务数算，不累加重叠的时间区间。"""
         self.finish("F01", 5, status="done")
         self.finish("F01", 2, status="cancelled")
-        graph, views = self.layout()
-        view = views["F01"]
+        view = self.views()["F01"]
         self.assertEqual((view["done"], view["countable"], view["cancelled"], view["total"]), (5, 5, 2, 7))
         self.assertEqual(view["progress"], 100, "取消的不再需要完成，不该把进度压在 100% 以下")
-        self.assertEqual(len(graph["nodes"]), 7)
 
     def test_progress_denominator_is_the_uncancelled_tasks(self):
         self.finish("F01", 2, status="done")
         self.finish("F01", 1, status="cancelled")
         ops.add_task(self.plan, "F01", "待跑", "I01", 30)
-        _, views = self.layout()
+        views = self.views()
         self.assertEqual((views["F01"]["done"], views["F01"]["countable"]), (2, 3))
         self.assertEqual(views["F01"]["progress"], 67)
 
     def test_everything_cancelled_has_no_progress_at_all(self):
         self.finish("F02", 2, status="cancelled")
-        _, views = self.layout()
+        views = self.views()
         self.assertEqual(views["F02"]["countable"], 0)
-        self.assertIsNone(views["F02"]["progress"], "没有需要完成的任务时不下结论，面板也就不画进度条")
-
-    def test_chain_has_grid_rows_without_a_start_node(self):
-        a = ops.add_task(self.plan, "F01", "A", "I01", 60)
-        b = ops.add_task(self.plan, "F01", "B", "I01", 30, [a["id"]])
-        c = ops.add_task(self.plan, "F01", "C", "I01", None, [b["id"]])
-        ops.set_task(self.plan, c["id"], {"status": "cancelled"}, NOW)
-        graph, _ = self.layout()
-        self.assertEqual([(n["id"], n["row"], n["layer"], n["progress"]) for n in graph["nodes"]],
-                         [(a["id"], 0, 0, 0), (b["id"], 0, 1, 0), (c["id"], 0, 2, 0)])
-        self.assertEqual([(e["source"], e["target"], e["waypoints"]) for e in graph["edges"]],
-                         [(a["id"], b["id"], []), (b["id"], c["id"], [])])
-        self.assertEqual((graph["columns"], graph["rows"]), (3, 1))
-        self.assertFalse(any(n["id"] == "START" for n in graph["nodes"]), "不显示开始节点")
-
-    def test_parallel_fork_join_skip_layer_and_unordered_tasks(self):
-        a = ops.add_task(self.plan, "F01", "root", "local", 10, [])
-        b = ops.add_task(self.plan, "F01", "left", "local", 10, [a["id"]])
-        c = ops.add_task(self.plan, "F01", "right", "local", 10, [a["id"]])
-        d = ops.add_task(self.plan, "F01", "join", "local", 10, [b["id"], c["id"], a["id"]])
-        e = ops.add_task(self.plan, "F01", "independent", "local", 10, [])
-        graph, _ = self.layout()
-        expected = graph
-        self.plan["tasks"].reverse()
-        shuffled, _ = self.layout()
-        self.assertEqual(shuffled, expected)
-        positions = {n["id"]: n for n in expected["nodes"]}
-        self.assertEqual([positions[t["id"]]["layer"] for t in [a, b, c, d, e]], [0, 1, 1, 2, 0])
-        self.assertEqual(len(expected["edges"]), 5)
-        actual = {(edge["source"], edge["target"]) for edge in expected["edges"]}
-        self.assertEqual(actual, {(dep, t["id"]) for t in self.plan["tasks"] for dep in t["deps"]})
-
-    def test_cross_flow_dependencies_join_the_same_graph(self):
-        a = ops.add_task(self.plan, "F02", "source", "local", 10, [])
-        b = ops.add_task(self.plan, "F01", "target", "local", 10, [a["id"]])
-        graph, _ = self.layout()
-        positions = {node["id"]: node for node in graph["nodes"]}
-        self.assertEqual(positions[a["id"]]["layer"], 0)
-        self.assertEqual(positions[b["id"]]["layer"], 1, "跨流程依赖同样决定主图层级")
-        edges = {(edge["source"], edge["target"]) for edge in graph["edges"]}
-        self.assertEqual(edges, {(a["id"], b["id"])})
-
-    def test_topological_order_not_task_identifier_order(self):
-        a = ops.add_task(self.plan, "F01", "later", "local", 10, [])
-        b = ops.add_task(self.plan, "F01", "earlier", "local", 10, [])
-        a["deps"] = [b["id"]]
-        graph, _ = self.layout()
-        self.assertEqual([n["id"] for n in graph["nodes"]], [b["id"], a["id"]])
-        self.assertEqual(ops.node_progress({"status": "done", "progress": 100}), 100)
-        self.assertEqual(ops.node_progress({"status": "running", "progress": 18.5}), 19)
-
-    def test_open_tasks_rank_above_finished_nodes(self):
-        """未完成任务置顶；完成但仍被未完成任务直接依赖的节点居中；独立完成节点沉底。"""
-        independent = ops.add_task(self.plan, "F01", "独立完成", "I01", 30)
-        upstream = ops.add_task(self.plan, "F01", "完成的上游", "I01", 30)
-        open_task = ops.add_task(self.plan, "F01", "待执行", "I01", 30)
-        dropped = ops.add_task(self.plan, "F01", "取消的独立节点", "I01", 30)
-        child = ops.add_task(self.plan, "F01", "未完成下游", "I01", 30, [upstream["id"]])
-        for task in (independent, upstream):
-            ops.set_task(self.plan, task["id"], {"status": "running"}, NOW - timedelta(minutes=40))
-            ops.set_task(self.plan, task["id"], {"status": "done"}, NOW - timedelta(minutes=10))
-        ops.set_task(self.plan, dropped["id"], {"status": "cancelled"}, NOW)
-        graph, _ = self.layout()
-        rows = {node["id"]: (node["layer"], node["row"]) for node in graph["nodes"]}
-        self.assertEqual(rows[open_task["id"]], (0, 0), "未完成任务占最上面一行")
-        self.assertEqual(rows[child["id"]], (1, 0))
-        self.assertEqual(rows[upstream["id"]], (0, 1), "仍被未完成任务依赖的完成节点留在中间")
-        self.assertGreater(rows[independent["id"]][1], rows[upstream["id"]][1],
-                           "独立完成节点沉到下面")
-        self.assertGreater(rows[dropped["id"]][1], rows[upstream["id"]][1],
-                           "取消与完成一样不再占用上半部")
-
-    def test_only_direct_prerequisites_stay_in_middle_band(self):
-        """完成但仍直接喂给未完成任务的节点居中；更早的上游随已完成的链一起下沉。"""
-        independent = ops.add_task(self.plan, "F01", "独立完成", "I01", 30)
-        ancestor = ops.add_task(self.plan, "F01", "更早的上游", "I01", 30)
-        middle = ops.add_task(self.plan, "F01", "直接前置", "I01", 30, [ancestor["id"]])
-        child = ops.add_task(self.plan, "F01", "未完成下游", "I01", 30, [middle["id"]])
-        for task, start, finish in ((independent, 120, 90), (ancestor, 120, 90), (middle, 80, 50)):
-            ops.set_task(self.plan, task["id"], {"status": "running"}, NOW - timedelta(minutes=start))
-            ops.set_task(self.plan, task["id"], {"status": "done"}, NOW - timedelta(minutes=finish))
-        graph, _ = self.layout()
-        rows = {node["id"]: (node["layer"], node["row"]) for node in graph["nodes"]}
-        self.assertEqual(rows[middle["id"]], (1, 0), "直接前置仍留在中间带")
-        self.assertEqual(rows[independent["id"]], (0, 0))
-        self.assertGreater(rows[ancestor["id"]][1], rows[independent["id"]][1],
-                           "仅作为传递上游的完成节点与独立节点一起沉底")
-
-    def assert_no_crossings(self, graph):
-        points = {node["id"]: (node["layer"], node["row"]) for node in graph["nodes"]}
-        segments = []
-        for edge in graph["edges"]:
-            chain = ([points[edge["source"]]
-                      ] + [(point["layer"], point["row"]) for point in edge["waypoints"]]
-                     + [points[edge["target"]]])
-            for source, target in zip(chain, chain[1:]):
-                self.assertEqual(target[0], source[0] + 1, "跨层依赖必须拆成相邻层线段")
-                segments.append((source, target))
-        for index, (left, right) in enumerate(segments):
-            for other_left, other_right in segments[index + 1:]:
-                if left[0] != other_left[0]:
-                    continue
-                if left[1] in (other_left[1], other_right[1]) or right[1] in (other_left[1], other_right[1]):
-                    continue
-                self.assertGreaterEqual((left[1] - other_left[1]) * (right[1] - other_right[1]), 0,
-                                        "相邻层线段不能交叉")
-
-    def test_demo_graph_has_no_crossing_segments(self):
-        plan = ops.demo_plan(NOW)
-        graph, _ = ops.layout(plan, NOW)
-        self.assert_no_crossings(graph)
-
-    def test_fork_join_graph_can_escape_a_crossing_plateau(self):
-        """重心排序会停在平台上；相邻交换侧移必须能把这种图排成零交叉。"""
-        a = ops.add_task(self.plan, "F01", "a", "local", 10)
-        b = ops.add_task(self.plan, "F01", "b", "local", 10)
-        c = ops.add_task(self.plan, "F01", "c", "local", 10, [a["id"]])
-        d = ops.add_task(self.plan, "F01", "d", "local", 10, [b["id"]])
-        e = ops.add_task(self.plan, "F01", "e", "local", 10, [c["id"], d["id"]])
-        f = ops.add_task(self.plan, "F01", "f", "local", 10, [a["id"], d["id"]])
-        ops.add_task(self.plan, "F01", "g", "local", 10, [e["id"], f["id"]])
-        graph, _ = self.layout()
-        self.assert_no_crossings(graph)
+        self.assertIsNone(views["F02"]["progress"], "没有需要完成的任务时不下结论")
 
     def test_finished_flow_reports_completion_instead_of_pending_estimate(self):
         """已结束的任务没有"预计完成时间"，不该把整个流程说成"完成待估"。"""
@@ -698,10 +582,35 @@ class LayoutTests(unittest.TestCase):
         ops.set_task(self.plan, task["id"], {"status": "done"}, NOW + timedelta(minutes=30))
         dropped = ops.add_task(self.plan, "F01", "B", "I01", 30, ["F01-T01"])
         ops.set_task(self.plan, dropped["id"], {"status": "cancelled"}, NOW + timedelta(minutes=40))
-        _, views = self.layout()
+        views = self.views()
         self.assertEqual(views["F01"]["open"], 0)
         self.assertTrue(views["F01"]["known"])
         self.assertEqual(views["F01"]["finish"], ops.stamp(NOW + timedelta(minutes=30)))
+
+    def test_node_progress_rounds_and_clamps_registered_samples(self):
+        self.assertEqual(ops.node_progress({"status": "running", "progress": 18.5}), 19)
+        self.assertEqual(ops.node_progress({"status": "running", "progress": 18.4}), 18)
+        self.assertEqual(ops.node_progress({"status": "running", "progress": 0.5}), 1)
+        self.assertEqual(ops.node_progress({"status": "running", "progress": 99.5}), 100)
+        self.assertEqual(ops.node_progress({"status": "running", "progress": -1}), 0)
+        self.assertEqual(ops.node_progress({"status": "running", "progress": 101}), 100)
+
+    def test_node_progress_done_is_full_and_unknown_is_zero(self):
+        self.assertEqual(ops.node_progress({"status": "done", "progress": None}), 100)
+        self.assertEqual(ops.node_progress({"status": "done", "progress": 12}), 100)
+        self.assertEqual(ops.node_progress({"status": "running", "progress": None}), 0)
+        self.assertEqual(ops.node_progress({"status": "pending", "progress": None}), 0)
+
+    def test_snapshot_progress_does_not_overwrite_planned_progress(self):
+        task = ops.add_task(self.plan, "F01", "A", "I01", 30)
+        ops.set_task(self.plan, task["id"], {"status": "running", "progress": 18.5}, NOW)
+        before = copy.deepcopy(self.plan)
+        view = ops.snapshot(self.plan, NOW)
+        item = next(t for t in view["tasks"] if t["id"] == task["id"])
+        self.assertEqual(item["view"], {"progress": 19})
+        self.assertEqual(item["progress"], 18.5, "原 progress 保持登记值")
+        self.assertEqual(task["progress"], 18.5)
+        self.assertEqual(self.plan, before, "快照不写回原计划")
 
 
 class RepoSnapshotTests(unittest.TestCase):
@@ -1942,12 +1851,13 @@ class HTTPTests(unittest.TestCase):
         with OPEN(self.url) as response:
             page = response.read().decode()
             self.assertIn("TrainOps", page)
-            self.assertIn("canvas-viewport", page)
+            self.assertIn("queue-viewport", page, "面板保留唯一的执行队列视图")
             self.assertIn("flow-index", page)
             self.assertIn("--inst-0", page, "面板为实例分配身份色")
             self.assertIn("var(--inst-color", page, "执行中节点取所属实例的颜色")
             self.assertNotIn("start-node", page, "面板不再显示开始节点")
-            # 流程总进度只留主图上方一处，任务矩形只显示自己的进度
+            self.assertNotIn("diagram-switch", page, "执行队列是单视图，没有视图切换")
+            # 流程总进度只留队列上方一处，任务矩形只显示自己的进度
             self.assertNotIn("progress-line", page)
             self.assertIn("textContent", page)
             self.assertNotIn("innerHTML", page)
@@ -1956,17 +1866,12 @@ class HTTPTests(unittest.TestCase):
             plan = json.load(response)
             self.assertEqual(len(plan["tasks"]), 7)
             self.assertIn("estimate", plan["tasks"][0])
-            # 几何、流程结论、计数都由服务端算好下发，面板只负责打点
+            # 流程结论、计数与任务进度都由服务端算好下发，面板只负责显示
             self.assertNotIn("bar", plan["tasks"][0])
-            self.assertEqual(sorted(plan["graph"]),
-                             ["columns", "edges", "nodes", "rows"])
-            self.assertEqual(len(plan["graph"]["nodes"]), 7)
-            self.assertFalse(any(node["id"] == "START" for node in plan["graph"]["nodes"]),
-                             "主图不再有开始节点")
-            self.assertTrue(all("waypoints" in edge for edge in plan["graph"]["edges"]),
-                            "跨层依赖必须带中间路点")
-            self.assertEqual((plan["graph"]["columns"], plan["graph"]["rows"]), (5, 2))
-            self.assertNotIn("graph", plan["flows"][0], "流程不再各自下发子图")
+            self.assertNotIn("graph", plan, "依赖图几何不再由服务端下发")
+            self.assertTrue(all(sorted(task["view"]) == ["progress"] for task in plan["tasks"]))
+            self.assertEqual(plan["tasks"][0]["view"], {"progress": 100}, "done 任务满格")
+            self.assertNotIn("graph", plan["flows"][0], "流程只下发完成结论")
             self.assertEqual(sorted(plan["flows"][0]["view"]),
                              ["cancelled", "countable", "done", "finish", "known", "open",
                               "progress", "total"])

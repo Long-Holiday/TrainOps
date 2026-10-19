@@ -17,7 +17,7 @@ description: AutoDL 多实例实验计划、任务面板、Run 日志与周期�
 
 需要远端准备时默认 `power_on_no_gpu`，资源仅 0.5 核 CPU、2GB 内存、无 GPU，适合轻量检查和配置；重型编译/数据处理留给资源充足的授权环境。已核实无需准备或已有训练时直接复用。准备就绪按授权 `switch_mode` 转有卡，检查真实 GPU 与训练入口后启动；SSH 可达和开机请求已提交均不代表 GPU 就绪。工具契约按需读 [AutoDL](references/autodl.md)。
 
-## 计划与流程图
+## 计划与执行队列
 
 推荐 `$CLI apply --from-json - --brief`：无计划时创建，已有计划时增量修改；`--dry-run` 预览。用 `instances/flows/tasks/updates` 具名字段及本次请求内 `key` 引用，读取回执 `aliases`，后续用真实编号；未知耗时填 null，`deps: []` 表示无真实依赖。JSON 不自动串联，执行队列顺序不写成 deps。单项用 `set`，已有 `init` / `batch` 继续可用。见 [CLI](references/cli.md)。
 
