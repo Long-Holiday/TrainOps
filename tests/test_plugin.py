@@ -158,6 +158,29 @@ class SkillTests(unittest.TestCase):
         for phrase in ("power_on_no_gpu", "0.5 核 CPU、2GB 内存、无 GPU"):
             self.assertIn(phrase, body, "入口必须把无卡准备写成默认路线并说明资源上限")
 
+    def test_gpu_cost_guidance_covers_resource_pool_and_idle_time(self):
+        skill = read(SKILL)
+        for phrase in ("减少 GPU 付费空转", "候选资源池", "不是全部开机清单",
+                       "全部缺卡", "可立即执行", "关机授权不足"):
+            self.assertIn(phrase, skill)
+        reference = read(REFERENCES / "autodl.md")
+        for phrase in ("按需用卡与空闲处置", "同一任务只保留一个目标",
+                       "原请求须取消并核实物理状态后才替换", "结束即接续或停机",
+                       "不必等所有流程结束", "正常训练不为省费擅自中断",
+                       "短暂保留须有明确", "不擅自释放实例"):
+            self.assertIn(phrase, reference)
+        protocol = read(REFERENCES / "protocol.md")
+        self.assertIn("不要求 GPU 一直开到最后", protocol)
+        self.assertIn("按已有授权", protocol)
+
+    def test_shared_storage_guidance_keeps_reuse_safe(self):
+        reference = read(REFERENCES / "autodl.md")
+        for phrase in ("同一账号下所有实例共享同一份", "单写者", "只读复用",
+                       "完整性校验", "不读取半成品", "数据版本/划分",
+                       "输出按任务/Run 隔离", "环境安装不可多机并发改写同一目录",
+                       "清理共享盘前先确认"):
+            self.assertIn(phrase, reference)
+
     def test_entry_pins_failure_escalation(self):
         """故障口径：自愈有上限，第 5 次后先关机止付。"""
         body = read(SKILL)
