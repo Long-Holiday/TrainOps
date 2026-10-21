@@ -29,6 +29,8 @@ description: AutoDL 多实例实验计划、任务面板、Run 日志与周期�
 
 ## 实验执行与决策
 
+每次训练前检查项目的 TensorBoard 配置；项目已有配置就必须实际启用，沿用项目指标与记录方式，按 [TensorBoard](references/autodl.md#tensorboard) 配置事件目录与访问，启动后核实事件文件产生并随训练更新，巡检时检查持续写入；接管已有训练先核实当前记录与服务状态，避免重复启动。
+
 训练通过 SSH 在 tmux/screen 等断线后可继续的会话中运行，保留实际命令、版本、日志、产物和进程引用。代码本地修改验证、按授权提交推送并远端拉取核对，不覆盖用户工作。见 [执行与通知闭环](references/execution.md)。
 
 实验日志先读后写：新尝试/接管时 `experiment show` 看当前及最近相关 Run，不必全量；连续操作已经读过且未变化的记录可直接增量更新。核实实际启动后 `experiment start`，巡检/结束用 `experiment update`，恢复沿用活动 Run，真正重跑新建 Run；`experiment sync` 补录失败同步。记录意图、改动、基线、真实指标（含 extra_metrics）、协议和证据。每轮结果后比较可比基线，判断假设是否成立及下一轮最有价值的工作；缺测不补零，不把训练 loss 当最终评测。见 [实验日志](references/experiments.md)。
