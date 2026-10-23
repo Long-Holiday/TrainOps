@@ -21,7 +21,7 @@ from trainops_base import *
 from trainops_model import default_config, default_state
 
 
-# 实验日志与计划分开保存；飞书只是索引，不参与调度与余额结算。
+# 实验日志与计划分段保存；飞书只是索引，不参与调度。
 EXPERIMENT_FIELDS = {
     "run_id": ("Run ID", "text"), "project": ("项目", "text"),
     "flow": ("流程", "text"), "task": ("任务", "text"), "instance": ("实例", "text"),

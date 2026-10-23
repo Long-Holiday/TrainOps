@@ -1,7 +1,7 @@
 import copy
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import inspect
 import re
 import json
 import os
@@ -12,7 +12,7 @@ import tempfile
 import threading
 import unittest
 from unittest import mock
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 OPEN = build_opener(ProxyHandler({})).open
@@ -35,11 +35,7 @@ def base():
 
 
 def run_cli(project, *args, success=True, env=None):
-    """跑一次 CLI 子进程，返回 CompletedProcess；success 用来声明期望的退出码是否为 0。
-
-    env 只用来把接口地址指到本地假服务（TRAINOPS_API_BASE）：凭据只从面板登记的那份内存里取，
-    子进程读不到任何 token，也就不必再"指开"开发机上的凭据文件。
-    """
+    """跑一次 CLI 子进程，返回 CompletedProcess；success 用来声明期望的退出码是否为 0。"""
     environment = {**os.environ, **(env or {})}
     result = subprocess.run([sys.executable, str(SCRIPT), "--project", str(project), *args],
                             text=True, capture_output=True, timeout=20, env=environment)
@@ -132,18 +128,17 @@ class ValidationTests(unittest.TestCase):
             ops.add_task(plan, "F01", f"待估{index}", "I01", None)
         plan["instances"][0]["disk"]["data_used_gb"] = 48
         plan["instances"][0]["disk"]["data_total_gb"] = 50
-        plan["monitor"]["last_error"] = "测试结算失败"
         report = ops.check_structure(plan, NOW)
         self.assertTrue(report["ok"])
-        self.assertEqual(len(report["warnings"]), 3)
+        self.assertEqual(len(report["warnings"]), 2)
         self.assertIn("数据盘已用", report["warnings"][0])
-        self.assertIn("自动结算失败", report["warnings"][1])
         self.assertIn("15 个 pending", report["warnings"][-1])
         text = ops.brief_plan(plan, NOW)
         self.assertIn("数据盘已用", text)
-        self.assertIn("自动结算失败", text)
+        self.assertNotIn("自动结算失败", text)
+        self.assertNotIn("余额", text)
         self.assertEqual(text.count("未设置预计耗时"), 1)
-        warnings_text = text.split("提醒（共 3 条）:", 1)[1].split("缺失信息", 1)[0]
+        warnings_text = text.split("提醒（共 2 条）:", 1)[1].split("完整计划用 show", 1)[0]
         self.assertNotIn("省略", warnings_text)
 
     def test_batch_spec_distinguishes_omitted_and_explicit_empty_dependencies(self):
@@ -271,50 +266,8 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ops.PlanError):
             ops.validate(self.plan)
 
-    def test_monitor_block_is_validated_leniently(self):
-        monitor = self.plan["monitor"]
-        ops.validate(self.plan)  # 全新计划的 monitor 段必须合法
-        for value in (0, 1441, "30", True):
-            monitor["interval_minutes"] = value
-            with self.subTest(interval=value), self.assertRaises(ops.PlanError):
-                ops.validate(self.plan)
-        monitor["interval_minutes"] = ops.INTERVAL_LIMITS[1]
-        for key in ("last_run", "last_ok", "expires_at"):
-            monitor[key] = "2026-10-14 10:00"  # 不带时区
-            with self.subTest(key=key), self.assertRaises(ops.PlanError):
-                ops.validate(self.plan)
-            monitor[key] = None
-        monitor["token_ready"] = "yes"
-        with self.assertRaises(ops.PlanError):
-            ops.validate(self.plan)
-        monitor["token_ready"] = False
-        # 结算快照：缺数据的键可以没有，但有的值必须可信（NaN 会让 json 落盘直接炸）
-        monitor["estimate"] = {"computed_at": ops.stamp(NOW), "revision": 1}
-        ops.validate(self.plan)
-        for key in ("burn_rate", "hours_awake", "plan_gpu_hours", "plan_cost"):
-            monitor["estimate"][key] = float("nan")
-            with self.subTest(key=key), self.assertRaises(ops.PlanError):
-                ops.validate(self.plan)
-            del monitor["estimate"][key]
-        monitor["estimate"]["covers_plan"] = "true"
-        with self.assertRaises(ops.PlanError):
-            ops.validate(self.plan)
-        monitor["estimate"]["covers_plan"] = None
-        del monitor["estimate"]["computed_at"]
-        with self.assertRaises(ops.PlanError):
-            ops.validate(self.plan)
-        monitor["estimate"] = "oops"
-        with self.assertRaises(ops.PlanError):
-            ops.validate(self.plan)
-
-    def test_price_and_disk_bounds(self):
+    def test_disk_bounds(self):
         item = self.plan["instances"][0]
-        for value in (-1, 0, "1.88", float("nan"), True):
-            item["price"] = value
-            with self.subTest(price=value), self.assertRaises(ops.PlanError):
-                ops.validate(self.plan)
-        item["price"] = None
-        ops.validate(self.plan)
         for value in (-1, "40", float("inf")):
             item["disk"]["data_used_gb"] = value
             with self.subTest(disk=value), self.assertRaises(ops.PlanError):
@@ -324,7 +277,7 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ops.PlanError, "大于总容量"):
             ops.validate(self.plan)
 
-    def test_mode_and_no_gpu_price_bounds(self):
+    def test_mode_bounds(self):
         item = self.plan["instances"][0]
         for value in ("no_gpu", "", 0, True):
             item["mode"] = value
@@ -333,23 +286,29 @@ class ValidationTests(unittest.TestCase):
         for value in ("no-gpu", "gpu", None):
             item["mode"] = value
             ops.validate(self.plan)
-        for value in (-1, 0, "0.1", float("inf")):
-            item["no_gpu_price"] = value
-            with self.subTest(no_gpu_price=value), self.assertRaises(ops.PlanError):
-                ops.validate(self.plan)
-        item["no_gpu_price"] = None
-        ops.validate(self.plan)
+            self.assertEqual(ops.instance_mode(item), value)
 
-    def test_plans_without_the_new_fields_still_read(self):
-        """开机模式与无卡费率是后加的字段：老计划少了这两个键也要照常读，不逼人重建计划。"""
+    def test_legacy_plans_without_mode_still_read(self):
+        """开机模式是后加的字段：老计划少了它也要照常读，不逼人重建计划。"""
         for item in self.plan["instances"]:
-            del item["mode"], item["no_gpu_price"]
+            del item["mode"]
         ops.validate(self.plan)
-        self.plan["instances"][0].update(status="on", price=2.0)
-        self.plan["instances"][1]["status"] = "off"
-        self.plan["wallet"]["assets"] = 100.0
-        self.assertEqual(ops.budget(self.plan, NOW)["burn_rate"], 2.0, "缺字段时按 GPU 时价，不是 0")
-        self.assertIn("¥2/h", ops.instance_line(self.plan["instances"][0]))
+        self.assertIsNone(ops.instance_mode(self.plan["instances"][0]))
+        self.plan["instances"][0]["status"] = "on"
+        self.assertIn("[on]", ops.instance_line(self.plan["instances"][0]))
+
+    def test_new_plan_and_instances_have_no_financial_fields(self):
+        """余额、结算与实例时价已删除：新计划和新实例都不再生成这些字段。"""
+        plan = ops.new_plan("无计费")
+        for key in ("wallet", "monitor"):
+            self.assertNotIn(key, plan)
+        ops.add_instance(plan, "A", "test-a", "gpu-a")
+        item = plan["instances"][0]
+        for key in ("price", "no_gpu_price"):
+            self.assertNotIn(key, item)
+        self.assertIn("mode", item, "开机模式仍然保留")
+        self.assertIn("disk", item, "三盘用量仍然保留")
+        ops.validate(plan)
 
 
 class ForecastTests(unittest.TestCase):
@@ -625,22 +584,18 @@ class RepoSnapshotTests(unittest.TestCase):
                 "-p examples/demo-project demo --force")
         self.assertEqual([[t[f] for f in fields] for t in committed["tasks"]],
                          [[t[f] for f in fields] for t in fresh["tasks"]], hint)
-        # 时价、开机模式与三盘用量也是演示数据的一部分：不比对就看不到它们的漂移（时间戳除外）。
-        instance_fields = ("id", "name", "status", "mode", "note", "price", "no_gpu_price", "disk")
+        # 开机模式与三盘用量也是演示数据的一部分：不比对就看不到它们的漂移（时间戳除外）。
+        instance_fields = ("id", "name", "status", "mode", "note", "disk")
         self.assertEqual([{f: i[f] for f in instance_fields} for i in committed["instances"]],
                          [{f: i[f] for f in instance_fields} for i in fresh["instances"]], hint)
-        self.assertEqual({k: v for k, v in committed["wallet"].items() if k != "observed_at"},
-                         {k: v for k, v in fresh["wallet"].items() if k != "observed_at"}, hint)
+        for item in fresh["instances"]:
+            for field in ("price", "no_gpu_price"):
+                self.assertNotIn(field, item, hint)
+        self.assertNotIn("wallet", fresh, hint)
+        self.assertNotIn("monitor", fresh, hint)
         self.assertEqual([f["name"] for f in committed["flows"]],
                          [f["name"] for f in fresh["flows"]], hint)
         self.assertEqual(committed["schema_version"], ops.SCHEMA_VERSION, hint)
-        # 演示快照带一份自动结算记录，面板因此开箱就能看到结算徽标：比对静态字段，
-        # 时间戳与指纹每次都不同，只比对结论的键集合（键必须和实时口径一致）。
-        monitor_fields = ("interval_minutes", "expires_at", "last_error", "token_ready")
-        self.assertEqual({f: committed["monitor"][f] for f in monitor_fields},
-                         {f: fresh["monitor"][f] for f in monitor_fields}, hint)
-        self.assertEqual(sorted(committed["monitor"]["estimate"]),
-                         sorted(fresh["monitor"]["estimate"]), hint)
 
 
 class CLITests(unittest.TestCase):
@@ -781,6 +736,34 @@ class CLITests(unittest.TestCase):
         self.store.path.write_text("not-json", encoding="utf-8")
         self.command("flow", "add", "--name", "lost", success=False)
         self.assertEqual(self.store.path.read_text(), "not-json")
+
+    def test_legacy_financial_fields_stay_readable_but_never_reshape_the_view(self):
+        """旧 schema 3 计划里的余额/结算/时价字段忽略即可：训练更新照常，展示不含它们，文件不迁移。"""
+        self.setup_plan()
+        document = self.store.read_document()
+        document["plan"]["wallet"] = {"assets": 128.5, "voucher": 20.0, "observed_at": ops.stamp(NOW)}
+        document["plan"]["monitor"] = {"interval_minutes": 30, "last_error": "", "token_ready": False,
+                                       "estimate": {"computed_at": ops.stamp(NOW), "revision": 1}}
+        document["plan"]["instances"][0].update(price=1.88, no_gpu_price=0.1)
+        self.store.write_document(document)
+        before = self.store.read_document()["plan"]
+        # 训练更新照常可用，且不会因为旧字段被判成坏计划
+        self.command("task", "set", "F01-T01", "--status", "running")
+        self.command("task", "set", "F01-T01", "--progress", "20")
+        after = self.store.read()["tasks"][0]
+        self.assertEqual((after["status"], after["progress"]), ("running", 20))
+        # 旧文件不被自动迁移：额外字段原样留在磁盘上，只是不再参与校验与展示
+        stored = self.store.read_document()["plan"]
+        self.assertEqual(stored["wallet"], before["wallet"])
+        self.assertEqual(stored["monitor"], before["monitor"])
+        self.assertEqual((stored["instances"][0]["price"],
+                          stored["instances"][0]["no_gpu_price"]), (1.88, 0.1))
+        for view in (ops.snapshot(self.store.read()), run_json(self.project, "show", "--json")):
+            for key in ("wallet", "monitor", "credentials"):
+                self.assertNotIn(key, view)
+            for item in view["instances"]:
+                for key in ("price", "no_gpu_price"):
+                    self.assertNotIn(key, item)
 
     def test_running_mapping_locked_but_progress_open(self):
         self.setup_plan()
@@ -1011,7 +994,7 @@ class CLITests(unittest.TestCase):
         self.assertNotIn("issues", result)
 
 
-class DiskAndPriceTests(unittest.TestCase):
+class DiskAndModeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -1054,134 +1037,36 @@ class DiskAndPriceTests(unittest.TestCase):
                 self.command("instance", "set", "I01", "--disk", spec, success=False)
                 self.assertEqual(before, self.store.path.read_bytes())
 
-    def test_price_is_a_quote_not_an_observation(self):
-        """时价现在只能从面板登记，但它依旧只是标价：登记它不刷新观测时间。"""
-        self.store.change(lambda plan: ops.set_instance_price(plan, "I01", "price", ops.price_value("1.88")))
-        item = self.instance()
-        self.assertEqual(item["price"], 1.88)
-        self.assertIsNone(item["observed_at"], "时价是标价，不该刷新观测时间")
-
-    def test_price_bounds_reject_zero_and_junk(self):
-        """0 和负数一律拒绝：它们会被读成"机器白跑"，而缺数据不能拿 0 顶替。"""
-        for value in (0, -1, 0.0, 10001, "nan", "abc", [], {}, True):
-            with self.subTest(price=value), self.assertRaises(ops.PlanError):
-                ops.price_value(value)
-        for cleared in (None, "none", "?", "-", "  "):
-            with self.subTest(price=cleared):
-                self.assertIsNone(ops.price_value(cleared))
-        self.assertEqual(ops.price_value("1.88"), 1.88)
-
-    def test_price_flag_is_gone_from_the_cli(self):
-        """时价只有面板一个入口：CLI 参数必须消失，免得两条写路径各自漂移。"""
-        result = run_cli(self.project, "instance", "set", "I01", "--price", "1.88", success=False)
-        self.assertEqual(result.returncode, 2, "argparse 应该把已删除的 --price 判成用法错误")
-        self.assertIn("--price", result.stderr)
-        self.assertIsNone(self.instance()["price"], "被拒绝的写法不能顺手把时价写进去")
-
-    def test_old_plan_gains_the_no_gpu_price_when_the_mode_is_recorded(self):
-        """老计划没有无卡费率这个键，而读取时按平台默认值算：登记模式时要把它落实成字段，
-        否则面板显示"费率未登记"、服务端却按 0.1 计算，两边各说各话。"""
-        self.store.change(lambda plan: plan["instances"][0].pop("no_gpu_price", None))
-        self.command("instance", "set", "I01", "--mode", "no-gpu")
-        self.assertEqual(self.instance()["no_gpu_price"], ops.NO_GPU_PRICE)
-
     def test_mode_flag_records_the_power_mode(self):
-        """无卡/有卡由 agent 从平台侧核实后登记，它和时价是两件事，互不覆盖。"""
+        """无卡/有卡由 agent 从平台侧核实后登记；模式是观测，会刷新观测时间。"""
         self.command("instance", "set", "I01", "--status", "on", "--mode", "no-gpu")
         item = self.instance()
         self.assertEqual(item["mode"], "no-gpu")
-        self.assertEqual(item["no_gpu_price"], ops.NO_GPU_PRICE, "新实例默认带上平台的无卡费率")
         self.assertIsNotNone(item["observed_at"], "开机模式是观测，要刷新观测时间")
-        self.assertIn("无卡 ¥0.1/h", self.command("show").stdout)
-        self.store.change(lambda plan: ops.set_instance_price(plan, "I01", "price", 1.88))
+        text = self.command("show").stdout
+        self.assertIn("无卡准备", text)
+        self.assertNotIn("¥", text)
         self.command("instance", "set", "I01", "--mode", "gpu")
-        item = self.instance()
-        self.assertEqual(item["mode"], "gpu")
-        self.assertEqual(item["price"], 1.88, "切模式不该把另一个档位的价格冲掉")
+        self.assertEqual(self.instance()["mode"], "gpu")
         self.command("instance", "set", "I01", "--mode", "none")
         self.assertIsNone(self.instance()["mode"], "核实不了就先记成未观测，不猜")
         self.command("instance", "set", "I01", "--mode", "no_gpu", success=False)
+        for key in ("price", "no_gpu_price"):
+            self.assertNotIn(key, self.instance(), "新实例不再生成时价字段")
 
-
-class BudgetTests(unittest.TestCase):
-    def setUp(self):
-        self.plan = base()
-        for item in self.plan["instances"]:
-            item["price"] = 2.0
-
-    def test_hours_use_cash_only_and_skip_unknown_pieces(self):
-        self.plan["wallet"].update(assets=100.0, voucher=500.0, observed_at=ops.stamp(NOW))
-        view = ops.budget(self.plan, NOW)
-        # 500 元代金券不该让 100 元现金变成 300 小时
-        self.assertEqual(view["assets"], 100.0)
-        self.assertEqual(view["voucher"], 500.0)
-        self.assertNotIn("burn_rate", view, "没有开机实例就不该有烧钱速度")
-        self.assertNotIn("hours_awake", view)
-
-    def test_burn_rate_needs_every_awake_price(self):
-        self.plan["wallet"]["assets"] = 100.0
-        self.plan["instances"][0]["status"] = "on"
-        self.plan["instances"][1].update(status="on", price=None)
-        view = ops.budget(self.plan, NOW)
-        self.assertNotIn("burn_rate", view, "缺一台时价时，烧钱速度必须是残缺的而不是缩小")
-        self.plan["instances"][1]["price"] = 3.0
-        view = ops.budget(self.plan, NOW)
-        self.assertEqual(view["burn_rate"], 5.0)
-        self.assertEqual(view["hours_awake"], 20.0)
-        self.plan["instances"][0]["status"] = "off"
-        self.assertEqual(ops.budget(self.plan, NOW)["burn_rate"], 3.0)
-
-    def test_plan_cost_follows_lane_end_and_refuses_partial_sums(self):
-        self.plan["wallet"]["assets"] = 100.0
-        ops.add_task(self.plan, "F01", "训练", "I01", 120)
-        ops.add_task(self.plan, "F02", "对照", "I02", 60)
-        view = ops.budget(self.plan, NOW)
-        # 两台实例各跑各的：2h×2 元 + 1h×2 元 = 6 元，而不是把耗时相加
-        self.assertEqual(view["plan_gpu_hours"], 3.0)
-        self.assertEqual(view["plan_cost"], 6.0)
-        self.assertTrue(view["covers_plan"])
-        unknown = ops.add_task(self.plan, "F01", "待估", "I01", None)
-        view = ops.budget(self.plan, NOW)
-        self.assertNotIn("plan_gpu_hours", view, "有任务完成时间待估时不能给出部分求和")
-        self.assertNotIn("plan_cost", view)
-        self.assertNotIn("covers_plan", view)
-        self.plan["tasks"][2]["status"] = "cancelled"
-        self.plan["tasks"][2].update(started_at=ops.stamp(NOW), finished_at=ops.stamp(NOW))
-        self.assertIn("plan_cost", ops.budget(self.plan, NOW))
-
-    def test_short_balance_is_reported_as_not_covering(self):
-        self.plan["wallet"]["assets"] = 1.0
-        ops.add_task(self.plan, "F01", "训练", "I01", 600)
-        view = ops.budget(self.plan, NOW)
-        self.assertEqual(view["plan_cost"], 20.0)
-        self.assertFalse(view["covers_plan"])
-
-    def test_no_gpu_instances_use_the_no_gpu_rate(self):
-        """无卡开机不等于免费：按无卡费率算，既不退回 GPU 时价，也不当成 0。"""
-        self.plan["wallet"]["assets"] = 100.0
-        self.plan["instances"][0].update(status="on", mode="no-gpu")
-        self.plan["instances"][1]["status"] = "off"
-        view = ops.budget(self.plan, NOW)
-        self.assertEqual(view["burn_rate"], ops.NO_GPU_PRICE)
-        self.assertEqual(view["hours_awake"], round(100.0 / ops.NO_GPU_PRICE, 1))
-        self.plan["instances"][1].update(status="on", mode="no-gpu")
-        self.assertEqual(ops.budget(self.plan, NOW)["burn_rate"], 0.2, "两台无卡各自计费")
-        # 无卡费率被清空就少给结论：不退回 GPU 时价，也不写 0
-        self.plan["instances"][0]["no_gpu_price"] = None
-        self.assertNotIn("burn_rate", ops.budget(self.plan, NOW))
-        # 开机模式没登记过（老计划）仍按 GPU 时价：宁可高估花费，也不让人以为还能跑很久
-        self.plan["instances"][0].update(mode=None, no_gpu_price=0.1)
-        self.assertEqual(ops.budget(self.plan, NOW)["burn_rate"], 2.1)
-
-    def test_plan_cost_still_uses_the_gpu_price(self):
-        """待跑任务将来是在有卡模式下跑的，计划花费不能拿无卡费率压低。"""
-        self.plan["wallet"]["assets"] = 100.0
-        ops.add_task(self.plan, "F01", "训练", "I01", 120)
-        self.plan["instances"][0].update(status="on", mode="no-gpu")
-        self.plan["instances"][1]["status"] = "off"
-        view = ops.budget(self.plan, NOW)
-        self.assertEqual(view["burn_rate"], ops.NO_GPU_PRICE)
-        self.assertEqual(view["plan_cost"], 4.0, "2 小时 × GPU 时价 2 元，而不是无卡费率")
+    def test_financial_commands_and_flags_are_gone(self):
+        """余额、时价与结算周期已删除：CLI 不得再接受对应命令或参数。"""
+        before = self.store.path.read_bytes()
+        cases = (("wallet", "set", "--assets", "1"),
+                 ("instance", "set", "I01", "--price", "1.88"),
+                 ("instance", "set", "I01", "--no-gpu-price", "0.1"),
+                 ("serve", "--interval", "30"))
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = run_cli(self.project, *arguments, success=False)
+                self.assertEqual(result.returncode, 2, "argparse 应把已删除的命令/参数判成用法错误")
+                self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(before, self.store.path.read_bytes(), "被拒绝的写法不能顺手改计划")
 
 
 class CheckWarningTests(unittest.TestCase):
@@ -1202,30 +1087,14 @@ class CheckWarningTests(unittest.TestCase):
         result = self.command("check")
         self.assertNotIn("warnings", result)
 
-    def test_disk_price_and_coverage_warnings(self):
+    def test_disk_warnings_only(self):
         self.command("instance", "set", "I01", "--status", "on", "--disk", "data:48/50")
-        self.command("wallet", "set", "--assets", "100")
         result = self.command("check")
         text = " ".join(result["warnings"])
         self.assertIn("数据盘已用 48/50G", text)
-        self.assertIn("未登记时价", text)
-        self.assertNotIn("不足以", text, "缺时价时算不出计划花费，不能凭空说余额不够")
-        self.assertIn("面板", text, "提示要告诉用户去哪儿登记时价")
-        self.store.change(lambda plan: ops.set_instance_price(plan, "I01", "price", 2.0))
-        self.command("task", "set", "F01-T01", "--minutes", "6000")
-        result = self.command("check")
-        text = " ".join(result["warnings"])
-        self.assertIn("不足以覆盖", text)
-        self.assertNotIn("系统盘", " ".join(result["warnings"]))
+        for gone in ("时价", "余额", "不足以", "结算"):
+            self.assertNotIn(gone, text, "计费相关提醒已随功能删除")
         self.assertTrue(result["ok"], "这些只是提醒，不能把结构检查判成失败")
-
-    def test_no_gpu_instance_is_not_asked_for_a_gpu_price(self):
-        """无卡开机按无卡费率计费，不该追着要 GPU 时价。"""
-        self.command("instance", "set", "I01", "--status", "on", "--mode", "no-gpu")
-        self.command("wallet", "set", "--assets", "100")
-        text = " ".join(self.command("check")["warnings"])
-        self.assertNotIn("未登记时价", text)
-        self.assertIn("无卡 ¥0.1/h", self.command("show").stdout)
 
     def test_full_disk_warning_appears_in_show_text(self):
         self.command("instance", "set", "I01", "--disk", "sys:29/30,data:10/50")
@@ -1233,111 +1102,6 @@ class CheckWarningTests(unittest.TestCase):
         self.assertIn("系统 29/30G!", text)
         self.assertIn("数据 10/50G", text)
         self.assertIn("盘 ", text)
-
-
-class WalletAPITests(unittest.TestCase):
-    """余额接口：凭据只进请求头，各类失败被翻译成可读文案，账本除 monitor 段外一个字节都不动。"""
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.project = Path(self.temp.name)
-        self.store = ops.Store(self.project)
-        self.store.create(ops.demo_plan(NOW))
-        self.requests = []
-        tests = self
-
-        class Handler(BaseHTTPRequestHandler):
-            status = 200
-            body = json.dumps({"code": "Success", "data": {"assets": 128500, "voucher_balance": 20000}})
-
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                tests.requests.append({"path": self.path, "auth": self.headers.get("Authorization"),
-                                       "body": self.rfile.read(length)})
-                payload = self.body.encode()
-                self.send_response(self.status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def log_message(self, *args):
-                pass
-
-        self.handler = Handler
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.addCleanup(self.server.server_close)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.shutdown)
-
-    def settle(self, token="secret-token-value"):
-        """结算只从面板登记的那份内存凭据取 token；测试直接传进来，不经过任何文件或环境变量。"""
-        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": f"http://127.0.0.1:{self.server.server_port}"}):
-            return ops.cycle(self.store, token=token)
-
-    def test_balance_request_shape_and_no_token_leak(self):
-        result = self.settle()
-        self.assertEqual(self.requests[0]["path"], "/api/v1/dev/wallet/balance")
-        self.assertEqual(self.requests[0]["auth"], "secret-token-value", "必须用原始 token，不能加 Bearer 前缀")
-        self.assertEqual(self.requests[0]["body"], b"", "只读接口不该带请求体")
-        wallet = self.store.read()["wallet"]
-        self.assertEqual((wallet["assets"], wallet["voucher"]), (128.5, 20.0))
-        self.assertIsNotNone(wallet["observed_at"])
-        for leak in (result, self.store.path.read_text(encoding="utf-8")):
-            self.assertNotIn("secret-token-value", json.dumps(leak, ensure_ascii=False, default=str))
-
-    def test_payload_failures_are_reported_and_leave_the_ledger_alone(self):
-        cases = ((401, json.dumps({"code": "Fail", "msg": "token 无效"}), "HTTP 401"),
-                 (200, json.dumps({"code": "Fail", "msg": "余额查询失败", "request_id": "req-1"}), "余额查询失败"),
-                 (200, "not json at all", "JSON"),
-                 (200, json.dumps({"code": "Success", "data": {}}), "assets"),
-                 (200, json.dumps({"code": "Success", "data": {"assets": 12.345}}), "整数"))
-        before = self.store.read()
-        for status, body, expected in cases:
-            with self.subTest(status=status, body=body[:40]):
-                self.handler.status, self.handler.body = status, body
-                result = self.settle()
-                self.assertIn(expected, result["monitor"]["last_error"])
-        after = self.store.read()
-        for key in ("name", "instances", "flows", "tasks", "wallet"):
-            self.assertEqual(after[key], before[key], f"取数失败只能动 monitor 段，不能动 {key}")
-        self.assertNotIn("secret-token-value", json.dumps(after, ensure_ascii=False))
-
-    def test_connection_errors_are_translated_not_raised_raw(self):
-        def boom(*args, **kwargs):
-            raise URLError(ConnectionRefusedError(111, "Connection refused"))
-
-        original, ops.opener = ops.opener, boom
-        try:
-            with self.assertRaisesRegex(ops.PlanError, "无法连接"):
-                ops.api_post("/api/v1/dev/wallet/balance", "secret-token-value")
-        finally:
-            ops.opener = original
-
-    def test_unreachable_api_does_not_block_local_edits(self):
-        # 接口不可达时：失败被记进计划，本地命令照常可用
-        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": "http://127.0.0.1:9"}):
-            result = ops.cycle(self.store, token="secret-token-value")
-        self.assertTrue(result["monitor"]["last_error"], "连不上接口必须记进 last_error")
-        self.assertNotIn("secret-token-value", json.dumps(result["monitor"], ensure_ascii=False))
-        run_cli(self.project, "wallet", "set", "--assets", "12.5", "--voucher", "3")
-        run_cli(self.project, "flow", "set", "F01", "--name", "改名")
-        self.assertIn("改名", run_cli(self.project, "show").stdout)
-
-    def test_wallet_set_manual_path(self):
-        run_cli(self.project, "wallet", "set", "--assets", "12.5", "--voucher", "3")
-        wallet = self.store.read()["wallet"]
-        self.assertEqual((wallet["assets"], wallet["voucher"]), (12.5, 3))
-        self.assertIsNotNone(wallet["observed_at"])
-        # 不带任何字段时拒绝：既不改数据，也不假装成功
-        run_cli(self.project, "wallet", "set", success=False)
-        self.assertEqual(self.store.read()["wallet"]["voucher"], 3)
-        run_cli(self.project, "wallet", "set", "--assets", "none")
-        self.assertIsNone(self.store.read()["wallet"]["assets"])
-        self.assertEqual(self.store.read()["wallet"]["voucher"], 3)
-        run_cli(self.project, "wallet", "set", "--assets", "1", "--voucher", "none")
-        self.assertIsNone(self.store.read()["wallet"]["voucher"])
 
 
 class BriefTests(unittest.TestCase):
@@ -1363,7 +1127,6 @@ class BriefTests(unittest.TestCase):
             ["instance", "add", "--name", "GPU", "--autodl-id", "id-a", "--ssh-alias", "gpu-a"],
             ["instance", "set", "I01", "--status", "on"], ["flow", "add", "--name", "流程"],
             ["flow", "set", "F01", "--name", "改名"],
-            ["wallet", "set", "--assets", "0"],
         ]
         for command in commands:
             with self.subTest(command=command):
@@ -1392,8 +1155,8 @@ class BriefTests(unittest.TestCase):
         plan = ops.new_plan("空计划")
         text = ops.brief_plan(plan, NOW)
         self.assertIn("done 0", text)
-        self.assertIn("余额未登记", text)
-        self.assertNotIn("¥0.00", text)
+        self.assertNotIn("余额", text, "摘要不再包含余额结论")
+        self.assertNotIn("¥", text)
         ops.add_flow(plan, "完成流程")
         task = ops.add_task(plan, "F01", "已结束", "local", 10)
         ops.set_task(plan, task["id"], {"status": "running"}, NOW)
@@ -1468,36 +1231,6 @@ class BriefTests(unittest.TestCase):
         self.assertTrue(all(len(line) <= ops.BRIEF_TEXT_LIMIT + 2 for line in lines))
         self.assertTrue(all("\n" not in line for line in lines))
         self.assertTrue(lines[1].endswith("…"))
-
-    def test_budget_missing_data_and_voucher_do_not_become_cash(self):
-        plan = ops.demo_plan(NOW)
-        plan["wallet"]["assets"] = None
-        plan["instances"][0]["price"] = None
-        plan["monitor"]["estimate"] = None
-        text = ops.brief_plan(plan, NOW)
-        self.assertIn("余额未登记", text)
-        self.assertIn("未登记时价", text)
-        self.assertIn("代金券 ¥20.00（不计入可用时长）", text)
-        self.assertNotIn("余额够", text)
-        self.assertNotIn("¥0.00", text)
-        self.assertNotIn("可用时长（同结算口径）:", text)
-
-    def test_fresh_changed_settlement_does_not_mix_live_plan_cost(self):
-        plan = ops.demo_plan(NOW)
-        old_cost = plan["monitor"]["estimate"]["plan_cost"]
-        plan["instances"][0]["price"] = 999
-        new_cost = ops.budget(plan, NOW)["plan_cost"]
-        self.assertNotEqual(old_cost, new_cost)
-        text = ops.brief_plan(plan, NOW)
-        self.assertIn("结算后计划有变更", text)
-        self.assertIn(f"¥{old_cost:.2f}", text)
-        self.assertNotIn(f"¥{new_cost:.2f}", text)
-        self.assertNotIn("实时结论:", text)
-        plan["monitor"]["estimate"]["computed_at"] = ops.stamp(NOW - timedelta(minutes=61))
-        text = ops.brief_plan(plan, NOW)
-        self.assertIn("已过期", text)
-        self.assertIn(f"¥{new_cost:.2f}", text)
-        self.assertEqual(text.count("实时结论:"), 1)
 
     def test_structure_diagnostics_share_one_transaction_and_no_extra_read(self):
         self.setup_plan()
@@ -1583,14 +1316,6 @@ class BriefTests(unittest.TestCase):
         self.assertIn("任务（共 6 条）", result.stdout)
         self.assertIn("省略 3 条", result.stdout)
 
-    def test_wallet_brief_preserves_zero_and_clear(self):
-        self.setup_plan()
-        result = run_cli(self.project, "wallet", "set", "--assets", "0", "--voucher", "10", "--brief")
-        self.assertIn("余额: ¥0.00", result.stdout, "真实零余额必须显示，与未知不同")
-        self.assertIn("不计入可用时长", result.stdout)
-        result = run_cli(self.project, "wallet", "set", "--assets", "none", "--brief")
-        self.assertIn("余额: 未登记", result.stdout)
-
     def test_hundred_tasks_brief_is_small_and_read_only(self):
         args = ["init", "--name", "百任务"]
         for i in range(1, 6):
@@ -1619,9 +1344,11 @@ class BriefTests(unittest.TestCase):
     def test_entry_safety_and_reference_links(self):
         entry = ROOT / "skills/trainops/SKILL.md"
         text = entry.read_text()
-        for rule in ("也允许 agent 直接编辑", "check --strict", "释放实例前转存", "Token", "--brief",
-                     "缩短假设到有效结果", "验收", "保留真实依赖", "超出费用授权"):
+        for rule in ("也允许 agent 直接编辑", "check --strict", "释放实例前转存", "--brief",
+                     "缩短假设到有效结果", "验收", "保留真实依赖", "超出资源授权"):
             self.assertIn(rule, text)
+        for gone in ("Token", "时价", "余额", "结算"):
+            self.assertNotIn(gone, text, "入口已删除计费/凭据登记要求")
         docs = [ROOT / "README.md", entry, *entry.parent.glob("references/*.md")]
         for doc in docs:
             for link in re.findall(r"\]\(([^)]+)\)", doc.read_text()):
@@ -1636,206 +1363,14 @@ class BriefTests(unittest.TestCase):
                     self.assertIn(anchor, anchors, f"无效锚点: {doc.name} -> {link}")
 
 
-class MonitorTests(unittest.TestCase):
-    """结算（cycle）：联网在文件锁之外，失败只记录不退出，结论与结算时间写回计划。
-
-    cycle 是面板进程与测试共用的那一个函数：Token 由调用方从面板登记的内存凭据里现取，
-    测试直接传参——凭据没有文件、也没有环境变量，这里不需要任何"指开"。
-    """
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.project = Path(self.temp.name)
-        self.store = ops.Store(self.project)
-        # 用真实当前时刻生成演示计划：cycle() 按真实时钟判断"跑没跑完"，固定时刻的计划会整片逾期
-        self.store.create(ops.demo_plan())
-        self.requests = []
-        self.arrived = None
-        self.slow = None
-        tests = self
-
-        class Handler(BaseHTTPRequestHandler):
-            status = 200
-            body = json.dumps({"code": "Success", "data": {"assets": 52000, "voucher_balance": 8000}})
-
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                tests.requests.append({"auth": self.headers.get("Authorization"), "body": self.rfile.read(length)})
-                if tests.slow is not None:
-                    tests.arrived.set()
-                    tests.slow.wait(10)  # 卡住联网，用来验证结算没有攥着文件锁
-                payload = self.body.encode()
-                self.send_response(self.status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def log_message(self, *args):
-                pass
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.addCleanup(self.server.server_close)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.shutdown)
-        self.token = "settle-token"
-
-    def run_json(self, *args, success=True):
-        return run_json(self.project, *args, success=success)
-
-    def settle(self, **kwargs):
-        """在测试进程里跑一轮结算；接口地址由本用例的假服务说了算。"""
-        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": self.api_base()}):
-            return ops.cycle(self.store, token=self.token, **kwargs)
-
-    def api_base(self):
-        return f"http://127.0.0.1:{self.server.server_port}"
-
-    def monitor(self):
-        return self.store.read()["monitor"]
-
-    def test_once_settles_balance_and_writes_conclusion(self):
-        result = self.settle(interval=15)
-        self.assertEqual(result["monitor"]["interval_minutes"], 15)
-        self.assertEqual(result["wallet"]["assets"], 52.0)
-        self.assertEqual(self.requests[0]["auth"], "settle-token", "必须用原始 token，不能加 Bearer 前缀")
-        monitor = self.monitor()
-        self.assertEqual(monitor["last_error"], "")
-        self.assertTrue(monitor["token_ready"])
-        self.assertEqual(monitor["last_ok"], monitor["last_run"])
-        estimate = monitor["estimate"]
-        self.assertEqual(estimate["plan_hash"], ops.plan_fingerprint(self.store.read()))
-        for key in ("burn_rate", "hours_awake", "plan_gpu_hours", "plan_cost", "covers_plan"):
-            self.assertIn(key, estimate)
-        # show 与面板读的就是这份结论，且明确标出结算时间
-        self.assertFalse(result["settlement"]["live"])
-        self.assertIn("自动结算于", result["settlement"]["text"])
-        shown = self.run_json("show")
-        self.assertIn("自动结算于", shown.stdout)
-        # token 绝不外泄：结算回执、stdout、计划文件里都不许出现
-        for leak in (result, shown, self.store.path.read_text(encoding="utf-8")):
-            self.assertNotIn("settle-token", json.dumps(leak, ensure_ascii=False, default=str))
-
-    def test_failure_is_recorded_without_killing_the_schedule(self):
-        self.settle()
-        good = self.store.read()
-        self.handler_status(401, json.dumps({"code": "Fail", "msg": "token 无效"}))
-        result = self.settle()
-        self.assertIn("HTTP 401", result["monitor"]["last_error"])
-        after = self.store.read()
-        monitor = after["monitor"]
-        self.assertEqual(monitor["last_ok"], good["monitor"]["last_ok"], "失败不该刷新成功时间")
-        self.assertEqual(monitor["estimate"], good["monitor"]["estimate"], "失败必须保留上一份结论")
-        # 失败那一轮确实落盘了（revision 前进），只是没被记成成功；last_run 秒级精度，不去比它
-        self.assertGreater(after["revision"], good["revision"])
-        for key in ("instances", "flows", "tasks", "wallet"):
-            self.assertEqual(after[key], good[key], f"失败只能动 monitor 段，不能动 {key}")
-        # 结论仍然可读，失败被标出来；下一轮成功即恢复正常
-        self.assertIn("上次结算失败", self.run_json("show").stdout)
-        self.handler_status(200, json.dumps({"code": "Success", "data": {"assets": 52000, "voucher_balance": 8000}}))
-        self.assertEqual(self.settle()["monitor"]["last_error"], "")
-
-    def handler_status(self, status, body):
-        handler = self.server.RequestHandlerClass
-        handler.status, handler.body = status, body
-
-    def test_unreachable_api_keeps_process_alive_and_plan_intact(self):
-        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": "http://127.0.0.1:9"}):
-            ops.cycle(self.store, token=self.token)
-        # 具体文案随环境而异（直连是"无法连接"，经代理是 HTTP 5xx），只要求失败被记下
-        self.assertTrue(self.monitor()["last_error"], "连不上接口必须记进 last_error")
-        self.assertEqual(self.store.read()["wallet"]["assets"], 128.5, "连不上时钱包保持原值")
-        # 本地命令照常可用，计划结构没被破坏
-        run_cli(self.project, "flow", "set", "F01", "--name", "改名")
-        self.assertIn("改名", run_cli(self.project, "show").stdout)
-
-    def test_missing_token_is_not_a_failure(self):
-        result = ops.cycle(self.store, token=None)
-        self.assertEqual(self.requests, [], "没有 token 就不该发请求")
-        # 没登记 Token 不是故障：compact() 会省掉空的 last_error，这里按"没有错误"读
-        self.assertEqual(result["monitor"].get("last_error", ""), "")
-        self.assertFalse(result["monitor"]["token_ready"])
-        self.assertEqual(self.monitor()["last_error"], "", "计划里也不该留下错误")
-        self.assertIn("未配置 Token", result["settlement"]["text"])
-        # 结论仍然算得出来（用计划里已有的余额），也不会一直报错
-        self.assertIsNotNone(result["monitor"]["estimate"])
-
-    def test_stale_settlement_falls_back_to_live_values(self):
-        self.settle(interval=1)
-        plan = self.store.read()
-        plan["monitor"]["estimate"]["computed_at"] = ops.stamp(NOW - timedelta(minutes=10))
-        view = ops.settlement(plan, NOW)
-        self.assertTrue(view["live"], "超过 2 个周期就回退实时值")
-        self.assertIn("已过期", view["text"])
-        # 计划改过之后必须标明这份结论不再代表当前计划
-        plan["monitor"]["estimate"]["computed_at"] = ops.stamp(NOW)
-        self.assertFalse(ops.settlement(plan, NOW)["changed"])
-        ops.add_task(plan, "F01", "新任务", "I01", 10)
-        view = ops.settlement(plan, NOW)
-        self.assertTrue(view["changed"])
-        self.assertIn("结算后计划有变更", view["text"])
-        # 结算自己更新 last_run 不算"计划有变更"，否则会一直误报
-        plan["monitor"]["last_run"] = ops.stamp(NOW + timedelta(minutes=1))
-        self.assertTrue(ops.settlement(plan, NOW)["changed"], "任务改动才是真改动")
-        clean = self.store.read()
-        clean["monitor"]["last_run"] = ops.stamp(NOW + timedelta(minutes=1))
-        self.assertFalse(ops.settlement(clean, NOW)["changed"])
-
-    def test_interval_bounds_are_enforced_on_serve(self):
-        """结算周期现在只由面板进程的 --interval 决定，越界要在解析阶段就挡下。"""
-        for value in ("0", "1441", "abc", "-5"):
-            with self.subTest(interval=value), self.assertRaises(SystemExit):
-                ops.parser().parse_args(["-p", str(self.project), "serve", "--interval", value])
-
-    def test_cycle_does_not_hold_the_lock_while_online(self):
-        """联网在锁外：慢接口期间本地写照常完成，两边的改动都留得住。"""
-        report = {}
-        self.arrived = threading.Event()  # 假接口收到请求
-        self.slow = threading.Event()     # 由本用例放行，让接口一直卡着
-        thread = threading.Thread(target=lambda: report.update(
-            ops.cycle(self.store, interval=60, token=self.token)), daemon=True)
-        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": self.api_base()}):
-            thread.start()
-            self.assertTrue(self.arrived.wait(5), "假接口没被调用")
-            run_cli(self.project, "flow", "set", "F01", "--name", "并发改名")  # 联网还没返回就写入
-            self.slow.set()
-            thread.join(10)
-        self.assertFalse(thread.is_alive())
-        final = self.store.read()
-        self.assertEqual(final["flows"][0]["name"], "并发改名", "结算不能覆盖并发写")
-        self.assertEqual(final["monitor"]["interval_minutes"], 60)
-        self.assertEqual(final["wallet"]["assets"], 52.0, "结算自己的结果也要留住")
-        self.assertEqual(report["monitor"]["last_error"], "", report)
-
-
-class MoneyTests(unittest.TestCase):
-    def test_milli_to_yuan_rejects_unit_drift(self):
-        self.assertEqual(ops.milli_to_yuan(128500, "余额"), 128.5)
-        self.assertEqual(ops.milli_to_yuan(0, "余额"), 0)
-        for value in (12.5, -1, float("nan"), True, "100", None):
-            with self.subTest(value=value), self.assertRaises(ops.PlanError):
-                ops.milli_to_yuan(value, "余额")
-
-    def test_balance_amounts_requires_assets(self):
-        self.assertEqual(ops.balance_amounts({"data": {"assets": 1000, "voucher_balance": None}}),
-                         {"assets": 1.0, "voucher": None})
-        for payload in ({}, {"data": None}, {"data": {}}, {"data": {"voucher_balance": 1}}):
-            with self.subTest(payload=payload), self.assertRaises(ops.PlanError):
-                ops.balance_amounts(payload)
-
-    def test_redirect_with_credentials_is_refused(self):
-        with self.assertRaises(ops.PlanError):
-            ops.NoRedirect().redirect_request(None, None, 302, "", {}, "https://evil.example/")
-
-
 class HTTPTests(unittest.TestCase):
+    """本机只读面板：只答 GET，写动词一律不支持，快照与页面都不再包含计费/凭据。"""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = ops.Store(self.temp.name)
         self.store.create(ops.demo_plan(NOW))
-        self.credential = ops.Credential()
-        self.server = ops.server(self.store, self.credential, 0)
+        self.server = ops.server(self.store, 0)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -1846,6 +1381,14 @@ class HTTPTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
         self.temp.cleanup()
+
+    def test_server_takes_only_the_local_store(self):
+        signature = inspect.signature(ops.server)
+        self.assertEqual(list(signature.parameters), ["store", "port"])
+        self.assertEqual(signature.parameters["port"].default, 8765)
+        for gone in ("Credential", "cycle", "background_monitor", "api_post",
+                     "balance_amounts", "milli_to_yuan", "PRICE_PATH", "TOKEN_PATH"):
+            self.assertFalse(hasattr(ops, gone), f"{gone} 已随计费功能删除")
 
     def test_page_and_snapshot(self):
         with OPEN(self.url) as response:
@@ -1861,6 +1404,8 @@ class HTTPTests(unittest.TestCase):
             self.assertNotIn("progress-line", page)
             self.assertIn("textContent", page)
             self.assertNotIn("innerHTML", page)
+            for gone in ("Token", "时价", "余额", "代金券", "结算", "/api/token", "/api/instance-price"):
+                self.assertNotIn(gone, page, "面板已删除计费/凭据登记入口")
             self.assertEqual(response.headers["Cache-Control"], "no-store")
         with OPEN(self.url + "/api/plan") as response:
             plan = json.load(response)
@@ -1876,8 +1421,27 @@ class HTTPTests(unittest.TestCase):
                              ["cancelled", "countable", "done", "finish", "known", "open",
                               "progress", "total"])
             self.assertEqual(plan["stats"]["counts"]["done"], 1)
-            self.assertEqual(plan["credentials"], {"configured": False, "set_at": None},
-                             "面板刚起来时没有凭据，状态要照实说")
+            for gone in ("wallet", "monitor", "credentials"):
+                self.assertNotIn(gone, plan, "面板快照不主动生成财务/凭据字段")
+            for item in plan["instances"]:
+                for gone in ("price", "no_gpu_price"):
+                    self.assertNotIn(gone, item)
+
+    def test_snapshot_filters_legacy_financial_fields_without_rewriting(self):
+        def seed(plan):
+            plan["wallet"] = {"assets": 1.0, "voucher": None, "observed_at": ops.stamp(NOW)}
+            plan["monitor"] = {"interval_minutes": 30, "last_error": ""}
+            plan["instances"][0].update(price=1.88, no_gpu_price=0.1)
+        self.store.change(seed)
+        before = self.store.path.read_bytes()
+        with OPEN(self.url + "/api/plan") as response:
+            plan = json.load(response)
+        for key in ("wallet", "monitor", "credentials"):
+            self.assertNotIn(key, plan)
+        for item in plan["instances"]:
+            for key in ("price", "no_gpu_price"):
+                self.assertNotIn(key, item)
+        self.assertEqual(before, self.store.path.read_bytes(), "只读面板不能重写旧文件")
 
     def test_api_plan_never_exposes_project_config_or_runs(self):
         """面板快照只该有计划；同一文件里的飞书配置与 Run 历史不能跟着漏出去。"""
@@ -1891,172 +1455,38 @@ class HTTPTests(unittest.TestCase):
         for key in ("config", "experiments", "lark"):
             self.assertNotIn(key, plan)
 
-    def test_arbitrary_paths_and_writes_rejected(self):
-        for path in ("/.trainops/plan.json", "/.agent/experiment.yaml", "/../README.md", "/favicon.ico"):
+    def test_arbitrary_paths_and_financial_endpoints_are_gone(self):
+        for path in ("/.trainops/plan.json", "/.agent/experiment.yaml", "/../README.md", "/favicon.ico",
+                     "/api/instance-price", "/api/token"):
             with self.subTest(path=path), self.assertRaises(HTTPError) as error:
                 OPEN(self.url + path)
             self.assertEqual(error.exception.code, 404)
-        for method in ("POST", "PUT", "DELETE", "PATCH"):
-            with self.subTest(method=method), self.assertRaises(HTTPError) as error:
-                OPEN(Request(self.url + "/api/plan", data=b"{}", method=method))
-            self.assertEqual(error.exception.code, 405)
 
     def test_external_host_is_rejected(self):
-        request = Request(self.url + "/api/plan", headers={"Host": "external.example"})
-        with self.assertRaises(HTTPError) as error:
-            OPEN(request)
-        self.assertEqual(error.exception.code, 403)
+        for path in ("/", "/api/plan"):
+            with self.subTest(path=path):
+                request = Request(self.url + path, headers={"Host": "external.example"})
+                with self.assertRaises(HTTPError) as error:
+                    OPEN(request)
+                self.assertEqual(error.exception.code, 403)
 
-    def post(self, payload, ctype="application/json", origin=None, headers=None, method="POST",
-             path="/api/instance-price"):
-        """登记时价的请求，默认是面板该发出的那个形状。"""
-        head = {"Content-Type": ctype, **(headers or {})}
-        if origin:
-            head["Origin"] = origin
-        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-        return OPEN(Request(self.url + path, data=data, headers=head, method=method))
-
-    def test_price_is_registered_through_the_store(self):
-        """面板登记时价：写进去的必须是"标价"，不是一次对机器的观测。"""
-        before = self.store.read()
-        with self.post({"id": "I01", "price": 2.5}) as response:
-            self.assertEqual(response.status, 200)
-            plan = json.load(response)
-        self.assertEqual(plan["instances"][0]["price"], 2.5)
-        self.assertEqual(plan["revision"], before["revision"] + 1, "登记时价也要走同一条落盘路径")
-        written = self.store.read()["instances"][0]
-        self.assertEqual(written["price"], 2.5)
-        self.assertEqual(written["observed_at"], before["instances"][0]["observed_at"],
-                         "时价是标价，不该刷新观测时间")
-        with self.post({"id": "I01", "price": None}) as response:
-            self.assertEqual(response.status, 200)
-        self.assertIsNone(self.store.read()["instances"][0]["price"], "清空要真的清空，不是写 0")
-        with self.post({"id": "I01", "price": 1.5}, origin=self.url) as response:
-            self.assertEqual(response.status, 200, "面板自己发出的同源请求要放行")
-
-    def test_bad_price_requests_never_touch_the_file(self):
+    def test_writes_are_unsupported_and_never_touch_the_plan(self):
+        """面板没有写处理器：写动词一律由 HTTP 层判为不支持，计划字节与 revision 都不动。"""
         before = self.store.path.read_bytes()
-        for payload in ({"id": "I01", "price": 0}, {"id": "I01", "price": -1}, {"id": "I01", "price": "nan"},
-                        {"id": "I01", "price": "abc"}, {"id": "I09", "price": 1}, {"id": "I01"},
-                        {"price": 1}, {"id": "I01", "price": 1, "note": "顺手改点别的"}, [], "I01",
-                        {"id": "I01", "price": 1, "no_gpu_price": 1}, {"id": "I01", "no_gpu_price": 0}):
-            with self.subTest(payload=payload), self.assertRaises(HTTPError) as error:
-                self.post(payload)
-            self.assertEqual(error.exception.code, 400)
-            self.assertEqual(before, self.store.path.read_bytes(), "被拒绝的登记不能留下半个文件")
-
-    def test_no_gpu_rate_is_a_field_of_its_own(self):
-        """无卡费率与 GPU 时价各写各的：切回有卡时 GPU 时价还在。"""
-        with self.post({"id": "I01", "no_gpu_price": 0.2}) as response:
-            self.assertEqual(response.status, 200)
-        item = self.store.read()["instances"][0]
-        self.assertEqual(item["no_gpu_price"], 0.2)
-        self.assertEqual(item["price"], 1.88, "改无卡费率不能动 GPU 时价")
-        with self.post({"id": "I01", "no_gpu_price": None}) as response:
-            self.assertEqual(response.status, 200)
-        self.assertIsNone(self.store.read()["instances"][0]["no_gpu_price"])
-
-    def test_price_endpoint_only_takes_local_json_requests(self):
-        for ctype in ("text/plain", "application/x-www-form-urlencoded"):
-            with self.subTest(ctype=ctype), self.assertRaises(HTTPError) as error:
-                self.post({"id": "I01", "price": 1}, ctype=ctype)
-            self.assertEqual(error.exception.code, 415)
-        with self.assertRaises(HTTPError) as error:
-            self.post({"id": "I01", "price": 1}, origin="https://evil.example")
-        self.assertEqual(error.exception.code, 403, "跨站页面不能借面板改计划")
-        with self.assertRaises(HTTPError) as error:
-            self.post({"id": "I01", "price": 1}, headers={"Host": "external.example"})
-        self.assertEqual(error.exception.code, 403)
-        with self.assertRaises(HTTPError) as error:
-            self.post(b"{" + b"x" * 5000)
-        self.assertEqual(error.exception.code, 413)
-        with self.assertRaises(HTTPError) as error:
-            self.post(b"{not json")
-        self.assertEqual(error.exception.code, 400)
-
-    def token_post(self, payload, **kwargs):
-        """面板登记 Token 的请求形状：接口地址指到死端口，用例不真的联网。"""
-        with mock.patch.dict(os.environ, {"TRAINOPS_API_BASE": "http://127.0.0.1:9"}):
-            return self.post(payload, path=ops.TOKEN_PATH, **kwargs)
-
-    def test_token_lives_in_memory_only(self):
-        """面板登记的 Token 只进服务端内存：计划文件、响应、输出里都不留痕。"""
-        before = self.store.read()
-        token = "secret-token-value"
-        with self.token_post({"token": token}) as response:
-            self.assertEqual(response.status, 200)
-            plan = json.load(response)
-        self.assertTrue(plan["credentials"]["configured"])
-        self.assertIsNotNone(plan["credentials"]["set_at"])
-        self.assertEqual(self.credential.get(), token)
-        self.assertNotIn(token, json.dumps(plan, ensure_ascii=False), "响应里不能回显凭据")
-        after = self.store.read()
-        for key in ("name", "instances", "flows", "tasks", "wallet"):
-            self.assertEqual(after[key], before[key], f"登记 Token 不能动 {key}")
-        self.assertNotIn(token, self.store.path.read_text(encoding="utf-8"), "Token 绝不能进计划文件")
-        # 接口连不上不算登记失败：凭据照样登记，失败照实写进结算记录，下一轮自己会重试
-        self.assertTrue(plan["monitor"]["last_error"], "连不上接口要留下原因")
-        # 面板每轮读到的就是这份状态，值本身不出现在 /api/plan 里
+        revision = self.store.read()["revision"]
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            for path in ("/", "/api/plan", "/api/instance-price", "/api/token"):
+                with self.subTest(method=method, path=path), self.assertRaises(HTTPError) as error:
+                    OPEN(Request(self.url + path, data=b"{}", method=method))
+                self.assertEqual(error.exception.code, 501, "只读面板没有写处理器，应返回 501")
+        with OPEN(self.url) as response:
+            self.assertIn("TrainOps", response.read().decode())
         with OPEN(self.url + "/api/plan") as response:
-            listed = json.load(response)
-        self.assertEqual(listed["credentials"], plan["credentials"])
-        self.assertNotIn(token, json.dumps(listed, ensure_ascii=False))
-        # null 表示清除：状态回到未登记，内存里也不再留着
-        with self.token_post({"token": None}) as response:
-            cleared = json.load(response)
-        self.assertEqual(cleared["credentials"], {"configured": False, "set_at": None})
-        self.assertIsNone(self.credential.get())
-
-    def test_bad_token_requests_never_register_anything(self):
-        before = self.store.path.read_bytes()
-        for payload in ({"token": ""}, {"token": "   "}, {"token": 123}, {"token": "x" * 600},
-                        {"token": "line1\nline2"}, {"token": "a\rb"}, {"token": "tab\there"},
-                        {}, {"token": "abc", "note": "顺手改点别的"}, {"token": None, "x": 1}, [], "abc"):
-            with self.subTest(payload=str(payload)[:40]), self.assertRaises(HTTPError) as error:
-                self.token_post(payload)
-            self.assertEqual(error.exception.code, 400)
-            self.assertEqual(before, self.store.path.read_bytes(), "被拒绝的登记不能留下半个文件")
-        self.assertIsNone(self.credential.get(), "被拒绝的请求不能改内存里的凭据")
-
-    def test_token_endpoint_takes_the_same_three_gates(self):
-        for ctype in ("text/plain", "application/x-www-form-urlencoded"):
-            with self.subTest(ctype=ctype), self.assertRaises(HTTPError) as error:
-                self.token_post({"token": "abc"}, ctype=ctype)
-            self.assertEqual(error.exception.code, 415)
-        with self.assertRaises(HTTPError) as error:
-            self.token_post({"token": "abc"}, origin="https://evil.example")
-        self.assertEqual(error.exception.code, 403, "跨站页面不能借面板塞凭据")
-        with self.assertRaises(HTTPError) as error:
-            self.token_post({"token": "abc"}, headers={"Host": "external.example"})
-        self.assertEqual(error.exception.code, 403)
-        with self.assertRaises(HTTPError) as error:
-            self.token_post(b"{" + b"x" * 5000)
-        self.assertEqual(error.exception.code, 413)
-        with self.assertRaises(HTTPError) as error:
-            self.token_post(b"{not json")
-        self.assertEqual(error.exception.code, 400)
-        self.assertIsNone(self.credential.get(), "这几道关被拒的请求都不能登记凭据")
-        with self.token_post({"token": "abc"}, origin=self.url) as response:
-            self.assertEqual(response.status, 200, "面板自己发出的同源请求要放行")
-        self.assertEqual(self.credential.get(), "abc")
-
-    def test_only_the_two_panel_endpoints_are_writable(self):
-        for method in ("PUT", "PATCH", "DELETE"):
-            with self.subTest(method=method), self.assertRaises(HTTPError) as error:
-                self.post({"id": "I01", "price": 1}, method=method)
-            self.assertEqual(error.exception.code, 405)
-        with self.assertRaises(HTTPError) as error:  # 时价接口本身不读
-            OPEN(self.url + "/api/instance-price")
-        self.assertEqual(error.exception.code, 404)
-        with self.assertRaises(HTTPError) as error:  # Token 只登记，不读回
-            OPEN(self.url + "/api/token")
-        self.assertEqual(error.exception.code, 404)
-        with self.assertRaises(HTTPError) as error:  # 已知读取路径上写入 = 方法不允许
-            self.post({"id": "I01", "price": 1}, path="/api/plan")
-        self.assertEqual(error.exception.code, 405)
-        with self.assertRaises(HTTPError) as error:
-            self.post({"token": "abc"}, path="/api/nope")
-        self.assertEqual(error.exception.code, 404)
+            json.load(response)
+        self.assertEqual(before, self.store.path.read_bytes(), "读请求不得写计划")
+        self.assertEqual(revision, self.store.read()["revision"])
+        self.assertFalse(any(thread.name == "trainops-monitor" for thread in threading.enumerate()),
+                         "面板不再启动后台结算线程")
 
     def test_corruption_is_reported_not_hidden(self):
         self.store.path.write_text("oops")

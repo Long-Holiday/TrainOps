@@ -184,8 +184,7 @@ class Store:
         with nullcontext() if dry_run else self.lock():
             document = self.read_document()
             plan = document["plan"]
-            # 先自增再执行：操作里读 plan["revision"] 得到的必须是这次落盘后的编号
-            # （结算快照要记 revision，用来判断"结算之后计划有没有变过"）。
+            # 先自增再执行，让操作读到本次提交的 revision。
             if not dry_run:
                 plan["revision"] += 1
             result = operation(plan)

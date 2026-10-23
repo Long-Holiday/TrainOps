@@ -1,6 +1,6 @@
 """TrainOps 共享常量与小型校验工具。
 
-计划、结算、面板与实验日志都从这里取同一套常量和时钟，避免拆分模块后各写一份。
+计划、面板与实验日志都从这里取同一套常量和时钟，避免拆分模块后各写一份。
 """
 
 import math
@@ -16,18 +16,7 @@ CONFIG_VERSION = 1
 EXPERIMENT_STATE_VERSION = 1
 STATUSES = ("pending", "running", "blocked", "done", "failed", "cancelled")
 INSTANCE_STATUSES = ("unknown", "off", "starting", "on", "unreachable")
-AWAKE = ("on", "starting")
-DEFAULT_INTERVAL_MINUTES = 30
-INTERVAL_LIMITS = (1, 1440)
-# 时价是元/小时的标价：0 与负数会被读成"不花钱"，宁可拒绝也不让账目失真（validate 与面板接口共用）。
-PRICE_LIMITS = (0.001, 10000)
-# 无卡开机（含持续请求等待 GPU）仍按小时计费，只是费率低：AutoDL 目前是 0.1 元/小时。
-# 它和 GPU 时价是两个字段，因为两种开机模式会来回切换，各自的价格不该互相冲掉。
-NO_GPU_PRICE = 0.1
 MODES = ("gpu", "no-gpu")
-# 结算快照只装"算得出的结论"：缺数据的键不落盘，也不拿 0 顶替（与 budget() 同一约定）。
-ESTIMATE_KEYS = ("burn_rate", "hours_awake", "plan_gpu_hours", "plan_cost", "covers_plan")
-ERROR_LIMIT = 200
 BRIEF_LIMIT = 3
 BRIEF_TEXT_LIMIT = 120
 # 磁盘容量一律以 GB 存进字段名，避免"这个数字是字节还是 G"的歧义（同 duration_minutes 的做法）。
@@ -38,13 +27,6 @@ DISK_MOUNTS = (("sys", "system", "系统盘"), ("data", "data", "数据盘"), ("
 DISK_PREFIXES = {prefix: (field, label) for prefix, field, label in DISK_MOUNTS}
 DISK_SHORT = {"系统盘": "系统", "数据盘": "数据", "文件存储": "存储"}
 FULL_RATIO = 0.9
-API_BALANCE_PATH = "/api/v1/dev/wallet/balance"
-# 面板可写的两个端点：登记时价（写计划）与登记 Token（只存进程内存）。其余路径全是只读，写动词一律 405。
-PRICE_PATH = "/api/instance-price"
-TOKEN_PATH = "/api/token"
-BODY_LIMIT = 4096
-# Token 是控制台发的开发者凭据，长度远超实际需要；上限只为挡住往内存里塞垃圾。
-TOKEN_LIMIT = 512
 TERMINAL = ("done", "failed", "cancelled")
 TRANSITIONS = {
     "pending": {"running", "blocked", "cancelled"},
@@ -110,10 +92,8 @@ def find(plan, collection, item_id):
 
 __all__ = [
     "SCHEMA_VERSION", "FILE_VERSION", "CONFIG_VERSION", "EXPERIMENT_STATE_VERSION",
-    "STATUSES", "INSTANCE_STATUSES", "AWAKE", "DEFAULT_INTERVAL_MINUTES", "INTERVAL_LIMITS",
-    "PRICE_LIMITS", "NO_GPU_PRICE", "MODES", "ESTIMATE_KEYS", "ERROR_LIMIT", "BRIEF_LIMIT",
-    "BRIEF_TEXT_LIMIT", "DISK_FIELDS", "DISK_MOUNTS", "DISK_PREFIXES", "DISK_SHORT",
-    "FULL_RATIO", "API_BALANCE_PATH", "PRICE_PATH", "TOKEN_PATH", "BODY_LIMIT",
-    "TOKEN_LIMIT", "TERMINAL", "TRANSITIONS", "PlanError", "utcnow", "stamp", "date",
-    "number", "text", "integer", "natural_id", "find",
+    "STATUSES", "INSTANCE_STATUSES", "MODES", "BRIEF_LIMIT", "BRIEF_TEXT_LIMIT",
+    "DISK_FIELDS", "DISK_MOUNTS", "DISK_PREFIXES", "DISK_SHORT", "FULL_RATIO",
+    "TERMINAL", "TRANSITIONS", "PlanError", "utcnow", "stamp", "date", "number",
+    "text", "integer", "natural_id", "find",
 ]

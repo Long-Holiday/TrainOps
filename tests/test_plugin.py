@@ -153,20 +153,21 @@ class SkillTests(unittest.TestCase):
     def test_entry_keeps_panel_resident_and_no_gpu_default(self):
         """开工默认路线：面板后台常驻，先无卡准备再申请有卡。"""
         body = read(SKILL)
-        for phrase in ("后台常驻任务", "serve --port 8765 --interval 30", "别用 `&` 或前台"):
+        for phrase in ("后台常驻任务", "serve --port 8765", "别用 `&` 或前台"):
             self.assertIn(phrase, body, "入口必须要求面板以后台常驻任务起，不能靠 shell 的 & 或前台")
+        self.assertNotIn("--interval", body, "面板不再承担余额结算，周期参数已删除")
         for phrase in ("power_on_no_gpu", "0.5 核 CPU、2GB 内存、无 GPU"):
             self.assertIn(phrase, body, "入口必须把无卡准备写成默认路线并说明资源上限")
 
     def test_gpu_cost_guidance_covers_resource_pool_and_idle_time(self):
         skill = read(SKILL)
-        for phrase in ("减少 GPU 付费空转", "候选资源池", "不是全部开机清单",
+        for phrase in ("减少 GPU 空转", "候选资源池", "不是全部开机清单",
                        "全部缺卡", "可立即执行", "关机授权不足"):
             self.assertIn(phrase, skill)
         reference = read(REFERENCES / "autodl.md")
         for phrase in ("按需用卡与空闲处置", "同一任务只保留一个目标",
                        "原请求须取消并核实物理状态后才替换", "结束即接续或停机",
-                       "不必等所有流程结束", "正常训练不为省费擅自中断",
+                       "不必等所有流程结束", "正常训练不为节省资源擅自中断",
                        "短暂保留须有明确", "不擅自释放实例"):
             self.assertIn(phrase, reference)
         protocol = read(REFERENCES / "protocol.md")
@@ -277,16 +278,18 @@ class SkillTests(unittest.TestCase):
             self.assertIn(phrase, reference)
 
     def test_autodl_reference_keeps_safety_boundaries(self):
-        """只读等待、取消语义与费用边界留在 AutoDL 参考，不要求所有文档复读。"""
+        """只读等待、取消语义与关机边界留在 AutoDL 参考，不要求所有文档复读。"""
         reference = read(REFERENCES / "autodl.md")
         for phrase in ("0.5 核 CPU、2GB 内存、无 GPU", "power_on_no_gpu",
                        "wait_for_job(job_id, timeout_seconds=15)", "0–300",
                        "switch_mode", "cancel_job", "resulting_status",
                        "list_instances", "instance_uuids", "1–100", "5 路并发",
                        "suggested_next_poll_seconds", "定时调度器",
-                       "price: null", "不代表免费", "不能用切成无卡代替关机"):
+                       "不能用切成无卡代替关机"):
             self.assertIn(phrase, reference)
         self.assertNotIn("next_retry_in_seconds", reference)
+        for gone in ("price", "时价", "余额", "代金券", "结算"):
+            self.assertNotIn(gone, reference, "AutoDL 参考不再包含计费口径")
 
     def test_guidance_does_not_require_event_subscription(self):
         for path in (SKILL, REFERENCES / "experiments.md", REFERENCES / "protocol.md",
@@ -296,17 +299,18 @@ class SkillTests(unittest.TestCase):
                 self.assertNotIn(phrase, body)
 
     def test_readme_contracts_are_current(self):
-        """README 面向用户，必须与当前合同一致，不能留着旧禁令或旧预算说法。"""
+        """README 面向用户，必须与当前合同一致，不能留着旧禁令或旧计费说法。"""
         body = read(ROOT / "README.md")
         for phrase in ("apply --from-json", "agent 也可先读后写直接编辑", "check --strict",
-                       "计划写入口", "面板只额外允许时价接口",
+                       "计划写入口", "面板只读展示执行队列与进度",
                        "零第三方 Python 依赖", "只服务 Antigravity CLI",
                        "只用原生 HTML/CSS/JS", "node tests/test_web.cjs",
-                       "只存在面板进程的内存里",
                        "科学对照实验保留变量控制", "工程修复可按根因成组调整"):
             self.assertIn(phrase, body, f"README 缺少当前合同：{phrase}")
         for phrase in ("2000 字符预算", "禁止用 Edit/Write", "一次只改一个变量", *WRITE_PROHIBITIONS):
             self.assertNotIn(phrase, body, f"README 仍保留过期说法：{phrase}")
+        for gone in ("时价", "余额", "代金券", "结算", "开发者 Token", "面板只额外允许时价接口"):
+            self.assertNotIn(gone, body, f"README 仍保留已删除的计费/凭据说法：{gone}")
 
 
 class EntryFileTests(unittest.TestCase):

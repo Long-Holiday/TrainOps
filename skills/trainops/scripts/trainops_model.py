@@ -17,45 +17,7 @@ def new_plan(name):
         "instances": [],
         "flows": [],
         "tasks": [],
-        "monitor": {"interval_minutes": DEFAULT_INTERVAL_MINUTES, "last_run": None, "last_ok": None,
-                    "last_error": "", "token_ready": False, "expires_at": None, "estimate": None},
-        "wallet": {"assets": None, "voucher": None, "observed_at": None},
     }
-
-
-def validate_estimate(estimate):
-    """结算快照是机器写的派生数据：键可缺（缺数据就没有结论），但存在的值必须可信。"""
-    if not isinstance(estimate, dict):
-        raise PlanError("结算快照必须是对象")
-    date(estimate["computed_at"])
-    integer(estimate["revision"], "结算 revision", 0)
-    text(estimate.get("plan_hash") or "", "结算指纹")
-    for key, label, high in (("burn_rate", "烧钱速度", 10000), ("hours_awake", "可跑小时", 1_000_000),
-                             ("plan_gpu_hours", "剩余 GPU 小时", 1_000_000), ("plan_cost", "预估花费", 1_000_000)):
-        if estimate.get(key) is not None:
-            number(estimate[key], label, high=high)
-    if estimate.get("covers_plan") is not None and not isinstance(estimate["covers_plan"], bool):
-        raise PlanError("结算快照的 covers_plan 必须是布尔值")
-
-
-def validate_monitor(monitor):
-    if monitor is None:
-        return
-    if not isinstance(monitor, dict):
-        raise PlanError("monitor 段必须是对象")
-    interval = monitor.get("interval_minutes")
-    if interval is not None:
-        integer(interval, "结算周期", INTERVAL_LIMITS[0])
-        if interval > INTERVAL_LIMITS[1]:
-            raise PlanError(f"结算周期必须在 {INTERVAL_LIMITS[0]} 到 {INTERVAL_LIMITS[1]} 分钟之间")
-    for key, label in (("last_run", "上次结算时间"), ("last_ok", "上次成功时间"), ("expires_at", "结算到期时间")):
-        if monitor.get(key) is not None:
-            date(monitor[key])
-    text(monitor.get("last_error") or "", "结算错误")
-    if monitor.get("token_ready") is not None and not isinstance(monitor["token_ready"], bool):
-        raise PlanError("token_ready 必须是布尔值")
-    if monitor.get("estimate") is not None:
-        validate_estimate(monitor["estimate"])
 
 
 def validate(plan):
@@ -74,13 +36,6 @@ def validate(plan):
         for collection in ("instances", "flows", "tasks"):
             if not isinstance(plan[collection], list):
                 raise PlanError(f"{collection} 必须是列表")
-        validate_monitor(plan["monitor"])
-        wallet = plan["wallet"]
-        for key, label in (("assets", "余额"), ("voucher", "代金券")):
-            if wallet[key] is not None:
-                number(wallet[key], label, high=1_000_000)
-        if wallet["observed_at"] is not None:
-            date(wallet["observed_at"])
         ids, autodl_ids, aliases = set(), set(), set()
         for item in plan["instances"]:
             item_id = item["id"]
@@ -100,14 +55,8 @@ def validate(plan):
             if item["status"] not in INSTANCE_STATUSES:
                 raise PlanError("实例状态无效")
             text(item["note"], "实例备注")
-            if item["price"] is not None:
-                number(item["price"], "时价", low=PRICE_LIMITS[0], high=PRICE_LIMITS[1])
-            # 开机模式与无卡费率是后加的字段：老计划没有这两个键，缺了就按"未观测 + 平台默认无卡费率"读，
-            # 因此不用升 schema 版本，也不会逼人重建计划。
             if item.get("mode") is not None and item["mode"] not in MODES:
                 raise PlanError("开机模式只能是 gpu（有卡）或 no-gpu（无卡准备）")
-            if item.get("no_gpu_price") is not None:
-                number(item["no_gpu_price"], "无卡费率", low=PRICE_LIMITS[0], high=PRICE_LIMITS[1])
             disk = item["disk"]
             for key in DISK_FIELDS:
                 if disk[key] is not None:
@@ -210,8 +159,7 @@ def validate(plan):
 def add_instance(plan, name, autodl_id, ssh_alias):
     item = {"id": f"I{plan['next_instance']:02d}", "name": name,
             "autodl_id": autodl_id, "ssh_alias": ssh_alias, "status": "unknown",
-            "observed_at": None, "note": "", "price": None, "mode": None,
-            "no_gpu_price": NO_GPU_PRICE,
+            "observed_at": None, "note": "", "mode": None,
             "disk": dict.fromkeys(DISK_FIELDS)}
     plan["next_instance"] += 1
     plan["instances"].append(item)
@@ -221,21 +169,10 @@ def add_instance(plan, name, autodl_id, ssh_alias):
 def instance_mode(item):
     """开机模式：no-gpu（无卡开机，含持续请求等待 GPU）或 gpu。没有这个键 = 未观测。
 
-    用 .get 而不是直取：新增字段要保持向后兼容，老计划少了这两个键也要照常读得出来。
+    用 .get 保持兼容：老计划没有模式时按未观测读取。
     """
     mode = item.get("mode")
     return mode if mode in MODES else None
-
-
-def instance_rate(item):
-    """这台实例现在每小时的费率（元/小时）：无卡按无卡费率，其余按 GPU 时价。
-
-    模式未观测时按 GPU 时价算——宁可高估花费，也不让人以为余额还能跑很久。
-    费率没登记就返回 None：缺数据就缺结论，绝不拿 0 顶替（无卡不等于免费，0 更会误导）。
-    """
-    if instance_mode(item) == "no-gpu":
-        return item.get("no_gpu_price", NO_GPU_PRICE)
-    return item["price"]
 
 
 def add_flow(plan, name):
@@ -255,8 +192,6 @@ def add_task(plan, flow_id, name, instance=None, duration=None, deps=None, not_b
     flow["next_task"] += 1
     plan["tasks"].append(item)
     return item
-
-
 
 
 def default_config(project):
@@ -279,7 +214,7 @@ def new_document(plan, config=None, state=None):
 
 
 __all__ = [
-    "new_plan", "validate_estimate", "validate_monitor", "validate", "add_instance",
-    "instance_mode", "instance_rate", "add_flow", "add_task", "default_config",
+    "new_plan", "validate", "add_instance",
+    "instance_mode", "add_flow", "add_task", "default_config",
     "default_state", "new_document",
 ]

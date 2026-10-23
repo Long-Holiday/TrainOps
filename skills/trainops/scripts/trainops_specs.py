@@ -42,20 +42,6 @@ def progress_arg(value):
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def interval_arg(value):
-    """结算周期（分钟）：在解析阶段就拒绝非法值，别等落盘时才发现。"""
-    if not re.fullmatch(r"\d+", value.strip()):
-        raise argparse.ArgumentTypeError(f"结算周期应为分钟数，实际为 {value!r}")
-    result = int(value)
-    try:
-        integer(result, "结算周期", INTERVAL_LIMITS[0])
-        if result > INTERVAL_LIMITS[1]:
-            raise PlanError(f"结算周期必须在 {INTERVAL_LIMITS[0]} 到 {INTERVAL_LIMITS[1]} 分钟之间")
-    except PlanError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-    return result
-
-
 def dependencies(value):
     return [] if value.strip() in ("", "-") else [part.strip() for part in value.split(",") if part.strip()]
 
@@ -101,53 +87,6 @@ def disk_arg(value):
         return disk_changes(value)
     except PlanError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
-
-
-def price_value(raw):
-    """时价（元/小时）或 None（未登记）。none/?/-/空串表示清空。
-
-    面板接口是唯一写入口，所以这里必须把住边界：0、负数、nan 都拒绝——缺数据不能拿 0 顶替，
-    而"时价 0"会让人以为机器白跑。落盘前 validate() 会再查一遍。
-    """
-    if raw is None:
-        return None
-    if isinstance(raw, str) and raw.strip() in ("", "none", "?", "-"):
-        return None
-    if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
-        raise PlanError(f"时价应为元/小时数字，实际为 {raw!r}")
-    try:
-        result = float(raw)
-    except ValueError as exc:
-        raise PlanError(f"时价应为元/小时数字，实际为 {raw!r}") from exc
-    number(result, "时价", low=PRICE_LIMITS[0], high=PRICE_LIMITS[1])
-    return result
-
-
-def set_instance_price(plan, instance_id, field, price):
-    """登记时价（元/小时），price 为 None 表示清空。
-
-    field 只能是 price（GPU 时价）或 no_gpu_price（无卡费率）。时价是"标价"，不构成一次对机器的观测，
-    因此不刷新 observed_at——那个字段记录的是"上次有人看过这台机器"。
-    """
-    if field not in ("price", "no_gpu_price"):
-        raise PlanError(f"只能登记 price 或 no_gpu_price，实际为 {field!r}")
-    item = find(plan, "instances", instance_id)
-    item[field] = price
-    return item
-
-
-def money_arg(value):
-    if value in ("none", "?", "-", ""):
-        return None
-    try:
-        result = float(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"金额应为元数字，实际为 {value!r}") from exc
-    try:
-        number(result, "金额", high=1_000_000)
-    except PlanError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-    return round(result, 2)
 
 
 def parse_instance_spec(spec):
@@ -217,7 +156,6 @@ def disk_text(disk):
     return "·".join(chunks)
 
 
-
 def structural_edit(args):
     if args.operation_name == "batch":
         return bool(args.instance or args.flow or args.task or getattr(args, "dep_updates", []))
@@ -227,10 +165,8 @@ def structural_edit(args):
         hasattr(args, key) for key in ("instance", "duration_minutes", "deps", "not_before"))
 
 
-
-
 __all__ = [
-    "nullable", "duration", "interval_arg", "dependencies", "gigabytes", "disk_changes",
-    "disk_arg", "price_value", "set_instance_price", "money_arg", "parse_instance_spec",
+    "nullable", "duration", "dependencies", "gigabytes", "disk_changes",
+    "disk_arg", "parse_instance_spec",
     "parse_task_spec", "parse_set_spec", "parse_dep_spec", "structural_edit",
 ]

@@ -1,8 +1,8 @@
 """CLI 的 brief / 文本展示格式。"""
 
 from trainops_base import *
-from trainops_graph import age_text, check_structure, settlement_summary, snapshot
-from trainops_model import instance_mode, instance_rate
+from trainops_graph import check_structure, snapshot
+from trainops_model import instance_mode
 
 
 def disk_text(disk):
@@ -22,47 +22,17 @@ def disk_text(disk):
     return "·".join(chunks)
 
 
-
 def instance_line(item):
     extras = []
-    # 无卡开机没有 GPU 在计费，报的是另一档费率；模式没登记过就还是照 GPU 时价显示。
-    if instance_mode(item) == "no-gpu":
-        extras.append(f"无卡 ¥{instance_rate(item):g}/h" if instance_rate(item) is not None
-                      else "无卡（费率未登记）")
-    elif item["price"] is not None:
-        extras.append(f"¥{item['price']:g}/h")
+    mode = instance_mode(item)
+    if mode:
+        extras.append("无卡准备" if mode == "no-gpu" else "有卡")
     disks = disk_text(item["disk"])
     if disks:
         extras.append("盘 " + disks)
     suffix = (" " + " ".join(extras)) if extras else ""
     return (f"{item['id']} {item['name']}({item['ssh_alias']}/{item['autodl_id']})"
             f"[{item['status']}]{suffix}")
-
-
-def budget_parts(view):
-    """余额能推出的结论压成一行；缺数据就少说一句，绝不用 0 顶替。"""
-    entry = view["budget"]
-    parts = []
-    if entry.get("assets") is not None:
-        parts.append(f"余额 ¥{entry['assets']:.2f}")
-        if entry.get("observed_at"):
-            parts.append("观测于 " + age_text(entry["observed_at"]))
-        if entry.get("voucher"):
-            parts.append(f"代金券 ¥{entry['voucher']:.2f}（不计入可用时长）")
-        missing = [item["id"] for item in view["instances"]
-                   if item["status"] in AWAKE and instance_rate(item) is None]
-        if entry.get("hours_awake") is not None:
-            parts.append(f"按开机费率 ¥{entry['burn_rate']:g}/h 还能跑 {entry['hours_awake']:g} 小时")
-        elif missing:
-            parts.append("未登记时价（" + ",".join(missing) + "），无法把余额换算成可用时长，请在面板登记")
-    if entry.get("plan_gpu_hours") is not None:
-        owed = f"跑完剩余计划需 {entry['plan_gpu_hours']:g} GPU 小时"
-        if entry.get("plan_cost") is not None:
-            owed += f"、预估 ¥{entry['plan_cost']:.2f}"
-        parts.append(owed)
-    if entry.get("covers_plan") is not None:
-        parts.append("余额足以覆盖" if entry["covers_plan"] else "余额不足以覆盖剩余计划，请充值或缩减计划")
-    return parts
 
 
 def brief_text(value, limit=BRIEF_TEXT_LIMIT):
@@ -80,35 +50,10 @@ def brief_group(label, entries):
     return lines
 
 
-def brief_finance(wallet, view, now=None):
-    parts = []
-    if wallet["assets"] is not None:
-        parts.append(f"余额 ¥{wallet['assets']:.2f}")
-    else:
-        parts.append("余额未登记，无法判断现金覆盖情况")
-    if wallet.get("observed_at"):
-        parts.append("观测于 " + age_text(wallet["observed_at"], now))
-    if wallet.get("voucher"):
-        parts.append(f"代金券 ¥{wallet['voucher']:.2f}（不计入可用时长）")
-    lines = ["钱包: " + " | ".join(parts)]
-    values = view["values"]
-    if values.get("hours_awake") is not None:
-        lines.append(f"可用时长（同结算口径）: {values['hours_awake']:g} 小时")
-    lines.append("结算: " + brief_text(view["text"], 240))
-    if view["live"]:
-        lines.append("实时结论: " + settlement_summary(values))
-    if view["changed"]:
-        lines.append("当前展示为变更前的结算；等面板下一轮结算后再决策")
-    if view["error"]:
-        lines.append("结算错误: " + brief_text(view["error"], ERROR_LIMIT))
-    return lines
-
-
 def brief_plan(plan, now=None):
     now = now or utcnow()
     view = snapshot(plan, now)
-    # 诊断保留实时风险，但不再展开另一套金额，避免与仍有效的旧结算混淆。
-    report = check_structure(plan, now, amounts=False)
+    report = check_structure(plan, now)
     tasks = sorted(view["tasks"], key=lambda task: natural_id(task["id"]))
     instances = {item["id"]: item for item in view["instances"]}
     counts = {status: 0 for status in STATUSES}
@@ -116,7 +61,6 @@ def brief_plan(plan, now=None):
         counts[task["status"]] += 1
     lines = [f"{brief_text(view['name'])} · rev {view['revision']}",
              "任务: " + " | ".join(f"{status} {counts[status]}" for status in STATUSES)]
-    lines.extend(brief_finance(plan["wallet"], view["settlement"], now))
 
     def task_line(task):
         eta = task["estimate"]
@@ -156,10 +100,6 @@ def brief_plan(plan, now=None):
         view["instances"], key=lambda item: natural_id(item["id"]))]))
     lines.extend(brief_group("结构问题", report["issues"]))
     lines.extend(brief_group("提醒", report["warnings"]))
-    remaining_resources = {task["instance"] for task in tasks if task["status"] not in TERMINAL}
-    missing = [f"{item['id']}: 未登记时价，对应费用/可用时长待估（可在面板登记）" for item in view["instances"]
-               if instance_rate(item) is None and (item["status"] in AWAKE or item["id"] in remaining_resources)]
-    lines.extend(brief_group("缺失信息", missing))
     hidden = counts["done"] + counts["cancelled"]
     if hidden:
         lines.append(f"已省略 {hidden} 个已完成/取消任务的历史明细（取消不满足下游依赖）")
@@ -176,13 +116,7 @@ def brief_receipt(args, result):
     if operation == "apply":
         lines.append("新建计划（只记录，不执行训练）" if result.get("created")
                      else "更新已有计划（只记录，不执行训练）")
-    if operation == "wallet":
-        wallet = result.get("wallet", result.get("item"))
-        for key, label in (("assets", "余额"), ("voucher", "代金券（不计入可用时长）")):
-            lines.append(f"{label}: ¥{wallet[key]:.2f}" if wallet.get(key) is not None else f"{label}: 未登记")
-        if wallet.get("observed_at"):
-            lines.append("余额观测于 " + age_text(wallet["observed_at"]))
-    elif operation in ("init", "batch", "apply"):
+    if operation in ("init", "batch", "apply"):
         item = result if operation in ("init", "apply") else result["item"]
         for key, label in (("instances", "实例"), ("flows", "流程"), ("tasks", "任务"),
                            ("updated", "更新"), ("deps", "依赖变更"), ("inferred", "自动串联")):
@@ -227,8 +161,6 @@ def brief_receipt(args, result):
     return "\n".join(lines)
 
 
-
-
 def compact(data):
     if isinstance(data, dict):
         return {k: compact(v) for k, v in data.items() if v not in ("", None, [])}
@@ -237,8 +169,7 @@ def compact(data):
     return data
 
 
-
 __all__ = [
-    "disk_text", "instance_line", "budget_parts", "brief_text", "brief_group",
-    "brief_finance", "brief_plan", "brief_receipt", "compact",
+    "disk_text", "instance_line", "brief_text", "brief_group",
+    "brief_plan", "brief_receipt", "compact",
 ]

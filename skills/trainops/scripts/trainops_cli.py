@@ -3,7 +3,7 @@
 import argparse
 
 from trainops_base import *
-from trainops_specs import dependencies, disk_arg, duration, interval_arg, money_arg, nullable, progress_arg
+from trainops_specs import dependencies, disk_arg, duration, nullable, progress_arg
 
 
 def parser():
@@ -48,7 +48,7 @@ def parser():
                      "  无计划 → 按 JSON 新建（必须有 name，不能带 updates）\n"
                      "  有计划 → 按 batch 语义原子新增/更新（name 可省略；若提供必须与当前名称一致，不会改名）\n"
                      "key 只在本次请求内生效，不按 key 持久匹配：重复提交新增项会再次创建，已有对象用 updates。\n"
-                     "只记录计划，不执行或停止训练，也不改 config/experiments/wallet。"),
+                     "只记录计划，不执行或停止训练，也不改 config/experiments。"),
         epilog=("JSON 键：name（仅新建生效）、instances、flows、tasks、updates；\n"
                 "字段、别名与校验规则同 init/batch --from-json。\n"
                 "--dry-run 不创建目录、锁或文件，编号不保留。"))
@@ -63,10 +63,8 @@ def parser():
     show_output = show.add_mutually_exclusive_group()
     show_output.add_argument("--json", action="store_true")
     show_output.add_argument("--brief", action="store_true", help="只看当前行动摘要，分组限量并注明省略数")
-    serve = commands.add_parser("serve", help="仅本机面板（可写处是登记时价与 Token），Ctrl+C 停止")
+    serve = commands.add_parser("serve", help="仅本机只读执行队列面板，Ctrl+C 停止")
     serve.add_argument("--port", type=int, default=8765)
-    serve.add_argument("--interval", type=interval_arg, default=None,
-                       help="顺带在这个进程里跑自动结算（分钟）；不传则只做面板")
     instance = commands.add_parser("instance").add_subparsers(dest="action", required=True)
     instance_add = instance.add_parser("add")
     instance_add.add_argument("--name", required=True)
@@ -103,13 +101,8 @@ def parser():
     quick_set.add_argument("id")
     quick_set.add_argument("--name")
     add_task_args(quick_set, is_set=True)
-    wallet = commands.add_parser("wallet", help="账户余额：手工登记（自动结算由面板进程负责）")
-    wallet_actions = wallet.add_subparsers(dest="action", required=True)
-    wallet_set = wallet_actions.add_parser("set", help="面板没开或需要人工核对时登记余额")
-    wallet_set.add_argument("--assets", type=money_arg, default=argparse.SUPPRESS, help="余额（元）；none 清空")
-    wallet_set.add_argument("--voucher", type=money_arg, default=argparse.SUPPRESS, help="代金券（元）；单独展示不计入可用时长")
     for target in (init, batch, apply, instance_add, instance_set, flow_add, flow_set, task_add,
-                   task_set, quick_set, wallet_set):
+                   task_set, quick_set):
         target.add_argument("--brief", action="store_true", help="输出紧凑文本回执，不改变保存及退出码语义")
     return root
 

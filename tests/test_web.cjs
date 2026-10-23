@@ -44,13 +44,10 @@ const root = path.resolve(__dirname, '..');
 const cli = path.join(root, 'skills/trainops/scripts/trainops.py');
 const html = fs.readFileSync(path.join(root, 'skills/trainops/web/index.html'), 'utf8');
 const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-// 演示数据的时间戳是"生成这一刻"推出来的。running 任务一旦超过预计完成时间就变成待估，
-// budget() 便按设计整块隐去余额结论（README：任一任务完成时间待估时结论不显示），
-// 于是拿仓库里那份快照断言余额块，结果会随提交时间漂移（生成后约 70 分钟内才成立）。
-// 这里现生成一份新鲜的演示计划，断言与仓库快照的年龄无关。
+const webSource = fs.readFileSync(path.join(root, 'skills/trainops/scripts/trainops_web.py'), 'utf8');
+// 现生成一份新鲜的演示计划，断言与仓库快照的生成时间无关。
 const project = fs.mkdtempSync(path.join(os.tmpdir(), 'trainops-web-'));
 process.on('exit', () => fs.rmSync(project, {recursive: true, force: true}));
-// 凭据只从面板登记进服务端内存：子进程读不到任何 token，这里不必再"指开"凭据文件。
 execFileSync('python3', [cli, '--project', project, 'demo'], {encoding: 'utf8'});
 const data = JSON.parse(execFileSync('python3', [cli, '--project', project, 'show', '--json'],
   {encoding: 'utf8'}));
@@ -60,11 +57,10 @@ const demoProgress = {'F01-T01':100,'F01-T02':18,'F02-T01':15};
 for (const task of data.tasks) {
   task.view = {...(task.view || {}), progress:demoProgress[task.id] ?? 0};
 }
-const nodes = Object.fromEntries(['title','updated','instances','summary','diagram','error','refresh','theme','token','modal']
+const nodes = Object.fromEntries(['title','updated','instances','summary','diagram','error','refresh','theme']
   .map(id => [id, new Element('div')]));
 let failed = false;
-const calls = [];              // 面板发出的每个请求，用来断言时价登记真的走了 POST
-let postResult = null;         // 覆盖下一次 POST 的响应，用来演服务端拒绝
+const calls = [];              // 面板发出的每个请求，用来断言它只发只读请求
 const storage = {};
 const context = vm.createContext({
   document: {getElementById: id => nodes[id], createElement: tag => new Element(tag),
@@ -76,7 +72,6 @@ const context = vm.createContext({
   fetch: async (url, options = {}) => {
     calls.push({url, options});
     if (failed) throw new Error('offline');
-    if (options.method === 'POST' && postResult) return postResult;
     return {ok:true,json:async () => data};
   },
   AbortController, Date, console,
@@ -86,6 +81,23 @@ const context = vm.createContext({
 async function main() {
   assert.ok(!html.includes('id="search"'), 'Task search input should be removed');
   assert.ok(!html.includes('<details'), 'Task details dropdown should be removed');
+  // 面板只读：Token/时价登记、余额、结算及其请求入口都已删除。
+  for (const gone of ['id="token"','id="modal"','/api/token','/api/instance-price','Token','AutoDL',
+    '余额','代金券','时价','结算','budget','settlement'])
+    assert.ok(!html.includes(gone), `${gone} 已随计费功能删除`);
+  for (const gone of ['openDialog','closeDialog','priceButton','openPrice','budgetNodes',
+    'settlementNode','renderTokenButton','credentials','money('])
+    assert.ok(!source.includes(gone), `前端不再包含 ${gone}`);
+  assert.ok(!source.includes("method:'POST'"), '面板不再发写请求');
+  // 服务端只剩本机只读面板：没有 AutoDL 调用、凭据、余额/结算线程或写端点。
+  for (const gone of ['AutoDL','autodl','urllib.request','urllib.error','Credential','api_post','balance_amounts','wallet',
+    'price','Token','token','settlement','budget','background_monitor','do_POST','do_PUT','do_PATCH',
+    'do_DELETE','PRICE_PATH','TOKEN_PATH'])
+    assert.ok(!webSource.includes(gone), `trainops_web.py 不应再包含 ${gone}`);
+  assert.match(webSource, /def server\(store, port=8765\)/, 'server 只接收本地 Store');
+  assert.match(webSource, /def local\(self\)/, '保留本机 Host 校验');
+  assert.match(webSource, /self\.headers\.get\("Host"/, 'Host 白名单不能删');
+  assert.equal((webSource.match(/def do_/g) || []).length, 1, '只保留 GET 读路径');
   // DOM 桩不做排版：同时锁定完整名称所需的 CSS，避免文本在 DOM 中完整但仍被省略。
   const taskNameCSS = html.match(/\.task-name\s*\{([^}]+)\}/)[1];
   assert.match(taskNameCSS, /white-space:\s*normal/, '任务名称必须允许换行');
@@ -93,9 +105,7 @@ async function main() {
   assert.ok(!/text-overflow:\s*ellipsis|overflow:\s*hidden/.test(taskNameCSS), '任务名称不能裁剪或省略');
   const taskTopCSS = html.match(/\.task-top\s*\{([^}]+)\}/)[1];
   assert.match(taskTopCSS, /flex-wrap:\s*wrap/, '窄屏状态必须能换行，不能挤掉名称');
-  // DOM 桩看不到层叠：id 选择器的 display:flex 会压过 .hidden，空弹窗就成了全屏遮罩
-  assert.ok(html.includes('#modal.hidden'), '关闭态必须有 #modal.hidden 压过 #modal 的 display:flex');
-  // 同理：.notice 与 .hidden 同为一条类选择器，靠后写的赢，空错误条会整条盖在读数条上方
+  // .notice 与 .hidden 同为一条类选择器，靠后写的赢，空错误条会整条盖在读数条上方
   assert.ok(html.includes('.notice.hidden'), '关闭态必须有 .notice.hidden 压过 .notice 的 display:flex');
   new vm.Script(source, {filename:'index.html'}).runInContext(context);
   await new Promise(resolve => setImmediate(resolve));
@@ -178,6 +188,9 @@ async function main() {
   const instanceRows = byClass(nodes.instances, 'instance');
   assert.deepEqual(instanceRows.map(row => [...row.classes].find(name => name.startsWith('inst-color-'))),
     ['inst-color-0','inst-color-1'], '实例行标出身份色');
+  assert.ok(instanceRows.every(row => byClass(row, 'status').length === 1), '实例行只保留状态');
+  assert.equal(descendants(nodes.instances, 'button').length, 0, '实例行没有时价等写入口');
+  assert.ok(!/¥|余额|时价/.test(nodes.instances.textContent), '实例行不展示任何金额');
   const runningNodes = taskNodes.filter(node => node.classList.contains('running'));
   assert.equal(runningNodes.length, 2, '演示计划有两个执行中任务');
   assert.deepEqual(runningNodes.map(node => [...node.classes].find(name => name.startsWith('inst-color-'))),
@@ -198,173 +211,15 @@ async function main() {
     assert.ok(!source.includes(gone), `${gone} 属于服务端的活，面板里不该再有第二份`);
   console.log('PASS: single execution queue / dashed non-dependency connectors / direct task.view.progress');
 
-  // 面板唯一的写入口：实例行上的时价按钮 → 弹窗 → POST /api/instance-price
-  const priceButtons = byClass(nodes.instances, 'price');
-  assert.equal(priceButtons.length, 2, '每台实例行上都要有登记时价的入口');
-  assert.equal(priceButtons[0].textContent, '¥1.88/h', '已登记的时价直接显示在卡上');
-  priceButtons[0].fire('click');
-  const dialogNode = () => byClass(nodes.modal, 'dialog')[0];
-  const dialogInput = () => descendants(nodes.modal, 'input')[0];
-  const dialogButton = text => descendants(nodes.modal, 'button').find(button => button.textContent === text);
-  assert.equal(nodes.modal.classList.contains('hidden'), false, '点时价按钮要打开弹窗');
-  assert.match(dialogNode().textContent, /登记 GPU 时价 · I01 基线 \/ GPU A/);
-  assert.match(dialogNode().textContent, /不会刷新实例的观测时间/);
-  assert.equal(dialogInput().value, '1.88', '弹窗要预填当前时价，不能让人重新查一遍');
-  dialogInput().value = '2.5';
-  dialogButton('保存').fire('click');
-  await new Promise(resolve => setImmediate(resolve));
-  const posted = calls.filter(call => call.options.method === 'POST').pop();
-  assert.equal(posted.url, '/api/instance-price');
-  assert.equal(posted.options.headers['Content-Type'], 'application/json');
-  assert.equal(posted.options.body, '{"id":"I01","price":2.5}');
-  assert.equal(nodes.modal.classList.contains('hidden'), true, '登记成功后关窗');
-  assert.equal(nodes.modal.children.length, 0);
-
-  // 服务端拒绝时错误留在弹窗里：不关窗、不改本地状态、不假装成功
-  postResult = {ok:false, json: async () => ({error:'时价 必须在 0.001 到 10000 之间且为有限数字'})};
-  byClass(nodes.instances, 'price')[0].fire('click');
-  dialogInput().value = '0';
-  dialogButton('保存').fire('click');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.match(dialogNode().textContent, /登记失败：时价 必须在 0\.001 到 10000 之间且为有限数字/);
-  assert.equal(nodes.modal.classList.contains('hidden'), false, '被拒绝时不能关窗');
-  // 清空发的是 null；缺时价就少给结论，绝不补一个 0
-  postResult = null;
-  dialogButton('清空时价').fire('click');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(calls.filter(call => call.options.method === 'POST').pop().options.body, '{"id":"I01","price":null}');
-  // 空输入只在弹窗里提示，不发请求：不登记时价的结果是"少给结论"，不是报错
-  byClass(nodes.instances, 'price')[0].fire('click');
-  dialogInput().value = '   ';
-  const sent = calls.length;
-  dialogButton('保存').fire('click');
-  assert.equal(calls.length, sent, '空输入不该发请求');
-  assert.match(dialogNode().textContent, /还没填单价/);
-  assert.equal(byClass(nodes.modal, 'dialog-error').length, 0, '没填不是错误，用中性提示就行');
-  // 弹窗里的实例名同样只走 textContent
-  const hostileName = '<img src=x onerror="alert(1)">';
-  const savedName = data.instances[0].name;
-  data.instances[0].name = hostileName;
-  byClass(nodes.instances, 'price')[0].fire('click');
-  assert.equal(descendants(nodes.modal, 'img').length, 0, '弹窗标题不能被当成 HTML');
-  assert.match(dialogNode().textContent, /<img src=x/);
-  data.instances[0].name = savedName;
-  dialogButton('取消').fire('click');
-  assert.equal(nodes.modal.children.length, 0, '取消后弹窗清空');
-  assert.equal(nodes.modal.classList.contains('hidden'), true);
-  console.log('PASS: GPU price is registered from the panel and rejections stay in the dialog');
-
-  // 无卡开机（含持续请求等待 GPU）：没有 GPU 在计费，弹窗改成登记无卡费率，不碰 GPU 时价
-  data.instances[1].mode = 'no-gpu';
-  data.instances[1].no_gpu_price = 0.1;
-  await nodes.refresh.fire('click');
-  const noGpuButton = byClass(nodes.instances, 'price')[1];
-  assert.equal(noGpuButton.textContent, '无卡 ¥0.1/h', '无卡实例显示的是无卡费率，不是 GPU 时价');
-  noGpuButton.fire('click');
-  assert.match(dialogNode().textContent, /登记无卡费率 · I02/);
-  assert.match(dialogNode().textContent, /GPU 模式开机后再登记 GPU 时价/);
-  assert.equal(dialogInput().value, '0.1', '无卡档位要预填当前无卡费率');
-  dialogInput().value = '0.12';
-  dialogButton('保存').fire('click');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(calls.filter(call => call.options.method === 'POST').pop().options.body,
-    '{"id":"I02","no_gpu_price":0.12}', '无卡费率写 no_gpu_price，不能把 GPU 时价覆盖掉');
-  assert.equal(nodes.modal.classList.contains('hidden'), true, '登记成功后关窗');
-  // 开机模式没登记就退回 GPU 时价：没有依据时宁可高估花费
-  data.instances[1].mode = null;
-  await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.instances, 'price')[1].textContent, '¥1.58/h');
-  console.log('PASS: no-GPU instances register the no-GPU rate instead of a GPU price');
-
-  // Token 只从面板登记、只进服务端内存：请求形状、状态文案，客户端一律不留副本
-  assert.ok(html.includes('Token 只存本进程内存'), '页脚要说清 Token 存在哪，免得人去找凭据文件');
-  data.credentials = {configured:false,set_at:null};
-  await nodes.refresh.fire('click');
-  assert.ok(nodes.token.classList.contains('unset'), '没登记 Token 时按钮要转警示态');
-  nodes.token.fire('click');
-  assert.match(dialogNode().textContent, /登记开发者 Token/);
-  assert.match(dialogNode().textContent, /只存在这个面板进程的内存里/);
-  assert.equal(dialogInput().type, 'password', 'Token 不能在屏幕上回显');
-  assert.equal(dialogInput().value, '', '弹窗不回填：客户端不留副本');
-  const beforeToken = calls.length;
-  dialogButton('保存').fire('click');
-  assert.equal(calls.length, beforeToken, '空输入不该发请求');
-  assert.match(dialogNode().textContent, /还没填 Token/);
-  postResult = {ok:true, json: async () => ({...data, credentials:{configured:true,set_at:'2026-10-15T09:00:00+00:00'}})};
-  dialogInput().value = 'secret-token-value';
-  dialogButton('保存').fire('click');
-  await new Promise(resolve => setImmediate(resolve));
-  const tokenPost = calls.filter(call => call.options.method === 'POST').pop();
-  assert.equal(tokenPost.url, '/api/token');
-  assert.equal(tokenPost.options.body, '{"token":"secret-token-value"}');
-  assert.equal(nodes.modal.classList.contains('hidden'), true, '登记成功后关窗');
-  assert.equal(nodes.modal.children.length, 0, '关窗后输入框连同里面的值一起消失');
-  assert.ok(!nodes.token.classList.contains('unset'), '登记后按钮回到常态');
-  const page = [nodes.title,nodes.updated,nodes.summary,nodes.instances,nodes.diagram,nodes.error,nodes.modal];
-  assert.ok(!page.some(node => node.textContent.includes('secret-token-value')),
-    '凭据不能留在页面任何位置');
-  // 被拒绝时留在弹窗里：这是服务端说的实话，不是客户端编的
-  postResult = {ok:false, json: async () => ({error:'Token 超过 512 字符，请核对是否粘错了内容'})};
-  nodes.token.fire('click');
-  dialogInput().value = 'x'.repeat(600);
-  dialogButton('保存').fire('click');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.match(dialogNode().textContent, /登记失败：Token 超过 512 字符/);
-  assert.equal(nodes.modal.classList.contains('hidden'), false, '被拒绝时不能关窗');
-  postResult = null;
-  dialogButton('清除 Token').fire('click');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(calls.filter(call => call.options.method === 'POST').pop().options.body, '{"token":null}',
-    '清除要发 null，不是空串');
-  console.log('PASS: developer token is registered from the panel and never kept client-side');
-
-  // 余额只有一块：金额、代金券标注、按当前开机时价的可跑时长、计划花费与充足结论
-  const budgetChips = byClass(nodes.summary, 'budget');
-  assert.equal(budgetChips.length, 1, '余额块必须渲染且只有一块');
-  assert.match(budgetChips[0].textContent, /余额 ¥128\.50/);
-  assert.match(budgetChips[0].textContent, /观测于 (刚刚|\d+ (分钟|小时|天)前)/);
-  assert.match(nodes.summary.textContent, /代金券 ¥20\.00（不计入可用时长）/);
-  assert.match(nodes.summary.textContent, /现价可跑 37\.1 小时/);
-  // 计划剩余时长随真实时间推移而变化，这里只要求它被算出来并带上预估花费
-  assert.match(nodes.summary.textContent, /跑完剩余计划 \d+(\.\d+)? GPU 小时≈ ¥\d+\.\d\d/);
-  assert.equal(byClass(nodes.summary, 'good').length, 1, '余额充足时给出明确的结论');
-  console.log('PASS: balance and affordable GPU hours are shown in the summary');
-
-  // 自动结算记录：整句文案由服务端写进计划，面板只显示、只按 over 换样式，不在浏览器里重算
-  assert.ok(data.settlement && typeof data.settlement.text === 'string',
-    '/api/plan 必须带上服务端算好的结算视图');
-  assert.equal(byClass(nodes.summary, 'settled').length, 1, '计划里有结算记录就要渲染一块结算徽标');
-  assert.match(byClass(nodes.summary, 'settled')[0].textContent, /自动结算/);
-  data.settlement = {live:false, over:false, computed_at:new Date().toISOString(),
-    text:'自动结算于 3 分钟前 · 跑完剩余计划 4.8 GPU 小时、约 ¥9.62 · 余额够'};
-  await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.summary, 'bad').length, 0, '结论正常时结算记录不该报警');
-  assert.match(nodes.summary.textContent, /自动结算于 3 分钟前 · 跑完剩余计划 4\.8 GPU 小时、约 ¥9\.62 · 余额够/);
-  data.settlement = {live:true, over:true, text:'自动结算已过期（3 小时前，超过 2 个周期）· 当前为实时值 · 上次结算失败'};
-  await nodes.refresh.fire('click');
-  assert.ok(byClass(nodes.summary, 'settled')[0].classList.contains('bad'), '结算过期/失败时必须用醒目样式');
-  console.log('PASS: scheduled settlement is rendered straight from the server-side text');
-
-  // 没有余额观测时整块不渲染：绝不把缺失显示成 0（结算记录同理，一起隐去再看）
-  const savedBudget = data.budget;
-  const savedSettlement = data.settlement;
-  delete data.budget;
-  delete data.settlement;
-  await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.summary, 'budget').length, 0);
-  assert.equal(byClass(nodes.summary, 'settled').length, 0, '没有结算记录时整块不渲染');
-  assert.ok(!/¥/.test(nodes.summary.textContent), '缺余额时不该出现任何金额');
-  data.budget = savedBudget;
-  data.settlement = savedSettlement;
-  await nodes.refresh.fire('click');
-  assert.equal(byClass(nodes.summary, 'budget').length, 1);
-  assert.equal(byClass(nodes.summary, 'settled').length, 1);
-
-  // 面板只做只读展示：没有 TB 链接、没有磁盘条、没有新的外部请求入口
+  // 面板只做只读展示：没有余额/结算/时价/Token，也没有磁盘条或新的外部请求入口
+  assert.ok(!/¥|余额|代金券|结算|时价|AutoDL|Token/.test(nodes.summary.textContent + nodes.instances.textContent),
+    '读数条与实例行只展示任务与实例状态');
   assert.ok([...descendants(nodes.diagram, 'a'), ...descendants(nodes.summary, 'a')]
     .every(link => link.href.startsWith('#task-')), '面板只提供任务内部引用，不提供 TensorBoard 直链');
   assert.ok(!/磁盘|disk_used|tf-logs|tensorboard/i.test(nodes.summary.textContent + nodes.instances.textContent),
     '面板不展示磁盘与 TensorBoard 信息（这些留给 agent 巡检）');
+  assert.ok(calls.length > 0 && calls.every(call => call.url === '/api/plan' && call.options.method === undefined),
+    '面板只发 GET /api/plan 读取请求');
 
   nodes.theme.fire('click');
   assert.equal(context.document.documentElement.dataset.theme, 'dark');
@@ -523,6 +378,8 @@ async function main() {
   assert.equal(nodes.error.classList.contains('hidden'), false);
   assert.equal(nodes.refresh.disabled, false);
   assert.equal(byClass(nodes.diagram, 'task-node').length, 7);
+  assert.ok(calls.every(call => call.url === '/api/plan' && call.options.method === undefined),
+    '整轮交互中面板始终只发 GET /api/plan，没有写请求');
   console.log('PASS: offline warning / last snapshot retained / controls recovered');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

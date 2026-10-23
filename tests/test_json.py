@@ -342,7 +342,7 @@ class JsonTests(unittest.TestCase):
         self.assertEqual(result["revision"], 1)
         self.assertEqual(self.store.read()["name"], "结构化计划")
 
-    def test_apply_updates_existing_preserving_sections_wallet_and_one_revision(self):
+    def test_apply_updates_existing_preserving_sections_and_one_revision(self):
         self.init()
         document = self.store.read_document()
         document["config"] = ops.default_config("测试")
@@ -351,9 +351,6 @@ class JsonTests(unittest.TestCase):
             "started_at": "2026-10-14T10:00:00Z", "finished_at": None,
             "intent": "核实真实产物", "sync": {"pending": True},
         }
-        document["plan"]["wallet"] = {"assets": 123.0, "voucher": 5.0,
-                                      "observed_at": ops.stamp(ops.utcnow())}
-        document["plan"]["instances"][0]["price"] = 2.5
         self.store.write_document(document)
         result = self.apply({
             "name": "结构化计划",
@@ -368,8 +365,6 @@ class JsonTests(unittest.TestCase):
         after = self.store.read_document()
         self.assertEqual(after["config"], document["config"])
         self.assertEqual(after["experiments"], document["experiments"])
-        self.assertEqual(after["plan"]["wallet"], document["plan"]["wallet"])
-        self.assertEqual(after["plan"]["instances"][0]["price"], 2.5)
         self.assertEqual(after["plan"]["revision"], 2)
         self.assertEqual(after["plan"]["tasks"][-1]["deps"], ["F01-T02"])
         self.assertEqual(after["plan"]["tasks"][1]["note"], "已核实")
@@ -490,7 +485,7 @@ class JsonTests(unittest.TestCase):
         self.assertEqual(before, self.store.path.read_bytes())
         self.assertFalse(self.store.lock_path.exists())
 
-    def test_non_plan_document_sections_and_prices_preserved(self):
+    def test_non_plan_document_sections_preserved(self):
         self.init()
         document = self.store.read_document()
         document["config"] = ops.default_config("测试")
@@ -499,13 +494,11 @@ class JsonTests(unittest.TestCase):
             "started_at": "2026-10-14T10:00:00Z", "finished_at": None,
             "intent": "核实真实产物", "sync": {"pending": True},
         }
-        document["plan"]["instances"][0]["price"] = 2.5
         self.store.write_document(document)
         self.batch({"updates": [{"id": "F01-T01", "note": "保留其他段"}]})
         after = self.store.read_document()
         self.assertEqual(document["config"], after["config"])
         self.assertEqual(document["experiments"], after["experiments"])
-        self.assertEqual(after["plan"]["instances"][0]["price"], 2.5)
         self.assertEqual(after["plan"]["revision"], 2)
 
     def test_brief_alias_limits_and_advisory_checks(self):

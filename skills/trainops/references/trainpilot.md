@@ -51,7 +51,7 @@ call_mcp_tool(
 异常用 `report(event_type="alert")` 报告现象、证据和受影响 Run。实际进程由 agent 检查和保护，控制面 WAITING 不代表进程已停止。服务的普通告警自动自愈窗口按当前协议处理；轮询超时本身不是决定。
 
 - **自行解决**：通过 `poll_instruction` 取得决定，核实后执行已授权修复；最多 5 次的累计上限不因新指令或接管重置。`ack_instruction` 报告修复动作和结果，作为这次修复的唯一恢复汇报，不再追加重复 milestone。
-- **等待用户**：`poll_instruction` 返回 awaiting_direct_conversation=true 后保持当前现场与任务状态，结束轮询，把控制交还用户直接对话；不拉取群消息、不要求 #fix，不设置等待安排超时后自动修复。其他实例上的独立工作和必要费用保护仍可继续。用户直接给出方案后执行、验证，以 `ack_instruction(action="self_resolve", solution=实际处理)` 回执，省略 instruction_id；不把用户的沉默当成许可。
+- **等待用户**：`poll_instruction` 返回 awaiting_direct_conversation=true 后保持当前现场与任务状态，结束轮询，把控制交还用户直接对话；不拉取群消息、不要求 #fix，不设置等待安排超时后自动修复。其他实例上的独立工作和必要资源保护仍可继续。用户直接给出方案后执行、验证，以 `ack_instruction(action="self_resolve", solution=实际处理)` 回执，省略 instruction_id；不把用户的沉默当成许可。
 - **取消任务并关机**：取消对应计划任务、停止本任务进程并保全必要产物，按[收尾](execution.md#完成或取消收尾)实际取消并复查本任务的宿主定时巡检/汇报/唤醒与 AutoDL 持续开机/切换 job，调用 AutoDL 关机并核实物理终态；发出取消回执不会自动清理这些后台任务。若有其他任务共享该实例，先说明冲突，不能误停其他训练；结果未知或关机失败如实回执，不能报取消关机成功。该按钮代表对对应任务取消及其专属实例关机的授权。
 
 领取决定后的回执使用实际返回的 instruction_id/action；直接对话恢复按上面的无 instruction_id 路线处理。执行并验证后才报告 success，失败则报告 failed。取消的成功回执保持终态并直接发送取消结果，不再追加 report failed，不把任务重置为 RUNNING。具体字段以实时工具说明为准。
