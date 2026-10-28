@@ -1,0 +1,6 @@
+{
+  "name": "trainops",
+  "version": "0.1.0",
+  "description": "AutoDL / Vast.ai 多实例训练执行调度：用户明确指定 AutoDL 实例或通过外部 vastai skill 在 Vast.ai 寻找资源；用 CLI 维护实例、流程、任务依赖与真实进度，按需起任务执行队列面板；agent 巡检时通过 lark-cli 维护飞书实验日志。项目配置、计划账本与 Run 历史统一随实验项目持久化。本身不跑训练，计划推荐用 CLI 规范化维护，也允许校验通过的直接编辑。",
+  "skills": "./skills/"
+}

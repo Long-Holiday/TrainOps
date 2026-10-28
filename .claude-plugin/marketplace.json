@@ -1,0 +1,15 @@
+{
+  "name": "trainops-marketplace",
+  "metadata": {
+    "description": "TrainOps 多实例训练执行调度插件市场"
+  },
+  "owner": {
+    "name": "Long-Holiday"
+  },
+  "plugins": [
+    {
+      "name": "trainops",
+      "source": "./"
+    }
+  ]
+}

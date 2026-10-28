@@ -1,0 +1,12 @@
+{
+  "name": "trainops-marketplace",
+  "plugins": [
+    {
+      "name": "trainops",
+      "source": {
+        "source": "local",
+        "path": "./"
+      }
+    }
+  ]
+}

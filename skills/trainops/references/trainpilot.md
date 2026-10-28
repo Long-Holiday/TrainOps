@@ -4,7 +4,7 @@
 
 ## 调用与开工探针
 
-Antigravity 的 Lazy MCP 工具通过宿主 `call_mcp_tool` 转发；没有独立原生 `report` 命令不等于工具不可用。下例中 `ServerName="trainpilot"` 是客户端配置别名，服务自报名称是 `TrainPilot`；若本机别名不同，按实际配置替换。`ToolName` 使用服务注册的 `get_task_status` / `report`。包装器参数名及 `Arguments` 的类型以宿主实时 schema 为准，要求字符串时将参数对象序列化为 JSON，不猜原生工具完整限定名。
+先按[宿主能力适配](hosts.md#mcp-与外部技能)发现已连接的 TrainPilot 工具。Claude Code 与 Codex 使用本宿主实际暴露的 MCP 工具名和参数，不要求存在 `call_mcp_tool`。Antigravity 的 Lazy MCP 工具通过宿主 `call_mcp_tool` 转发；没有独立原生 `report` 命令不等于工具不可用。下例仅展示 Antigravity 的包装结构；其他宿主将 `Arguments` 中的业务参数传给发现的对应工具。`ServerName="trainpilot"` 是客户端配置别名，服务自报名称是 `TrainPilot`；若本机别名不同，按实际配置替换。`ToolName` 使用服务注册的 `get_task_status` / `report`。包装器参数名及 `Arguments` 的类型以宿主实时 schema 为准，要求字符串时将参数对象序列化为 JSON，不猜原生工具完整限定名。
 
 **开工前必须实际执行探针**，不能只在对话中确认“工具可用”。优先查询本次真实 Run 绑定的 task_id，不创建测试任务、不为探针虚构训练进展：
 
@@ -20,7 +20,7 @@ call_mcp_tool(
 
 也可用**真实开工事件** `report(event_type="milestone")` 作探针，需业务 `success=true`；此时只描述实际完成的准备，不提前宣称训练已启动。`report` 会创建/更新控制面任务、追加事件并异步发送卡片，不能当无副作用的连接测试。每次调用都显式传绑定的 task_id，避免多个 Run 落到服务端默认任务。
 
-正常巡检必须实际执行以下调用结构，不能只把代码块贴到对话里。下列 task_id、步数、消息和 loss 仅为语法示例，执行时替换为真实 Run 与观测值；未知的 step/epoch/metrics 省略：
+正常巡检必须按当前宿主实际执行对应 `report` 调用，以下为 Antigravity 示例，不能只把代码块贴到对话里。下列 task_id、步数、消息和 loss 仅为语法示例，执行时替换为真实 Run 与观测值；未知的 step/epoch/metrics 省略：
 
 ```python
 call_mcp_tool(

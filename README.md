@@ -1,6 +1,6 @@
 # TrainOps
 
-面向 **Antigravity CLI** 的插件形式的**多实例训练执行调度能力**：本地持久化维护项目计划表、支持多并行训练流程与跨流程任务依赖、提供以中性色为主、运行节点按实例身份色标识、按实例分组、原生滚动的执行队列 Web 面板（含流程进度与节点子进度），并精简 agent CLI 操作以减少上下文占用与幻觉。
+面向 **Codex、Claude Code 与 Antigravity CLI** 的插件形式的**多实例训练执行调度能力**：本地持久化维护项目计划表、支持多并行训练流程与跨流程任务依赖、提供以中性色为主、运行节点按实例身份色标识、按实例分组、原生滚动的执行队列 Web 面板（含流程进度与节点子进度），并精简 agent CLI 操作以减少上下文占用与幻觉。
 
 - **资源来源与多实例并行**：用户须明确使用 AutoDL 实例，还是在 Vast.ai 上寻找实例；未明确时 agent 先询问，不默认平台。AutoDL 使用外部 `autodl_mcp`，Vast.ai 必须加载外部 `vastai:vastai` skill；搜索与租用授权分开。多台已授权 GPU 实例可并行推进不同流程，单实例独占防冲突。见 [Vast.ai 接入](skills/trainops/references/vastai.md)。
 - **规律编号与依赖**：实例 `I01`、流程 `F01`、任务 `F01-T01` 编号稳定，支持 Flow 内并行 DAG、同流程同实例默认串联与显式跨流程依赖。
@@ -8,18 +8,50 @@
 - **自主优化调度**：agent 以目标、验收和硬约束为准，可按依赖、资源可用性、预计耗时与实验结果自主重排、拆并任务和调整实例分配，不机械照搬任务顺序；改变目标、放弃必需实验或超出资源授权时先确认。
 - **单 agent 多机再平衡**：任务完成/失败、实例可用及巡检时检查全局待执行任务，借助现有 `set --instance` 改派合格任务；先排除原远端队列重复启动，再由同一个 agent 按最新计划在目标机实际启动并核实，不只更新面板。只搬尚未启动的任务，不绕过真实依赖或节点约束；agent 未运行时不再平衡，不新增常驻调度器。见[执行闭环](skills/trainops/references/cli.md#单-agent-多机再平衡)。
 - **标准化 Agent 操作**：首选 `apply --from-json` 一次完成建表或增量更新，只填核心字段（状态、进度、耗时、依赖），临时 `key` 自动映射为稳定编号；需要时也可先读后写直接编辑账本并跑 `check --strict` 校验，避免上下文过长产生幻觉。
-- **只做 Antigravity CLI 插件**：仓库根就是插件根（`plugin.json` 清单 + `rules/` 规则入口 + `skills/trainops/` 能力契约），一条 `agy plugin install` 装完即用；不提供别家 agent 的清单，也不维护第二份会漂移的规则。
+- **三端原生插件安装**：Codex、Claude Code 与 Antigravity CLI 各有原生清单，共用 `skills/trainops/` 中的能力契约、脚本、参考和面板，不维护多份规则。后台任务、定时巡检与 MCP 按[宿主能力适配](skills/trainops/references/hosts.md)执行。
 - **无卡准备再训练**：通过外部 `autodl_mcp` 先无卡开机，完成项目/环境了解、配置与代码调整；准备就绪后关机，再按需正常开机或持续请求 GPU，验证就绪后正式训练，减少 GPU 空等。
 - **AutoDL 存储与 TensorBoard**：按三盘规范登记磁盘用量，TensorBoard 事件落数据盘并持续核实写入，巡检时沿用项目已有的指标与记录方式。
 - **飞书实验日志**：agent 巡检同时用 `lark-cli` 维护多维表格；复用用户指定/项目已有表，未指定则自动创建。项目配置、计划账本与 Run 历史统一存实验项目 `.agent/experiment.yaml`，不覆盖人工决策。见[实验日志](skills/trainops/references/experiments.md)。
 - **执行与通知闭环**：MCP `trainpilot` 在固定巡检和重大节点即时推送训练状态，终态直接上报，独立于 `lark-cli` 实验日志；异常按实时协议取得决定，自行修复只做一次 ACK 恢复汇报；用户选择等待时保持现场、等直接对话，不从飞书或群消息拉取方案。取消任务同时停止本任务进程并按授权关机；完成/取消清理本任务不再需要的巡检与资源等待，汇报结果位置和实例最终状态，面板可保留。代码本地修改验证、提交推送后远端拉取核对。见[TrainPilot 接入](skills/trainops/references/trainpilot.md)与[执行与通知闭环](skills/trainops/references/execution.md)。
 - **零第三方 Python 依赖**：仅需 Python 3.10+ 标准库（Linux / macOS / WSL）；飞书同步另需已安装并授权的 `lark-cli`。
 
-## 1. 安装到 Antigravity CLI
+## 1. 插件安装
 
-本插件**只服务 Antigravity CLI**，仓库根就是插件根：根目录 `plugin.json`（清单）+ `rules/trainops.md`（规则入口：开工顺序与关键不变量）+ `skills/trainops/`（完整能力契约）。规则只做指针，细则只有 `SKILL.md` 一份——不存在第二份会漂移的规则。
+支持 Codex、Claude Code 与 Antigravity CLI，仓库根就是插件根，三端共用 `skills/trainops/`。只需安装当前使用的客户端对应入口。安装后仍需在宿主中连接外部 `autodl_mcp`、`trainpilot`，并按需安装授权 `lark-cli` 与外部 Vast.ai skill；插件不携带凭据，也不自动配置这些服务。
 
-### 1.1 装成插件（推荐）
+### 1.1 Claude Code
+
+在 Claude Code 中添加本地市场并安装：
+
+```text
+/plugin marketplace add <仓库路径>
+/plugin install trainops@trainops-marketplace
+```
+
+也可以在终端执行：
+
+```bash
+claude plugin marketplace add <仓库路径>
+claude plugin install trainops@trainops-marketplace
+```
+
+安装后重新加载插件或重启会话，以 `/trainops:trainops` 调用。仅本次会话试用可用 `claude --plugin-dir <仓库路径>`，不需要安装市场。
+
+### 1.2 Codex
+
+使用支持 `codex plugin` 的版本，在终端执行：
+
+```bash
+codex plugin marketplace add <仓库路径>
+codex plugin add trainops@trainops-marketplace
+codex plugin list --marketplace trainops-marketplace
+```
+
+重新打开会话，从插件技能列表选择 `trainops` 或在对话中要求使用 TrainOps。若当前客户端没有 `plugin` 子命令，先升级到支持插件的版本，或使用下述技能目录方式。清单位于 `.codex-plugin/plugin.json`，本地市场位于 `.agents/plugins/marketplace.json`。
+
+Claude Code 与 Codex 都通过各自的市场入口安装整个插件根；更新仓库后使用客户端的市场刷新与插件更新/重新安装机制同步，已安装缓存不保证实时跟随本地编辑。
+
+### 1.3 Antigravity CLI
 
 ```bash
 agy plugin install <仓库路径>     # 整个插件根复制到 ~/.gemini/config/plugins/trainops/
@@ -28,26 +60,29 @@ agy plugin list                  # 确认识别到 trainops（skills 1 · rules 
 
 装的是插件根的**副本**：改完仓库要再 `agy plugin install <仓库路径>` 同步一次；不想敲命令就在 CLI 里打开 `/plugin` → 「+ Install from local directory...」选同一个目录。开关与卸载按目录名走：`agy plugin disable trainops` / `enable` / `uninstall trainops`。
 
-### 1.2 不装插件：把技能挂进 Antigravity 的技能目录
+### 1.4 不装插件：挂到技能目录
 
-Antigravity 也直接扫技能目录（全局 `~/.gemini/config/skills/<名称>/`，项目内 `.agents/skills/<名称>/`），挂一次就能用：
+只挂技能时不会加载 Antigravity 的规则入口。先创建所选目标的父目录，再选择对应宿主的一条软链命令：
 
 ```bash
-ln -s <仓库路径>/skills/trainops ~/.gemini/config/skills/trainops        # 全局，所有工作区生效
-ln -s <仓库路径>/skills/trainops <实验项目>/.agents/skills/trainops       # 只在这个项目里生效
+ln -s <仓库路径>/skills/trainops ~/.claude/skills/trainops              # Claude Code 全局
+ln -s <仓库路径>/skills/trainops ~/.agents/skills/trainops              # Codex 全局
+ln -s <仓库路径>/skills/trainops ~/.gemini/config/skills/trainops       # Antigravity 全局
+ln -s <仓库路径>/skills/trainops <实验项目>/.agents/skills/trainops      # Codex / Antigravity 项目内
+ln -s <仓库路径>/skills/trainops <实验项目>/.claude/skills/trainops      # Claude Code 项目内
 ```
 
-**用软链，别复制**：脚本靠自身位置回推 `references/` 与面板页面，软链能保住这条路。Windows 上 `git` 若没开符号链接，链会落成普通文件，改用 `mklink /D`，或者干脆走 1.3。
+**用软链，别复制**：脚本靠自身位置回推 `references/` 与面板页面，软链能保住这条路。Windows 上 `git` 若没开符号链接，链会落成普通文件，改用 `mklink /D`，或者干脆走 1.5。
 
-### 1.3 连目录都不想挂：直接指路
+### 1.5 连目录都不想挂：直接指路
 
-在 Antigravity 会话里说一句即可（把两处路径换成你自己的）：
+在所用客户端的会话里说一句即可（把两处路径换成你自己的）：
 
 > 启用 TrainOps：读取 `<仓库路径>/skills/trainops/SKILL.md` 并保留原有角色。实验项目目录为 `<实验项目路径>`；当前仅加载能力，不创建计划、不启动进程。收到任务后按 SKILL.md 的开工顺序执行：先以后台常驻任务起任务执行队列面板（`serve`）并报出地址，先明确资源来源：使用我提供的 AutoDL 实例，或按我的约束在 Vast.ai 上寻找；我未明确时先询问。AutoDL 再走无卡准备（0.5 核 CPU、2GB 内存、无 GPU，仅做适配该资源的轻量准备），之后才按授权申请有卡开机；Vast.ai 先加载外部 `vastai:vastai` skill，尽量在本地完成准备，再搜索并按授权租用，不套用 AutoDL 无卡模式。以目标、验收标准和明确硬约束为准，在资源授权内自主优化调度，优先推进能验证关键假设、解除依赖或决定下一轮方向的任务，不必机械照搬我列出的步骤或顺序。我可能提供多台 AutoDL 实例及各自对应的 SSH 名称；先核实实例与 SSH 的对应关系、实际 GPU 可用性及已有任务，再按依赖、显存、环境、可用性和预计耗时动态分配。常规重排直接同步计划并简述理由；改变目标、放弃必需实验、超出资源授权或中断已有任务前先确认。其他参考按需读取。
 
-### 1.4 两个容易踩的坑
+### 1.6 两个容易踩的坑
 
-- **面板要真常驻**：`serve` 是前台进程，必须用 harness 的后台任务机制起；别用 shell 的 `&` 或前台占住——父 shell 一收尾面板就被带走。后台任务活在 harness 进程里，harness 一退面板就没了；重开前先确认旧面板没在跑（端口被占就是还活着）。
+- **面板要真常驻**：`serve` 是前台进程，必须用宿主的后台任务或持久执行会话起，并核实地址可访问；见[宿主能力适配](skills/trainops/references/hosts.md#面板后台任务)。别用短命 shell 的 `&` 或占住前台；退出宿主后不保证仍可访问，重开前先确认旧面板项目与端口。
 - **两个版本号**：清单 `plugin.json` 里的 `version` 是**插件版本**（0.1.0），`trainops.py --version` 打的是**计划段 schema 版本**（3）。前者变了不影响账本，后者变了要先备份并核对文件。
 
 ## 2. 预览任务执行队列演示面板
@@ -243,7 +278,7 @@ python3 -m unittest discover -s tests -v   # 计划账本 / CLI / 并发写 / �
 node tests/test_web.cjs                    # 面板渲染：实例执行队列/虚线排队箭头/运行任务实例色、服务端进度直传、滚动保持、逾期提示、XSS 转义
 ```
 
-测试进程不碰网络。装了 `agy` 时，清单测试会调它的官方校验器（`agy plugin validate --strict`）复验一遍，并用临时 `HOME` 真装一次插件、核对技能与规则都到位——两条都不会碰你本机的 Antigravity 配置，`agy` 没装则跳过。
+测试进程不碰网络。装了 `claude` 时，清单测试会用 `claude plugin validate --strict` 校验 Claude Code 插件与市场，并用临时 `HOME` / `CLAUDE_CONFIG_DIR` 安装验证；装了支持插件的 `codex` 时，会用临时 `HOME` / `CODEX_HOME` 从本地市场安装并核对技能和 CLI；装了 `agy` 时，会调 `agy plugin validate --strict` 并用临时 `HOME` 安装、核对技能与规则。缺少对应客户端时跳过，不碰开发机的插件配置。
 
 ## 7. 改这个仓库
 
@@ -263,7 +298,7 @@ node tests/test_web.cjs                       # 面板渲染测试（无 npm 依
 
 # 跑单个模块 / 单个类
 python3 -m unittest tests.test_trainops -v
-python3 -m unittest tests.test_plugin -v      # 插件清单（装了 agy 时顺带跑官方校验器）
+python3 -m unittest tests.test_plugin -v      # 三端清单与隔离安装（按已安装客户端验证）
 
 # 演示面板（自带演示计划，不连服务器）
 python3 skills/trainops/scripts/trainops.py -p examples/demo-project serve --port 8765
@@ -330,19 +365,23 @@ CLI 的 `-p/--project` 指向**实验项目目录**，不是本仓库（`--versi
 
 ### 插件打包
 
-一份技能、一份清单，只有 Antigravity 一家：
+一份技能，三种宿主清单；Claude Code 与 Codex 各提供本地市场入口：
 
 | 文件 | 作用 |
 |---|---|
 | `plugin.json` | 插件清单：`$schema` 指向 Antigravity 的 schema，`name` 决定装到 `~/.gemini/config/plugins/<name>/`，`version` 是插件版本 |
-| `rules/trainops.md` | 规则入口（≤40 行）：只做指针 + 关键不变量，细则留在 `SKILL.md` 与 `references/` |
+| `.claude-plugin/plugin.json` | Claude Code 清单，技能路径相对插件根 |
+| `.claude-plugin/marketplace.json` | Claude Code 本地市场，`trainops` 指向仓库根 |
+| `.codex-plugin/plugin.json` | Codex 清单，复用相同技能目录 |
+| `.agents/plugins/marketplace.json` | Codex 本地市场，`trainops` 指向仓库根 |
+| `rules/trainops.md` | Antigravity 规则入口（≤40 行）：只做指针 + 关键不变量，细则留在 `SKILL.md` 与 `references/` |
 | `skills/trainops/` | 技能本体；不要移动这一层——脚本靠 `parents[3]` 回推插件根 |
 
 三条不能破的规矩：
 
 - **不要移动 `skills/trainops/`**：脚本靠 `parents[3]` 回推插件根，`references/` 与 `web/index.html` 也按自身位置找（`test_plugin` 有深度守卫）。入口文件里不写绝对路径。
 - **入口文件只做指针**（≤40 行）：细则一律留在 `SKILL.md` 与 `references/`，同一份约束写两处必然漂移。
-- **别再加别家的清单**（`.claude-plugin/`、`.codex-plugin/`、`gemini-extension.json`、根 `AGENTS.md` 等）：本插件只服务 Antigravity CLI，`test_plugin.ManifestTests.test_only_antigravity_packaging_exists` 会直接判失败。
+- **三端共用一份技能**：清单中的名称、版本、说明保持一致，技能路径统一指向插件根的 `skills/`；不要在清单目录里复制技能或脚本。宿主差异集中在 `references/hosts.md`，不新增会覆盖实验项目角色的根 `AGENTS.md` / `CLAUDE.md`。
 
 ### 约定
 

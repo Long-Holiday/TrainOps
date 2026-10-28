@@ -1,11 +1,7 @@
-"""Antigravity 插件清单与入口文件的结构检查。
+"""Codex、Claude Code 与 Antigravity 插件清单和共用技能的结构检查。
 
-这些清单不在计划账本的数据流上，CLI 的输出路径碰不到它们，所以单独盯：
-插件根的清单必须能被 Antigravity 认出、引用的路径必须存在且不越出插件根，
-入口文件（`rules/trainops.md`）只做指针，不复制细则。
-
-这个插件**只服务 Antigravity CLI**：别家的清单与入口文件不该再出现（有回归用例盯着）。
-外部校验器（`agy`）装了就用它验一遍，没装跳过而不是失败。
+各宿主的清单与市场入口引用同一份技能，不复制脚本与契约。
+外部校验器装了就用它验一遍，安装测试使用隔离目录，不碰用户配置。
 """
 
 import importlib.util
@@ -28,9 +24,8 @@ TRAINPILOT = REFERENCES / "trainpilot.md"
 ANTIGRAVITY_SCHEMA = "https://antigravity.google/schemas/v1/plugin.json"
 ANTIGRAVITY_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
 PLUGIN_NAME = re.compile(r"^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
-# 插件根的清单是唯一的清单——这些路径一旦复活，说明又长出了别家的打包方式。
-OTHER_AGENT_PATHS = (".claude-plugin", ".codex-plugin", "gemini-extension.json", "GEMINI.md",
-                     "AGENTS.md", "antigravity", "CLAUDE.md")
+MANIFESTS = (ROOT / "plugin.json", ROOT / ".claude-plugin/plugin.json",
+             ROOT / ".codex-plugin/plugin.json")
 ENTRY_FILES = (ROOT / "rules/trainops.md",)
 ENTRY_LIMIT = 40  # 入口文件只做指针，细则留在 SKILL.md；超了说明有人在写第二份契约
 # 入口只保留能直接指导行为的关键合同；同一句约束不要求在所有文档逐字复读。
@@ -99,11 +94,22 @@ class ManifestTests(unittest.TestCase):
         self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$",
                          "插件版本用三段式；它和 `trainops.py --version` 的计划 schema 版本是两件事")
 
-    def test_only_antigravity_packaging_exists(self):
-        """只服务 Antigravity CLI：别家的清单与入口文件都不该再出现。"""
-        for name in OTHER_AGENT_PATHS:
-            self.assertFalse((ROOT / name).exists(),
-                             f"插件只服务 Antigravity，不该再有 {name}（要加回来先想清楚为谁加）")
+    def test_manifests_share_identity_and_skill(self):
+        """三个宿主只有清单不同，技能与运行文件保持一份。"""
+        base = load(MANIFESTS[0])
+        for path in MANIFESTS:
+            with self.subTest(manifest=path.relative_to(ROOT)):
+                manifest = load(path)
+                self.assertEqual(manifest["name"], base["name"])
+                self.assertEqual(manifest["version"], base["version"])
+                self.assertEqual(manifest["description"], base["description"])
+                if path != MANIFESTS[0]:
+                    self.assertEqual(manifest["skills"], "./skills/")
+                    skill_root = (ROOT / manifest["skills"]).resolve()
+                    self.assertTrue(skill_root.is_relative_to(ROOT))
+                    self.assertEqual(skill_root / "trainops/SKILL.md", SKILL)
+                    self.assertFalse((path.parent / "skills").exists(),
+                                     "清单目录中不应复制技能")
 
     def test_skills_directory_only_exposes_immediate_children(self):
         skills = ROOT / "skills"
@@ -112,6 +118,23 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(found, ["trainops"], "skills/ 的直接子目录才是技能，深层目录不会被搜索")
         self.assertFalse(skills.is_symlink(), "技能目录要留在插件根里，别再拿软链绕一层")
         self.assertTrue((skills / "trainops/SKILL.md").is_file(), "SKILL.md 必须是普通文件而不是链接")
+
+    def test_claude_marketplace_points_to_plugin_root(self):
+        market = load(ROOT / ".claude-plugin/marketplace.json")
+        self.assertEqual(market["name"], "trainops-marketplace")
+        self.assertTrue(market["owner"]["name"])
+        self.assertEqual(market["plugins"], [{"name": "trainops", "source": "./"}])
+        self.assertEqual((ROOT / market["plugins"][0]["source"]).resolve(), ROOT)
+
+    def test_codex_marketplace_points_to_plugin_root(self):
+        market = load(ROOT / ".agents/plugins/marketplace.json")
+        self.assertEqual(market["name"], "trainops-marketplace")
+        plugins = market["plugins"]
+        self.assertEqual(len(plugins), 1)
+        self.assertEqual(plugins[0]["name"], "trainops")
+        source = plugins[0]["source"]
+        self.assertEqual(source["source"], "local")
+        self.assertEqual((ROOT / source["path"]).resolve(), ROOT)
 
     def test_rules_directory_holds_the_entry_file(self):
         rules = sorted(path.name for path in (ROOT / "rules").glob("*.md"))
@@ -244,12 +267,29 @@ class SkillTests(unittest.TestCase):
     def test_fixed_cron_and_monitoring_are_explicit(self):
         """启动训练后实际登记整点/半点巡检，而不是只承诺监控。"""
         skill = read(SKILL)
-        for phrase in ('CronExpression="0,30 * * * *"', "schedule(", "整点半点",
-                       "IsDaemon=false", "用户另定周期则遵从"):
-            self.assertIn(phrase, skill, "入口必须给出固定巡检的实际调度写法")
+        for phrase in ("references/hosts.md", "0,30 * * * *", "整点半点",
+                       "用户另定周期则遵从"):
+            self.assertIn(phrase, skill, "入口必须指向宿主适配并要求实际登记固定巡检")
+        hosts = read(REFERENCES / "hosts.md")
+        for phrase in ('CronExpression="0,30 * * * *"', "schedule(", "IsDaemon=false",
+                       "CronCreate", "CronList", "CronDelete", "Codex", "没有定时能力"):
+            self.assertIn(phrase, hosts, "宿主适配必须保留实际工具与不可用时的处理方式")
         execution = read(REFERENCES / "execution.md")
         for phrase in ("整点/半点宿主调度任务", "不得只承诺定时检查", "新会话先核实已有调度"):
             self.assertIn(phrase, execution, "巡检要求必须落在实际调度与接管核实上")
+
+    def test_host_adaptation_uses_actual_tools(self):
+        skill = read(SKILL)
+        self.assertIn("references/hosts.md", skill)
+        self.assertNotIn("call_mcp_tool(", skill,
+                         "共用入口不能把所有宿主写死为 Antigravity 的 MCP 包装器")
+        hosts = read(REFERENCES / "hosts.md")
+        for phrase in ("Claude Code", "Codex", "Antigravity", "run_in_background=true",
+                       "持久执行会话", "没有定时能力", "不读取凭据文件"):
+            self.assertIn(phrase, hosts)
+        trainpilot = read(TRAINPILOT)
+        self.assertIn("不要求存在 `call_mcp_tool`", trainpilot)
+        self.assertIn("其他宿主将 `Arguments` 中的业务参数", trainpilot)
 
     def test_experiment_logging_is_wired(self):
         skill = read(SKILL)
@@ -303,7 +343,7 @@ class SkillTests(unittest.TestCase):
         body = read(ROOT / "README.md")
         for phrase in ("apply --from-json", "agent 也可先读后写直接编辑", "check --strict",
                        "计划写入口", "面板只读展示执行队列与进度",
-                       "零第三方 Python 依赖", "只服务 Antigravity CLI",
+                       "零第三方 Python 依赖", "Codex", "Claude Code", "Antigravity CLI",
                        "只用原生 HTML/CSS/JS", "node tests/test_web.cjs",
                        "科学对照实验保留变量控制", "工程修复可按根因成组调整"):
             self.assertIn(phrase, body, f"README 缺少当前合同：{phrase}")
@@ -327,6 +367,78 @@ class EntryFileTests(unittest.TestCase):
                 self.assertIn(phrase, body, f"{where} 缺少关键合同「{phrase}」")
             for phrase in WRITE_PROHIBITIONS:
                 self.assertNotIn(phrase, body, f"{where} 不应再保留只许 CLI 的绝对禁令")
+
+
+@unittest.skipUnless(shutil.which("claude"), "未安装 Claude Code，跳过官方校验器")
+class ClaudeValidatorTests(unittest.TestCase):
+    def test_official_validator_accepts_manifests(self):
+        for name in ("plugin.json", "marketplace.json"):
+            with self.subTest(manifest=name):
+                result = subprocess.run(
+                    [shutil.which("claude"), "plugin", "validate",
+                     str(ROOT / ".claude-plugin" / name), "--strict"],
+                    text=True, capture_output=True, timeout=120)
+                self.assertEqual(result.returncode, 0,
+                                 f"Claude Code 清单校验未通过：{result.stdout}{result.stderr}")
+
+    def test_install_into_sandbox_config_stages_shared_skill(self):
+        """通过本地市场安装，验证缓存中仍有完整技能，隔离用户配置。"""
+        with tempfile.TemporaryDirectory() as home:
+            config = Path(home) / ".claude"
+            env = {**os.environ, "HOME": home, "CLAUDE_CONFIG_DIR": str(config)}
+            for args in (("marketplace", "add", str(ROOT), "--json"),
+                         ("install", "trainops@trainops-marketplace", "--json")):
+                result = subprocess.run([shutil.which("claude"), "plugin", *args],
+                                        text=True, capture_output=True, timeout=120, env=env)
+                self.assertEqual(result.returncode, 0,
+                                 f"Claude Code 安装未通过：{result.stdout}{result.stderr}")
+            skills = list(config.glob("plugins/cache/**/skills/trainops/SKILL.md"))
+            self.assertEqual(len(skills), 1, "安装缓存应只有一份 TrainOps 技能")
+            plugin = skills[0].parents[2]
+            for relative in ("skills/trainops/scripts/trainops.py",
+                             "skills/trainops/references/hosts.md",
+                             "skills/trainops/web/index.html"):
+                self.assertTrue((plugin / relative).is_file(), f"安装缺少 {relative}")
+            result = subprocess.run(
+                ["python3", str(plugin / "skills/trainops/scripts/trainops.py"), "--version"],
+                text=True, capture_output=True, timeout=30, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("schema 3", result.stdout)
+
+
+@unittest.skipUnless(shutil.which("codex"), "未安装 Codex，跳过原生安装检查")
+class CodexInstallTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        result = subprocess.run([shutil.which("codex"), "plugin", "add", "--help"],
+                                text=True, capture_output=True, timeout=30)
+        if result.returncode:
+            raise unittest.SkipTest("当前 Codex 不支持 plugin add，请升级后验证")
+
+    def test_install_into_sandbox_home_stages_shared_skill(self):
+        """本地市场真实安装，不访问用户 Codex 配置或凭据。"""
+        with tempfile.TemporaryDirectory() as home:
+            config = Path(home) / ".codex"
+            config.mkdir()
+            env = {**os.environ, "HOME": home, "CODEX_HOME": str(config)}
+            for args in (("marketplace", "add", str(ROOT), "--json"),
+                         ("add", "trainops@trainops-marketplace", "--json")):
+                result = subprocess.run([shutil.which("codex"), "plugin", *args],
+                                        text=True, capture_output=True, timeout=120, env=env)
+                self.assertEqual(result.returncode, 0,
+                                 f"Codex 安装未通过：{result.stdout}{result.stderr}")
+            skills = list(config.glob("**/skills/trainops/SKILL.md"))
+            self.assertEqual(len(skills), 1, "安装缓存应只有一份 TrainOps 技能")
+            plugin = skills[0].parents[2]
+            for relative in ("skills/trainops/scripts/trainops.py",
+                             "skills/trainops/references/hosts.md",
+                             "skills/trainops/web/index.html"):
+                self.assertTrue((plugin / relative).is_file(), f"安装缺少 {relative}")
+            result = subprocess.run(
+                ["python3", str(plugin / "skills/trainops/scripts/trainops.py"), "--version"],
+                text=True, capture_output=True, timeout=30, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("schema 3", result.stdout)
 
 
 @unittest.skipUnless(shutil.which("agy"), "未安装 Antigravity CLI，跳过官方校验器")
