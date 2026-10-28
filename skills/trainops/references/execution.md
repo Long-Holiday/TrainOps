@@ -4,6 +4,8 @@
 
 TrainPilot 的通知、按钮决定与直接对话接管见[TrainPilot 通知与决定](trainpilot.md)，按需读取；新任务由用户直接交办。
 
+先按[入口](../SKILL.md#开工与接管)明确用户选择 AutoDL 实例或在 Vast.ai 寻找。下文 AutoDL 状态查询、UUID、开机/切换 job、`cancel_job` 与 `/etc/network_turbo` 仅适用于 AutoDL；Vast.ai 必须加载外部 `vastai:vastai` skill，按 [Vast.ai 参考](vastai.md) 核实实例 ID、SSH 映射、状态与资源操作，不执行 AutoDL 专用初始化。通用通知、代码同步、训练核实和宿主调度清理适用于两者；Vast.ai 收尾核对实例及实际等待/复制任务，stop 与 destroy 的授权分开。
+
 ## 即时状态通知
 
 三条通道职责独立，不能相互顶替：
